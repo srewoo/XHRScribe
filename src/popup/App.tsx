@@ -162,7 +162,7 @@ export default function App() {
   };
 
   const handleOpenHelp = () => {
-    window.open(chrome.runtime.getURL('help.html'), '_blank');
+    window.open('https://raw.githubusercontent.com/srewoo/XHRScribe/main/help.html', '_blank');
     handleHelpMenuClose();
   };
 

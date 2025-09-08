@@ -688,23 +688,16 @@ export default function OptionsApp() {
           <Button
             variant="outlined"
             size="small"
-            onClick={() => window.open('https://github.com/[username]/XHRscribe/blob/main/docs/DEVELOPER_GUIDE.md', '_blank')}
+            onClick={() => window.open('https://raw.githubusercontent.com/srewoo/XHRScribe/main/help.html', '_blank')}
           >
-            Developer Guide
+            Help & User Guide
           </Button>
           <Button
             variant="outlined"
             size="small"
-            onClick={() => window.open('https://github.com/[username]/XHRscribe/blob/main/docs/FEATURES.md', '_blank')}
+            onClick={() => window.open('https://github.com/srewoo/XHRScribe/blob/main/docs/FEATURES.md', '_blank')}
           >
             Feature Documentation
-          </Button>
-          <Button
-            variant="outlined"
-            size="small"
-            onClick={() => window.open('https://github.com/[username]/XHRscribe/issues', '_blank')}
-          >
-            Report Issue
           </Button>
         </Box>
         <Typography variant="caption" color="text.secondary" display="block">
