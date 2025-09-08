@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>XHRScribe Offscreen Document</title>
+</head>
+<body>
+  <script>
+    // Offscreen document to keep service worker alive
+    let audio = null;
+    
+    // Play silent audio to keep the service worker active
+    function startAudio() {
+      if (!audio) {
+        audio = new Audio();
+        // Create a silent audio buffer
+        const audioContext = new AudioContext();
+        const buffer = audioContext.createBuffer(1, audioContext.sampleRate * 60, audioContext.sampleRate);
+        const source = audioContext.createBufferSource();
+        source.buffer = buffer;
+        source.loop = true;
+        source.connect(audioContext.destination);
+        source.start();
+      }
+    }
+    
+    // Listen for messages from the service worker
+    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+      if (message.type === 'START_AUDIO') {
+        startAudio();
+        sendResponse({ success: true });
+      }
+      return true;
+    });
+    
+    // Keep connection alive
+    setInterval(() => {
+      chrome.runtime.sendMessage({ type: 'OFFSCREEN_PING' });
+    }, 30000);
+    
+    console.log('Offscreen document initialized');
+  </script>
+</body>
+</html>
