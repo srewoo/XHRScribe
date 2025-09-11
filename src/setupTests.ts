@@ -60,10 +60,6 @@ import '@testing-library/jest-dom';
       addListener: jest.fn(),
     },
   },
-  offscreen: {
-    createDocument: jest.fn(),
-    closeDocument: jest.fn(),
-  },
 } as any;
 
 // Mock window.crypto
