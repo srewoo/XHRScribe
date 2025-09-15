@@ -72,6 +72,7 @@ export default function GeneratePanel({ sessions }: GeneratePanelProps) {
   const [generatedCode, setGeneratedCode] = useState<string>('');
   const [costEstimate, setCostEstimate] = useState<number>(0);
   const [copySuccess, setCopySuccess] = useState(false);
+  const [excludedEndpoints, setExcludedEndpoints] = useState<Set<string>>(new Set());
   const [generationState, setGenerationState] = useState<GenerationState>({
     isGenerating: false,
     progress: 0,
@@ -104,6 +105,24 @@ export default function GeneratePanel({ sessions }: GeneratePanelProps) {
 
   // Use selectedSession (which includes uploaded HAR sessions) or fallback to first session
   const session = selectedSession || sessions[0];
+
+  // Handle endpoint inclusion/exclusion
+  const handleEndpointToggle = (signature: string, excluded: boolean) => {
+    setExcludedEndpoints(prev => {
+      const newSet = new Set(prev);
+      if (excluded) {
+        newSet.add(signature);
+      } else {
+        newSet.delete(signature);
+      }
+      return newSet;
+    });
+  };
+
+  // Reset excluded endpoints when session changes
+  React.useEffect(() => {
+    setExcludedEndpoints(new Set());
+  }, [session?.id]);
 
   const handleGenerate = async () => {
     if (!session) return;
@@ -160,6 +179,7 @@ export default function GeneratePanel({ sessions }: GeneratePanelProps) {
       model: settings?.aiModel || 'gpt-4o-mini',
       ...options,
       complexity: 'intermediate' as const,
+      excludedEndpoints: Array.from(excludedEndpoints), // Convert Set to Array for serialization
     };
 
     try {
@@ -280,8 +300,20 @@ ${options.includeErrorScenarios ? `
 
   const estimateCost = () => {
     if (!session) return 0;
-    // Rough estimation based on request count
-    const tokenEstimate = session.requests.length * 500;
+    // Calculate included endpoints only
+    const includedRequestCount = session.requests.filter(request => {
+      try {
+        const url = new URL(request.url);
+        const signature = `${request.method}:${url.pathname}`;
+        return !excludedEndpoints.has(signature);
+      } catch (error) {
+        const signature = `${request.method}:${request.url}`;
+        return !excludedEndpoints.has(signature);
+      }
+    }).length;
+    
+    // Rough estimation based on included request count
+    const tokenEstimate = includedRequestCount * 500;
     const costPerToken = 0.00002; // Example rate
     return tokenEstimate * costPerToken;
   };
@@ -290,7 +322,7 @@ ${options.includeErrorScenarios ? `
     if (session) {
       setCostEstimate(estimateCost());
     }
-  }, [session, options]);
+  }, [session, options, excludedEndpoints]);
 
   if (!session) {
     return (
@@ -346,7 +378,12 @@ ${options.includeErrorScenarios ? `
         </Box>
 
         {/* Endpoint Preview */}
-        <EndpointPreview session={session} showDetails={false} />
+        <EndpointPreview 
+          session={session} 
+          showDetails={false} 
+          excludedEndpoints={excludedEndpoints}
+          onEndpointToggle={handleEndpointToggle}
+        />
       </Paper>
 
       {/* Generation Options */}
@@ -590,7 +627,21 @@ ${options.includeErrorScenarios ? `
         </Box>
         <Typography variant="h6">${costEstimate.toFixed(4)}</Typography>
         <Typography variant="caption" color="text.secondary">
-          Based on approximately {session.requests.length * 500} tokens
+          {(() => {
+            const includedCount = session.requests.filter(request => {
+              try {
+                const url = new URL(request.url);
+                const signature = `${request.method}:${url.pathname}`;
+                return !excludedEndpoints.has(signature);
+              } catch (error) {
+                const signature = `${request.method}:${request.url}`;
+                return !excludedEndpoints.has(signature);
+              }
+            }).length;
+            return excludedEndpoints.size > 0 
+              ? `Based on ${includedCount} included endpoints (~${includedCount * 500} tokens)`
+              : `Based on approximately ${session.requests.length * 500} tokens`;
+          })()}
         </Typography>
       </Paper>
 
@@ -772,24 +823,113 @@ ${options.includeErrorScenarios ? `
               </pre>
             </Paper>
             
-            {/* Quality Score */}
-            <Box sx={{ mt: 2, display: 'flex', alignItems: 'center', gap: 2 }}>
-              <Chip 
-                label="Quality Score: 8.5/10" 
-                color="success" 
-                size="small"
-              />
-              <Chip 
-                label={`${session.requests.length} endpoints covered`}
-                size="small"
-                variant="outlined"
-              />
-              <Chip 
-                label="Ready to run"
-                size="small"
-                variant="outlined"
-                color="success"
-              />
+            {/* Quality Score and Warnings */}
+            <Box sx={{ mt: 2 }}>
+              {/* Generation Strategy Info */}
+              {(() => {
+                const latestTest = generatedTests[generatedTests.length - 1];
+                const generationMode = latestTest?.metadata?.generationMode;
+                
+                if (generationMode) {
+                  return (
+                    <Typography variant="caption" sx={{ display: 'block', mb: 1, color: 'text.secondary' }}>
+                      {generationMode === 'individual' 
+                        ? '🔥 Individual endpoint processing used for guaranteed completeness' 
+                        : '📦 Batch processing used for efficiency'}
+                    </Typography>
+                  );
+                }
+                return null;
+              })()}
+              
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+                {(() => {
+                  const latestTest = generatedTests[generatedTests.length - 1];
+                  const hasWarnings = latestTest?.warnings && latestTest.warnings.length > 0;
+                  const hasPlaceholderWarnings = latestTest?.warnings?.some(w => w.includes('placeholder'));
+                  
+                  return (
+                    <>
+                      <Chip 
+                        label={`Quality Score: ${latestTest?.qualityScore || 8}/10`} 
+                        color={hasWarnings ? "warning" : "success"} 
+                        size="small"
+                      />
+                      <Chip 
+                        label={`${(() => {
+                          const includedCount = session.requests.filter(request => {
+                            try {
+                              const url = new URL(request.url);
+                              const signature = `${request.method}:${url.pathname}`;
+                              return !excludedEndpoints.has(signature);
+                            } catch (error) {
+                              const signature = `${request.method}:${request.url}`;
+                              return !excludedEndpoints.has(signature);
+                            }
+                          }).length;
+                          return includedCount;
+                        })()} endpoints processed`}
+                        size="small"
+                        variant="outlined"
+                      />
+                      {/* Show generation strategy */}
+                      {latestTest?.metadata?.generationMode && (
+                        <Chip 
+                          label={`${latestTest.metadata.generationMode === 'individual' ? '🔥 Individual' : '📦 Batch'} Generation`}
+                          size="small"
+                          variant="outlined"
+                          color={latestTest.metadata.generationMode === 'individual' ? 'primary' : 'default'}
+                        />
+                      )}
+                      {!hasWarnings ? (
+                        <Chip 
+                          label="Complete & Ready to run"
+                          size="small"
+                          variant="outlined"
+                          color="success"
+                        />
+                      ) : hasPlaceholderWarnings ? (
+                        <Chip 
+                          label="⚠️ Incomplete Generation"
+                          size="small"
+                          color="error"
+                          variant="outlined"
+                        />
+                      ) : (
+                        <Chip 
+                          label="⚠️ Has Warnings"
+                          size="small"
+                          color="warning"
+                          variant="outlined"
+                        />
+                      )}
+                    </>
+                  );
+                })()}
+              </Box>
+              
+              {/* Show warnings if any */}
+              {(() => {
+                const latestTest = generatedTests[generatedTests.length - 1];
+                const warnings = latestTest?.warnings || [];
+                
+                if (warnings.length > 0) {
+                  return (
+                    <Box sx={{ mt: 1 }}>
+                      {warnings.map((warning, index) => (
+                        <Alert 
+                          key={index} 
+                          severity={warning.includes('placeholder') ? "error" : "warning"} 
+                          sx={{ mt: 0.5, fontSize: '0.8rem' }}
+                        >
+                          {warning}
+                        </Alert>
+                      ))}
+                    </Box>
+                  );
+                }
+                return null;
+              })()}
             </Box>
           </Paper>
         </Fade>

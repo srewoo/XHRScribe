@@ -8,8 +8,8 @@
   },
   "scripts": {
     "dev": "webpack --mode=development --watch",
-    "build:webpack": "webpack --mode=production",
     "build": "node scripts/build-extension.js",
+    "build:webpack": "webpack --mode=production",
     "package": "node scripts/build-extension.js",
     "test": "jest",
     "test:watch": "jest --watch",

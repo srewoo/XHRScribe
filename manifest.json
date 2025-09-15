@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "XHRScribe - AI-Powered API Test Generator",
-  "version": "1.0.0",
-  "description": "Transform your manual API testing into automated test suites with AI",
+  "version": "1.0.1",
+  "description": "Turn traffic into tests",
   "permissions": [
     "debugger",
     "storage",

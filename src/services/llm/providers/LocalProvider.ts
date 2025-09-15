@@ -1,12 +1,14 @@
 import { HARData, GenerationOptions, GeneratedTest } from '@/types';
 import { LLMProvider } from '../LLMService';
+import { AuthFlow } from '../../AuthFlowAnalyzer';
 
 export class LocalProvider implements LLMProvider {
   private baseUrl = 'http://localhost:11434'; // Ollama default
 
   async generateTests(
     harData: HARData,
-    options: GenerationOptions
+    options: GenerationOptions,
+    authFlow?: AuthFlow
   ): Promise<GeneratedTest> {
     try {
       // For local models, we generate a basic template
@@ -39,7 +41,7 @@ export class LocalProvider implements LLMProvider {
 
   private generateBasicTemplate(harData: HARData, options: GenerationOptions): string {
     const framework = options.framework;
-    const entries = harData.entries.slice(0, 10);
+    const entries = harData.entries; // Process ALL entries even for local template
 
     if (framework === 'jest') {
       return this.generateJestTemplate(entries, options);

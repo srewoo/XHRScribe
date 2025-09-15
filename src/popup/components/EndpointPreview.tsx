@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   Box,
   Typography,
@@ -11,13 +11,15 @@ import {
   AccordionDetails,
   Badge,
   Tooltip,
-  Paper
+  Paper,
+  IconButton
 } from '@mui/material';
 import {
   ExpandMore,
   CheckCircle,
   Warning,
-  Info
+  Info,
+  Close
 } from '@mui/icons-material';
 import { RecordingSession, NetworkRequest } from '@/types';
 
@@ -29,16 +31,21 @@ interface EndpointInfo {
   statusCodes: number[];
   hasBody: boolean;
   domain: string;
+  signature: string; // Add unique signature for tracking exclusions
 }
 
 interface EndpointPreviewProps {
   session: RecordingSession;
   showDetails?: boolean;
+  excludedEndpoints?: Set<string>;
+  onEndpointToggle?: (signature: string, excluded: boolean) => void;
 }
 
 const EndpointPreview: React.FC<EndpointPreviewProps> = ({ 
   session, 
-  showDetails = false 
+  showDetails = false,
+  excludedEndpoints = new Set(),
+  onEndpointToggle
 }) => {
   const endpointAnalysis = useMemo(() => {
     const endpointMap = new Map<string, EndpointInfo>();
@@ -62,7 +69,8 @@ const EndpointPreview: React.FC<EndpointPreviewProps> = ({
             count: 1,
             statusCodes: req.status ? [req.status] : [],
             hasBody: !!(req.requestBody || req.responseBody),
-            domain: url.hostname
+            domain: url.hostname,
+            signature: signature
           });
         }
       } catch (error) {
@@ -76,7 +84,8 @@ const EndpointPreview: React.FC<EndpointPreviewProps> = ({
             count: 1,
             statusCodes: req.status ? [req.status] : [],
             hasBody: !!(req.requestBody || req.responseBody),
-            domain: 'unknown'
+            domain: 'unknown',
+            signature: signature
           });
         }
       }
@@ -90,6 +99,21 @@ const EndpointPreview: React.FC<EndpointPreviewProps> = ({
       return a.path.localeCompare(b.path);
     });
   }, [session.requests]);
+
+  const handleEndpointRemove = (signature: string) => {
+    if (onEndpointToggle) {
+      onEndpointToggle(signature, true);
+    }
+  };
+
+  const handleEndpointRestore = (signature: string) => {
+    if (onEndpointToggle) {
+      onEndpointToggle(signature, false);
+    }
+  };
+
+  const activeEndpoints = endpointAnalysis.filter(endpoint => !excludedEndpoints.has(endpoint.signature));
+  const excludedCount = endpointAnalysis.length - activeEndpoints.length;
 
   const getMethodColor = (method: string) => {
     switch (method.toUpperCase()) {
@@ -142,11 +166,19 @@ const EndpointPreview: React.FC<EndpointPreviewProps> = ({
           Detected API Endpoints
         </Typography>
         <Chip 
-          label={`${endpointAnalysis.length} unique`} 
+          label={`${activeEndpoints.length} included`} 
           size="small" 
           color="primary" 
           variant="outlined" 
         />
+        {excludedCount > 0 && (
+          <Chip 
+            label={`${excludedCount} excluded`} 
+            size="small" 
+            color="warning" 
+            variant="outlined" 
+          />
+        )}
       </Box>
 
       {showDetails ? (
@@ -235,54 +267,122 @@ const EndpointPreview: React.FC<EndpointPreviewProps> = ({
         </Box>
       ) : (
         // Compact view
-        <Box display="flex" flexWrap="wrap" gap={1}>
-          {endpointAnalysis.map((endpoint, index) => (
-            <Tooltip 
-              key={index}
-              title={
-                <Box>
-                  <Typography variant="body2" sx={{ fontWeight: 'bold' }}>
-                    {endpoint.method} {endpoint.path}
-                  </Typography>
-                  <Typography variant="caption" display="block">
-                    Domain: {endpoint.domain}
-                  </Typography>
-                  <Typography variant="caption" display="block">
-                    Requests: {endpoint.count}
-                  </Typography>
-                  <Typography variant="caption" display="block">
-                    Status codes: {endpoint.statusCodes.join(', ')}
-                  </Typography>
-                </Box>
-              }
-            >
-              <Badge 
-                badgeContent={endpoint.count > 1 ? endpoint.count : 0} 
-                color="secondary"
+        <Box>
+          {/* Active Endpoints */}
+          <Box display="flex" flexWrap="wrap" gap={1} mb={excludedCount > 0 ? 2 : 0}>
+            {activeEndpoints.map((endpoint, index) => (
+              <Tooltip 
+                key={index}
+                title={
+                  <Box>
+                    <Typography variant="body2" sx={{ fontWeight: 'bold' }}>
+                      {endpoint.method} {endpoint.path}
+                    </Typography>
+                    <Typography variant="caption" display="block">
+                      Domain: {endpoint.domain}
+                    </Typography>
+                    <Typography variant="caption" display="block">
+                      Requests: {endpoint.count}
+                    </Typography>
+                    <Typography variant="caption" display="block">
+                      Status codes: {endpoint.statusCodes.join(', ')}
+                    </Typography>
+                    {onEndpointToggle && (
+                      <Typography variant="caption" display="block" sx={{ mt: 0.5, fontStyle: 'italic' }}>
+                        Click × to exclude from test generation
+                      </Typography>
+                    )}
+                  </Box>
+                }
               >
-                <Chip
-                  label={`${endpoint.method} ${endpoint.path.split('/').pop() || '/'}`}
-                  size="small"
-                  color={getMethodColor(endpoint.method) as any}
-                  variant="outlined"
-                  sx={{ 
-                    maxWidth: 200,
-                    '& .MuiChip-label': {
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis'
-                    }
-                  }}
-                />
-              </Badge>
-            </Tooltip>
-          ))}
+                <Badge 
+                  badgeContent={endpoint.count > 1 ? endpoint.count : 0} 
+                  color="secondary"
+                >
+                  <Chip
+                    label={`${endpoint.method} ${endpoint.path.split('/').pop() || '/'}`}
+                    size="small"
+                    color={getMethodColor(endpoint.method) as any}
+                    variant="outlined"
+                    onDelete={onEndpointToggle ? () => handleEndpointRemove(endpoint.signature) : undefined}
+                    deleteIcon={<Close sx={{ fontSize: 16 }} />}
+                    sx={{ 
+                      maxWidth: 200,
+                      '& .MuiChip-label': {
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis'
+                      },
+                      '& .MuiChip-deleteIcon': {
+                        fontSize: 16,
+                        '&:hover': {
+                          color: 'error.main'
+                        }
+                      }
+                    }}
+                  />
+                </Badge>
+              </Tooltip>
+            ))}
+          </Box>
+
+          {/* Excluded Endpoints */}
+          {excludedCount > 0 && (
+            <Box>
+              <Typography variant="subtitle2" color="text.secondary" gutterBottom sx={{ mt: 1 }}>
+                Excluded from test generation:
+              </Typography>
+              <Box display="flex" flexWrap="wrap" gap={1}>
+                {endpointAnalysis
+                  .filter(endpoint => excludedEndpoints.has(endpoint.signature))
+                  .map((endpoint, index) => (
+                    <Tooltip 
+                      key={index}
+                      title={
+                        <Box>
+                          <Typography variant="body2" sx={{ fontWeight: 'bold' }}>
+                            {endpoint.method} {endpoint.path}
+                          </Typography>
+                          <Typography variant="caption" display="block">
+                            Click to include in test generation
+                          </Typography>
+                        </Box>
+                      }
+                    >
+                      <Chip
+                        label={`${endpoint.method} ${endpoint.path.split('/').pop() || '/'}`}
+                        size="small"
+                        color="default"
+                        variant="outlined"
+                        onClick={() => handleEndpointRestore(endpoint.signature)}
+                        sx={{ 
+                          maxWidth: 200,
+                          opacity: 0.6,
+                          cursor: 'pointer',
+                          '& .MuiChip-label': {
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis'
+                          },
+                          '&:hover': {
+                            opacity: 1,
+                            borderColor: 'primary.main'
+                          }
+                        }}
+                      />
+                    </Tooltip>
+                  ))}
+              </Box>
+            </Box>
+          )}
         </Box>
       )}
 
       <Box mt={2} p={1} bgcolor="grey.50" borderRadius={1}>
         <Typography variant="caption" color="text.secondary" display="flex" alignItems="center" gap={0.5}>
           <Info fontSize="small" />
-          These endpoints will be included in the generated test suite
+          {activeEndpoints.length === endpointAnalysis.length 
+            ? `All ${activeEndpoints.length} endpoints will be included in the generated test suite`
+            : `${activeEndpoints.length} of ${endpointAnalysis.length} endpoints will be included in the generated test suite`
+          }
         </Typography>
       </Box>
     </Box>

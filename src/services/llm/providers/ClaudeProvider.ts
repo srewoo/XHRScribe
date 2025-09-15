@@ -2,6 +2,7 @@ import axios, { AxiosError } from 'axios';
 import { encode } from 'gpt-tokenizer';
 import { HARData, GenerationOptions, GeneratedTest } from '@/types';
 import { LLMProvider } from '../LLMService';
+import { AuthFlow } from '../../AuthFlowAnalyzer';
 
 interface ClaudeErrorResponse {
   error?: {
@@ -22,20 +23,21 @@ export class ClaudeProvider implements LLMProvider {
 
   async generateTests(
     harData: HARData,
-    options: GenerationOptions
+    options: GenerationOptions,
+    authFlow?: AuthFlow
   ): Promise<GeneratedTest> {
     if (!this.apiKey) {
       throw new Error('Claude API key not configured');
     }
 
-    const prompt = this.buildPrompt(harData, options);
+    const prompt = this.buildPrompt(harData, options, authFlow);
     const promptTokens = this.countTokens(prompt);
     const systemPromptTokens = this.countTokens('You are an expert API test engineer. Generate clean, production-ready test code.');
     const totalInputTokens = promptTokens + systemPromptTokens;
 
-    // Check token limits before making API call
+    // Check token limits before making API call - leave more room for complete responses
     const modelLimit = this.getMaxTokens(options.model);
-    if (totalInputTokens > modelLimit * 0.8) {
+    if (totalInputTokens > modelLimit * 0.4) { // Leave 60% for response to ensure complete generation
       throw new Error(`Prompt too large for ${options.model}. Consider reducing the number of requests or using a model with higher token limits.`);
     }
 
@@ -54,7 +56,7 @@ export class ClaudeProvider implements LLMProvider {
               },
             ],
             system: 'You are an expert API test engineer. Generate clean, production-ready test code.',
-            max_tokens: Math.min(4096, modelLimit - totalInputTokens),
+            max_tokens: Math.min(32000, Math.floor((modelLimit - totalInputTokens) * 0.95)), // Use up to 95% of remaining tokens
             temperature: 0.7,
           },
           {
@@ -164,19 +166,44 @@ export class ClaudeProvider implements LLMProvider {
 
   private getMaxTokens(model: string): number {
     const limits: Record<string, number> = {
-      'claude-3-opus-20240229': 200000,
-      'claude-3-5-sonnet-20241022': 200000,
-      'claude-3-sonnet-20240229': 200000,
-      'claude-3-haiku-20240307': 200000,
+      'claude-4-sonnet': 200000,           // Latest Claude 4
+      'claude-3-7-sonnet': 200000,         // Claude 3.7
+      'claude-3-5-sonnet-20241022': 200000, // Claude 3.5
+      'claude-3-opus-20240229': 200000,     // Legacy
+      'claude-3-sonnet-20240229': 200000,   // Legacy
+      'claude-3-haiku-20240307': 200000,    // Legacy
     };
     return limits[model] || 100000;
   }
 
-  private buildPrompt(harData: HARData, options: GenerationOptions): string {
+  private buildPrompt(harData: HARData, options: GenerationOptions, authFlow?: AuthFlow): string {
     const framework = options.framework;
-    const entries = harData.entries.slice(0, 30); // Claude can handle more context
+    const entries = harData.entries; // Process ALL entries
 
-    let prompt = `Generate comprehensive ${framework} test code for the following API requests.\n\n`;
+    let prompt = `🔥🔥🔥 NUCLEAR ALERT - NO INCOMPLETE RESPONSES ALLOWED 🔥🔥🔥
+
+I AM PAYING FOR COMPLETE TEST GENERATION. INCOMPLETE RESPONSES WILL BE REJECTED.
+
+YOU MUST GENERATE COMPLETE, FULLY-IMPLEMENTED ${framework} TEST CODE FOR ALL ${entries.length} ENDPOINTS.
+
+🚫 ABSOLUTELY FORBIDDEN - INSTANT REJECTION:
+❌ "Continue adding more endpoint tests..." 
+❌ "Follow the same pattern for remaining endpoints"
+❌ "Add more tests here" or "TODO: implement more tests"
+❌ "Similar tests can be added for other endpoints"
+❌ "You can add more tests..." or "Additional tests..."
+❌ "Repeat for other endpoints" or "...and so on"
+❌ Any variation of "continue", "add more", "follow pattern"
+❌ Stopping after generating only some endpoints
+
+🔥 MANDATORY REQUIREMENTS:
+✅ GENERATE ACTUAL WORKING CODE FOR ALL ${entries.length} ENDPOINTS
+✅ Each endpoint gets a complete describe() block with 10-15 real test cases
+✅ NO placeholder comments, NO template suggestions
+✅ Production-ready, runnable code that I can use immediately
+⚠️  Each endpoint MUST have its own describe block with 10-15 complete test cases
+
+`;
     
     // Add framework-specific instructions
     prompt += this.getFrameworkInstructions(framework);
@@ -206,35 +233,70 @@ export class ClaudeProvider implements LLMProvider {
       prompt += '- Include integration tests that test multiple endpoints together\n';
     }
 
-    prompt += '\nAPI Endpoints to Test:\n';
-    
-    // Group requests by endpoint
-    const groupedRequests = this.groupRequestsByEndpoint(entries);
-    
-    for (const [endpoint, requests] of Object.entries(groupedRequests)) {
-      prompt += `\n${endpoint}:\n`;
-      requests.forEach(entry => {
-        prompt += `  - ${entry.request.method}`;
-        if (entry.request.postData) {
-          const bodyPreview = entry.request.postData.text?.substring(0, 100);
-          prompt += ` (Body: ${bodyPreview}...)`;
+    // Group requests by unique endpoint signature
+    const uniqueEndpoints = new Map<string, any>();
+    entries.forEach(entry => {
+      try {
+        const url = new URL(entry.request.url);
+        const signature = `${entry.request.method}:${url.pathname}`;
+        if (!uniqueEndpoints.has(signature)) {
+          uniqueEndpoints.set(signature, entry);
         }
-        prompt += ` → ${entry.response.status}`;
-        if (entry.response.content.text) {
-          const responsePreview = entry.response.content.text.substring(0, 100);
-          prompt += ` (Response: ${responsePreview}...)`;
+      } catch {
+        const signature = `${entry.request.method}:${entry.request.url}`;
+        if (!uniqueEndpoints.has(signature)) {
+          uniqueEndpoints.set(signature, entry);
         }
-        prompt += '\n';
-      });
-    }
+      }
+    });
 
-    prompt += '\n\nGenerate complete, production-ready test code with:\n';
-    prompt += '1. Proper test organization and structure\n';
-    prompt += '2. Clear test descriptions\n';
-    prompt += '3. Comprehensive assertions\n';
-    prompt += '4. Error handling\n';
-    prompt += '5. Setup and teardown hooks where appropriate\n';
-    prompt += '6. Comments explaining complex test logic\n';
+    prompt += `\n🎯 MANDATORY: Generate complete tests for ALL ${uniqueEndpoints.size} unique endpoints:\n`;
+    
+    Array.from(uniqueEndpoints.values()).forEach((entry, index) => {
+      const url = new URL(entry.request.url);
+      const method = entry.request.method;
+      const requestBody = entry.request.postData?.text;
+      const responseBody = entry.response.content.text;
+      const statusCode = entry.response.status;
+      
+      prompt += `
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔥 ENDPOINT ${index + 1}/${uniqueEndpoints.size}: ${method} ${url.pathname}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+URL: ${entry.request.url}
+Expected Status: ${statusCode}
+${requestBody ? `Request: ${requestBody.substring(0, 200)}` : 'No request body'}
+${responseBody ? `Response: ${responseBody.substring(0, 200)}` : 'No response'}
+
+🚨 MANDATORY: Generate ALL these test types:
+- 1 Happy path test (valid request → ${statusCode})
+- 5-8 Error tests (400, 401, 403, 404, 422, 500)
+- 3-5 Edge case tests (null values, boundaries, special chars)
+- 2-3 Security tests (XSS, injection attempts)
+
+`;
+    });
+
+    prompt += `
+
+🚨🚨🚨 FINAL VERIFICATION REQUIREMENTS 🚨🚨🚨
+
+✅ MUST GENERATE: Complete describe() block for ALL ${uniqueEndpoints.size} endpoints
+❌ MUST NOT INCLUDE: "// Continue adding more tests..." or similar placeholders
+✅ EACH ENDPOINT: Must have 10-15 individual test() cases
+✅ CODE QUALITY: Production-ready, runnable without modifications
+✅ COVERAGE: Positive, negative, edge case, and security tests for every endpoint
+
+📋 FINAL CHECKLIST:
+- [ ] ${uniqueEndpoints.size}/${uniqueEndpoints.size} endpoints have complete test suites
+- [ ] No placeholder or template comments
+- [ ] Each endpoint has proper describe() block
+- [ ] Includes setup/teardown (beforeAll, beforeEach, afterEach)
+- [ ] Uses environment variables for configuration
+- [ ] Ready to run immediately
+
+🚀 GENERATE COMPLETE ${framework} TEST CODE NOW:`;
 
     return prompt;
   }

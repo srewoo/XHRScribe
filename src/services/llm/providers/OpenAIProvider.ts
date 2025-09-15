@@ -2,6 +2,7 @@ import axios, { AxiosError } from 'axios';
 import { encode } from 'gpt-tokenizer';
 import { HARData, GenerationOptions, GeneratedTest } from '@/types';
 import { LLMProvider } from '../LLMService';
+import { AuthFlow, AuthFlowAnalyzer } from '../../AuthFlowAnalyzer';
 
 interface OpenAIErrorResponse {
   error?: {
@@ -23,20 +24,21 @@ export class OpenAIProvider implements LLMProvider {
 
   async generateTests(
     harData: HARData,
-    options: GenerationOptions
+    options: GenerationOptions,
+    authFlow?: AuthFlow
   ): Promise<GeneratedTest> {
     if (!this.apiKey) {
       throw new Error('OpenAI API key not configured');
     }
 
-    const prompt = this.buildExhaustivePrompt(harData, options);
+    const prompt = this.buildExhaustivePrompt(harData, options, authFlow);
     const promptTokens = this.countTokens(prompt);
     const systemPromptTokens = this.countTokens(this.getSystemPrompt());
     const totalInputTokens = promptTokens + systemPromptTokens;
 
-    // Check token limits before making API call
+    // Check token limits before making API call - be more aggressive with limits
     const modelLimit = this.getMaxTokens(options.model);
-    if (totalInputTokens > modelLimit * 0.7) { // Leave 30% for response
+    if (totalInputTokens > modelLimit * 0.5) { // Leave 50% for response to ensure complete generation
       throw new Error(`Prompt too large for ${options.model}. Consider reducing the number of requests or using a model with higher token limits.`);
     }
 
@@ -59,7 +61,7 @@ export class OpenAIProvider implements LLMProvider {
               }
             ],
             temperature: 0.3, // Lower temperature for more consistent test generation
-            max_tokens: Math.min(4000, modelLimit - totalInputTokens),
+            max_tokens: Math.min(16000, Math.floor((modelLimit - totalInputTokens) * 0.95)), // Use up to 95% of remaining tokens
             top_p: 0.9,
             frequency_penalty: 0.1,
             presence_penalty: 0.1
@@ -185,11 +187,49 @@ REQUIREMENTS:
 IMPORTANT: Generate actual runnable code, not pseudocode or examples.`;
   }
 
-  private buildExhaustivePrompt(harData: HARData, options: GenerationOptions): string {
+  private buildExhaustivePrompt(harData: HARData, options: GenerationOptions, authFlow?: AuthFlow): string {
     const framework = options.framework;
-    const entries = harData.entries.slice(0, 20); // Limit for token management
+    const entries = harData.entries; // Process ALL entries, no artificial limits
+
+    // Group endpoints by unique signature to avoid duplicates
+    const uniqueEndpoints = new Map<string, typeof entries[0]>();
+    entries.forEach(entry => {
+      try {
+        const url = new URL(entry.request.url);
+        const signature = `${entry.request.method}:${url.pathname}`;
+        if (!uniqueEndpoints.has(signature)) {
+          uniqueEndpoints.set(signature, entry);
+        }
+      } catch {
+        const signature = `${entry.request.method}:${entry.request.url}`;
+        if (!uniqueEndpoints.has(signature)) {
+          uniqueEndpoints.set(signature, entry);
+        }
+      }
+    });
     
-    let prompt = `Generate an EXHAUSTIVE ${framework} test suite with >80% coverage for the following API endpoints.
+    let prompt = `🔥🔥🔥 NUCLEAR ALERT - CRITICAL REQUIREMENT 🔥🔥🔥
+
+I AM PAYING FOR COMPLETE TEST GENERATION. INCOMPLETE RESPONSES WILL BE REJECTED.
+
+YOU MUST GENERATE COMPLETE, FULLY-IMPLEMENTED ${framework} TEST CODE FOR ALL ${uniqueEndpoints.size} ENDPOINTS.
+
+🚫 ABSOLUTELY FORBIDDEN - INSTANT REJECTION:
+❌ "Continue adding more endpoint tests..." 
+❌ "Follow the same pattern for remaining endpoints"
+❌ "Add more tests here" or "TODO: implement more tests"
+❌ "Similar tests can be added for other endpoints"
+❌ "You can add more tests..." or "Additional tests..."
+❌ "Repeat for other endpoints" or "...and so on"
+❌ Any variation of "continue", "add more", "follow pattern"
+❌ Stopping after generating only some endpoints
+❌ Template or example code instead of actual tests
+
+🔥 MANDATORY REQUIREMENTS:
+✅ GENERATE ACTUAL WORKING CODE FOR ALL ${uniqueEndpoints.size} ENDPOINTS
+✅ Each endpoint gets a complete describe() block with 10-15 real test cases
+✅ NO placeholder comments, NO template suggestions
+✅ Production-ready, runnable code that I can use immediately
 
 Framework: ${framework}
 ${this.getFrameworkInstructions(framework)}
@@ -261,10 +301,15 @@ MANDATORY TEST CATEGORIES TO INCLUDE:
 `;
     }
 
-    prompt += `\n\nAPI ENDPOINTS TO TEST:\n`;
-    
-    // Analyze each endpoint and provide specific test requirements
-    entries.forEach((entry, index) => {
+    // Add authentication setup if detected
+    if (authFlow) {
+      prompt += this.generateAuthenticationSection(authFlow, framework);
+    }
+
+    prompt += `\n\n🎯 MANDATORY: GENERATE COMPLETE TESTS FOR ALL ${uniqueEndpoints.size} ENDPOINTS BELOW:\n`;
+
+    // Generate specific requirements for each unique endpoint
+    Array.from(uniqueEndpoints.values()).forEach((entry, index) => {
       const url = new URL(entry.request.url);
       const method = entry.request.method;
       const isGraphQL = url.pathname.includes('graphql');
@@ -273,54 +318,135 @@ MANDATORY TEST CATEGORIES TO INCLUDE:
       const statusCode = entry.response.status;
       
       prompt += `
-${index + 1}. ${method} ${entry.request.url}
-   Path: ${url.pathname}
-   Status: ${statusCode}
-   ${requestBody ? `Request Body: ${requestBody.substring(0, 500)}` : 'No request body'}
-   ${responseBody ? `Response Sample: ${responseBody.substring(0, 500)}` : 'No response body'}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔥 ENDPOINT ${index + 1}/${uniqueEndpoints.size}: ${method} ${url.pathname}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Full URL: ${entry.request.url}
+Expected Status: ${statusCode}
+${requestBody ? `Request Body Sample: ${requestBody.substring(0, 300)}` : 'No request body'}
+${responseBody ? `Response Sample: ${responseBody.substring(0, 300)}` : 'No response body'}
+
+🚨 MANDATORY TESTS FOR THIS ENDPOINT (Generate ALL of these):
+
+1. ✅ HAPPY PATH TEST:
+   - Valid request exactly as captured
+   - Verify ${statusCode} status code
+   - Validate response structure and content
+
+2. ❌ ERROR TESTS (Generate 5-8 error scenarios):
+   - 400: Invalid/malformed request data
+   - 401: Missing/invalid authentication
+   - 403: Insufficient permissions (if applicable)
+   - 404: Invalid endpoint or resource not found
+   - 422: Invalid request format or validation errors
+   - 500: Server error simulation
+   ${method !== 'GET' ? '- Test with invalid content-type headers' : ''}
+
+3. 🔧 EDGE CASE TESTS (Generate 3-5 edge cases):
+   - Empty/null values in request
+   - Maximum/minimum boundary values
+   - Special characters and Unicode
+   - Large payload testing (if POST/PUT)
+   ${isGraphQL ? '- GraphQL-specific edge cases (query depth, invalid syntax)' : ''}
+
+4. 🛡️ SECURITY TESTS:
+   - XSS injection attempts
+   - SQL injection attempts (if applicable)
+   - Authentication bypass attempts
    
-   SPECIFIC TESTS REQUIRED FOR THIS ENDPOINT:
-   - Test with valid request (as captured)
-   - Test with each missing required field
-   - Test with invalid data types for each field
-   - Test with boundary values for numeric/string fields
-   - Test authentication scenarios
-   - Test malformed JSON/XML
-   - Test with extra unexpected fields
-   - Test concurrent requests
-   - Test request size limits
-   ${isGraphQL ? `
-   - Test GraphQL query depth limits
-   - Test invalid GraphQL syntax
-   - Test GraphQL injection
-   - Test over-fetching prevention
-   ` : ''}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 `;
     });
 
     prompt += `
 
-TESTING GUIDELINES:
-1. Use descriptive test names that explain the scenario
-2. Group related tests using describe blocks
-3. Include both positive and negative assertions
-4. Use beforeEach/afterEach for test setup/cleanup
-5. Mock external dependencies
-6. Use test data factories/builders for complex objects
-7. Include retry logic for flaky tests
-8. Add timeout configurations
-9. Use environment variables for sensitive data
-10. Generate at least 15-20 tests per endpoint
+🔥🔥🔥 FINAL ULTIMATUM - NO EXCEPTIONS 🔥🔥🔥
 
-COVERAGE REQUIREMENTS:
-- Statement Coverage: >80%
-- Branch Coverage: >75%
-- Function Coverage: >80%
-- Line Coverage: >80%
+I WILL REJECT ANY RESPONSE THAT:
+❌ Contains "continue", "add more", "follow pattern", "similar tests", "and so on"
+❌ Has fewer than ${uniqueEndpoints.size} describe blocks
+❌ Stops generating after only some endpoints
+❌ Uses placeholder or template comments
 
-Generate the complete test suite now:`;
+🎯 EXACT REQUIREMENTS:
+1. Generate ${uniqueEndpoints.size} complete describe blocks (one per endpoint)
+2. Each describe block contains 10-15 actual test cases
+3. All code must be production-ready and runnable
+4. No shortcuts, no placeholders, no "continue" instructions
+
+📊 MANDATORY OUTPUT STRUCTURE:
+\`\`\`${framework === 'cypress' ? 'javascript' : 'typescript'}
+describe('API Test Suite', () => {
+  // Authentication setup here
+  
+  describe('${uniqueEndpoints.size > 0 ? Array.from(uniqueEndpoints.values())[0].request.method + ' ' + new URL(Array.from(uniqueEndpoints.values())[0].request.url).pathname : 'METHOD /path'} - Endpoint 1', () => {
+    it('should handle valid request', async () => { /* actual test code */ });
+    it('should return 400 for invalid data', async () => { /* actual test code */ });
+    it('should return 401 for missing auth', async () => { /* actual test code */ });
+    // ... 7-12 more ACTUAL test cases
+  });
+  
+  // REPEAT FOR ALL ${uniqueEndpoints.size} ENDPOINTS - NO SHORTCUTS
+});
+\`\`\`
+
+🚨 BEFORE YOU RESPOND, VERIFY:
+✅ ${uniqueEndpoints.size} describe blocks (one per endpoint)
+✅ No "continue" or "add more" comments anywhere
+✅ Every endpoint has complete test implementation
+✅ Production-ready code that runs immediately
+
+⚡ GENERATE COMPLETE TESTS FOR ALL ${uniqueEndpoints.size} ENDPOINTS NOW - NO EXCEPTIONS:`;
 
     return prompt;
+  }
+
+  private generateAuthenticationSection(authFlow: AuthFlow, framework: string): string {
+    let authSection = `\n\n🔐 AUTHENTICATION FLOW DETECTED:\n`;
+    
+    authSection += `Authentication Pattern: ${authFlow.authPattern}\n`;
+    
+    if (authFlow.loginEndpoint) {
+      authSection += `Login Endpoint: ${authFlow.loginEndpoint.method} ${authFlow.loginEndpoint.url}\n`;
+    }
+    
+    if (authFlow.authTokens.length > 0) {
+      authSection += `Auth Tokens: ${authFlow.authTokens.map(t => `${t.type} (${t.source})`).join(', ')}\n`;
+    }
+    
+    if (authFlow.sessionCookies.length > 0) {
+      authSection += `Session Cookies: ${authFlow.sessionCookies.join(', ')}\n`;
+    }
+    
+    authSection += `Protected Endpoints: ${authFlow.protectedEndpoints.length}\n`;
+
+    authSection += `\n🚨 CRITICAL AUTHENTICATION REQUIREMENTS:\n`;
+    authSection += `1. ✅ GENERATE PROPER AUTHENTICATION SETUP using the detected ${authFlow.authPattern} pattern\n`;
+    authSection += `2. ✅ EXTRACT tokens/session data from login response and CHAIN to subsequent requests\n`;
+    authSection += `3. ✅ Use environment variables for credentials (TEST_USERNAME, TEST_PASSWORD)\n`;
+    authSection += `4. ✅ Include beforeAll/beforeEach setup for authentication state\n`;
+    authSection += `5. ✅ Generate auth-related error tests (401, 403)\n`;
+    
+    if (authFlow.loginEndpoint) {
+      authSection += `6. ✅ Create dedicated login endpoint tests with token extraction\n`;
+      authSection += `7. ✅ Pass extracted tokens to protected endpoint requests automatically\n`;
+    }
+    
+    if (authFlow.authPattern === 'cookie_based') {
+      authSection += `8. ✅ Use ${framework}-specific agent/session management for cookie persistence\n`;
+    }
+
+    // Add framework-specific auth setup
+    if (authFlow.loginEndpoint) {
+      const authFlowAnalyzer = AuthFlowAnalyzer.getInstance();
+      const authSetup = authFlowAnalyzer.generateAuthSetup(authFlow, framework);
+      if (authSetup) {
+        authSection += `\n📋 REQUIRED AUTH SETUP PATTERN:\n\`\`\`${framework === 'cypress' ? 'javascript' : 'typescript'}\n${authSetup}\n\`\`\`\n`;
+      }
+    }
+
+    return authSection;
   }
 
   private getFrameworkInstructions(framework: string): string {

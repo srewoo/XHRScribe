@@ -103,14 +103,18 @@ export type AIModel =
   | 'gpt-4-turbo'      // Latest GPT-4 Turbo
   | 'gpt-3.5-turbo'    // Fast and cheap
   // Anthropic Claude Models (Latest)
-  | 'claude-3-opus-20240229'     // Most capable Claude model
-  | 'claude-3-sonnet-20240229'   // Balanced performance
-  | 'claude-3-haiku-20240307'    // Fast and cheap
-  | 'claude-3-5-sonnet-20241022' // Latest Claude 3.5 Sonnet
+  | 'claude-4-sonnet'            // Latest Claude 4 model
+  | 'claude-3-7-sonnet'          // Claude 3.7 Sonnet  
+  | 'claude-3-5-sonnet-20241022' // Claude 3.5 Sonnet
+  | 'claude-3-opus-20240229'     // Legacy - Most capable Claude 3 model
+  | 'claude-3-sonnet-20240229'   // Legacy - Balanced performance
+  | 'claude-3-haiku-20240307'    // Legacy - Fast and cheap
   // Google Gemini Models (Latest)
-  | 'gemini-1.5-pro-latest'   // Most capable, 2M context
-  | 'gemini-1.5-flash'        // Fast, efficient
-  | 'gemini-1.5-flash-8b'     // Smaller, faster
+  | 'gemini-2-5-pro'          // Latest Gemini 2.5 Pro
+  | 'gemini-2-5-flash'        // Latest Gemini 2.5 Flash
+  | 'gemini-1.5-pro-latest'   // Legacy - 2M context
+  | 'gemini-1.5-flash'        // Legacy - Fast, efficient
+  | 'gemini-1.5-flash-8b'     // Legacy - Smaller, faster
   // Local Models
   | 'llama-3.2'        // Latest Llama
   | 'codellama-70b'    // Code-specific
@@ -147,6 +151,12 @@ export interface GeneratedTest {
   estimatedCost: number;
   warnings?: string[];
   suggestions?: string[];
+  metadata?: {
+    generationMode?: 'batch' | 'individual';
+    endpointsProcessed?: number;
+    authFlow?: any;
+    [key: string]: any;
+  };
 }
 
 export interface Settings {

@@ -2,6 +2,7 @@ import axios, { AxiosError } from 'axios';
 import { encode } from 'gpt-tokenizer';
 import { HARData, GenerationOptions, GeneratedTest } from '@/types';
 import { LLMProvider } from '../LLMService';
+import { AuthFlow } from '../../AuthFlowAnalyzer';
 
 interface GeminiErrorResponse {
   error?: {
@@ -23,18 +24,19 @@ export class GeminiProvider implements LLMProvider {
 
   async generateTests(
     harData: HARData,
-    options: GenerationOptions
+    options: GenerationOptions,
+    authFlow?: AuthFlow
   ): Promise<GeneratedTest> {
     if (!this.apiKey) {
       throw new Error('Gemini API key not configured');
     }
 
-    const prompt = this.buildPrompt(harData, options);
+    const prompt = this.buildExhaustivePrompt(harData, options, authFlow);
     const promptTokens = this.countTokens(prompt);
 
-    // Check token limits
+    // Check token limits - leave room for complete responses
     const modelLimit = this.getMaxTokens(options.model);
-    if (promptTokens > modelLimit * 0.8) {
+    if (promptTokens > modelLimit * 0.4) { // Leave 60% for response
       throw new Error(`Prompt too large for ${options.model}. Consider reducing the number of requests.`);
     }
 
@@ -59,7 +61,7 @@ export class GeminiProvider implements LLMProvider {
               temperature: 0.7,
               topK: 40,
               topP: 0.95,
-              maxOutputTokens: Math.min(8192, modelLimit - promptTokens),
+              maxOutputTokens: Math.min(65536, Math.floor((modelLimit - promptTokens) * 0.95)), // Use up to 95% of remaining tokens
             },
             safetySettings: [
               {
@@ -232,17 +234,78 @@ export class GeminiProvider implements LLMProvider {
 
   private getMaxTokens(model: string): number {
     const limits: Record<string, number> = {
-      'gemini-1.5-pro-latest': 2097152, // 2M context window
-      'gemini-1.5-flash': 1048576, // 1M context window
-      'gemini-1.5-flash-8b': 1048576, // 1M context window
-      'gemini-pro': 32768,
+      'gemini-2-5-pro': 2097152,        // Latest Gemini 2.5 Pro - 2M context
+      'gemini-2-5-flash': 1048576,      // Latest Gemini 2.5 Flash - 1M context
+      'gemini-1.5-pro-latest': 2097152, // Legacy - 2M context window
+      'gemini-1.5-flash': 1048576,      // Legacy - 1M context window
+      'gemini-1.5-flash-8b': 1048576,   // Legacy - 1M context window
+      'gemini-pro': 32768,              // Legacy
     };
     return limits[model] || 32768;
   }
 
+  private buildExhaustivePrompt(harData: HARData, options: GenerationOptions, authFlow?: AuthFlow): string {
+    const framework = options.framework;
+    const entries = harData.entries; // Process ALL entries
+
+    // Group by unique endpoints
+    const uniqueEndpoints = new Map<string, any>();
+    entries.forEach(entry => {
+      try {
+        const url = new URL(entry.request.url);
+        const signature = `${entry.request.method}:${url.pathname}`;
+        if (!uniqueEndpoints.has(signature)) {
+          uniqueEndpoints.set(signature, entry);
+        }
+      } catch {
+        const signature = `${entry.request.method}:${entry.request.url}`;
+        if (!uniqueEndpoints.has(signature)) {
+          uniqueEndpoints.set(signature, entry);
+        }
+      }
+    });
+
+    let prompt = `🚨 CRITICAL: Generate COMPLETE ${framework} test code for ALL ${uniqueEndpoints.size} API endpoints.
+
+⚠️  NO placeholder comments like "// Continue adding more tests..."
+⚠️  GENERATE COMPLETE TEST CODE FOR EVERY SINGLE ENDPOINT
+⚠️  Each endpoint needs 10-15 individual test cases
+
+${this.getFrameworkInstructions(framework)}
+
+🎯 ENDPOINTS TO FULLY TEST (${uniqueEndpoints.size} total):
+
+`;
+
+    Array.from(uniqueEndpoints.values()).forEach((entry, index) => {
+      const url = new URL(entry.request.url);
+      const method = entry.request.method;
+      const statusCode = entry.response.status;
+      
+      prompt += `
+${index + 1}. ${method} ${url.pathname} → ${statusCode}
+   URL: ${entry.request.url}
+   🚨 MUST GENERATE: Complete describe() block with 10-15 test() cases
+   - Happy path, errors (400,401,403,404,500), edge cases, security tests
+`;
+    });
+
+    prompt += `
+
+🚨 FINAL REQUIREMENTS:
+✅ Generate ${uniqueEndpoints.size} complete describe() blocks
+❌ No "// Continue..." placeholder comments
+✅ Production-ready, runnable ${framework} test code
+✅ Include setup/teardown hooks
+
+GENERATE COMPLETE TEST CODE NOW:`;
+
+    return prompt;
+  }
+
   private buildPrompt(harData: HARData, options: GenerationOptions): string {
     const framework = options.framework;
-    const entries = harData.entries.slice(0, 50); // Gemini can handle very large contexts
+    const entries = harData.entries; // Process ALL entries
 
     let prompt = `Generate comprehensive ${framework} test code for the following API requests.\n\n`;
     

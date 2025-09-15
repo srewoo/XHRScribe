@@ -1,4 +1,5 @@
 import { HARData, GenerationOptions, GeneratedTest, AIProvider, AIModel } from '@/types';
+import { AuthFlow } from '../AuthFlowAnalyzer';
 import { OpenAIProvider } from './providers/OpenAIProvider';
 import { AnthropicProvider } from './providers/AnthropicProvider';
 import { GeminiProvider } from './providers/GeminiProvider';
@@ -7,7 +8,8 @@ import { LocalProvider } from './providers/LocalProvider';
 export interface LLMProvider {
   generateTests(
     harData: HARData,
-    options: GenerationOptions
+    options: GenerationOptions,
+    authFlow?: AuthFlow
   ): Promise<GeneratedTest>;
   estimateCost(tokenCount: number, model?: string): number;
   countTokens(text: string): number;

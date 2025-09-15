@@ -122,7 +122,10 @@ export class BackgroundService {
             throw new Error('Session not found');
           }
           
-          const generatedTest = await this.aiService.generateTests(targetSession, options);
+          // Convert excluded endpoints array back to Set
+          const excludedEndpoints = options.excludedEndpoints ? new Set<string>(options.excludedEndpoints) : undefined;
+          
+          const generatedTest = await this.aiService.generateTests(targetSession, options, excludedEndpoints);
           sendResponse({ success: true, test: generatedTest });
           break;
 

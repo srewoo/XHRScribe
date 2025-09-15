@@ -88,7 +88,7 @@ export class StreamingService {
           model,
           messages,
           temperature: 0.7,
-          max_tokens: 4000,
+          max_tokens: 16000, // Allow much larger responses
           stream: true,
         }),
       });
@@ -127,7 +127,7 @@ export class StreamingService {
           model,
           messages: messages.filter(m => m.role !== 'system'), // Claude doesn't use system role
           system: messages.find(m => m.role === 'system')?.content,
-          max_tokens: 4000,
+          max_tokens: 32000, // Allow much larger responses for Claude
           stream: true,
         }),
       });
