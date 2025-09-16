@@ -17,7 +17,9 @@ export class BackgroundService {
   private storageService: StorageService = StorageService.getInstance();
   private aiService: AIService = AIService.getInstance();
   private exportService: ExportService = ExportService.getInstance();
-  // private requestIdCounter = 0;
+  private memoryCleanupIntervals: Map<string, number> = new Map();
+  private readonly MAX_REQUESTS_PER_SESSION = 500; // Limit requests to prevent memory issues
+  private readonly MAX_REQUEST_AGE_MS = 5 * 60 * 1000; // 5 minutes
 
   private constructor() {}
 
@@ -35,6 +37,7 @@ export class BackgroundService {
       apiKeys: {},
       testFramework: 'jest',
       privacyMode: 'cloud',
+      authGuide: undefined, // Custom auth instructions (optional)
       dataMasking: {
         enabled: true,
         maskPII: true,
@@ -135,6 +138,16 @@ export class BackgroundService {
           sendResponse({ success: true, content: exportContent });
           break;
 
+        case 'IMPORT_SESSION':
+          await this.storageService.saveSession(message.payload);
+          sendResponse({ success: true });
+          break;
+
+        case 'RESET_SETTINGS':
+          await this.storageService.resetSettings();
+          sendResponse({ success: true });
+          break;
+
         default:
           sendResponse({ success: false, error: 'Unknown message type' });
       }
@@ -176,6 +189,9 @@ export class BackgroundService {
       status: 'recording'
     };
 
+    // Set up memory cleanup interval (every 30 seconds)
+    this.startMemoryCleanup(session);
+
     this.recordingSessions.set(tabId, session);
     this.harProcessor.startSession(session.id);
 
@@ -202,6 +218,7 @@ export class BackgroundService {
     await this.storageService.saveSession(session);
 
     // Clean up
+    this.stopMemoryCleanup(session.id);
     this.recordingSessions.delete(tabId);
     this.harProcessor.endSession(session.id);
 
@@ -263,6 +280,12 @@ export class BackgroundService {
     // Check if it's an API request
     if (!this.isApiRequest(request.url, type)) return;
 
+    // Check for duplicate request within the last 5 seconds
+    if (this.isDuplicateRequest(session, request)) {
+      console.log(`Skipping duplicate request: ${request.method} ${request.url}`);
+      return;
+    }
+
     const networkRequest: NetworkRequest = {
       id: requestId,
       url: request.url,
@@ -278,6 +301,67 @@ export class BackgroundService {
 
     // Process in HAR processor
     this.harProcessor.addRequest(session.id, networkRequest);
+  }
+
+  /**
+   * Check if this is a duplicate request based on method, URL, and body
+   * within a time window (5 seconds by default)
+   */
+  private isDuplicateRequest(session: RecordingSession, request: any, timeWindowMs: number = 5000): boolean {
+    const now = Date.now();
+    const requestSignature = this.getRequestSignature(request);
+
+    // Check recent requests for duplicates
+    const recentRequests = session.requests.filter(r =>
+      (now - r.timestamp) <= timeWindowMs
+    );
+
+    for (const existingRequest of recentRequests) {
+      const existingSignature = this.getRequestSignature({
+        method: existingRequest.method,
+        url: existingRequest.url,
+        postData: existingRequest.requestBody
+      });
+
+      if (requestSignature === existingSignature) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  /**
+   * Create a signature for a request to identify duplicates
+   */
+  private getRequestSignature(request: any): string {
+    const method = request.method || '';
+    const url = request.url || '';
+
+    // Parse URL to ignore query params that might change (like timestamps)
+    let urlPath = url;
+    try {
+      const urlObj = new URL(url);
+      // Keep pathname and important params, ignore cache-busting params
+      urlPath = urlObj.pathname;
+      const importantParams = ['id', 'action', 'type', 'filter', 'page', 'limit'];
+      const relevantParams = Array.from(urlObj.searchParams.entries())
+        .filter(([key]) => importantParams.includes(key))
+        .sort()
+        .map(([k, v]) => `${k}=${v}`)
+        .join('&');
+      if (relevantParams) {
+        urlPath += '?' + relevantParams;
+      }
+    } catch (e) {
+      // If URL parsing fails, use the original URL
+    }
+
+    // Include body in signature for POST/PUT requests
+    const body = request.postData || '';
+
+    // Create signature
+    return `${method}:${urlPath}:${body}`;
   }
 
   private handleResponseReceived(session: RecordingSession, params: any): void {
@@ -465,5 +549,47 @@ export class BackgroundService {
       recording: !!session,
       session
     };
+  }
+
+  private startMemoryCleanup(session: RecordingSession): void {
+    const intervalId = setInterval(() => {
+      this.cleanupOldRequests(session);
+    }, 30000); // Run every 30 seconds
+
+    this.memoryCleanupIntervals.set(session.id, intervalId);
+  }
+
+  private stopMemoryCleanup(sessionId: string): void {
+    const intervalId = this.memoryCleanupIntervals.get(sessionId);
+    if (intervalId) {
+      clearInterval(intervalId);
+      this.memoryCleanupIntervals.delete(sessionId);
+    }
+  }
+
+  private cleanupOldRequests(session: RecordingSession): void {
+    const now = Date.now();
+    const maxAge = this.MAX_REQUEST_AGE_MS;
+    const maxRequests = this.MAX_REQUESTS_PER_SESSION;
+
+    // Remove old requests beyond the time window
+    const recentRequests = session.requests.filter(request =>
+      (now - request.timestamp) < maxAge
+    );
+
+    // If still too many requests, keep only the most recent
+    if (recentRequests.length > maxRequests) {
+      // Sort by timestamp descending and keep only the max allowed
+      recentRequests.sort((a, b) => b.timestamp - a.timestamp);
+      session.requests = recentRequests.slice(0, maxRequests);
+    } else {
+      session.requests = recentRequests;
+    }
+
+    // Log cleanup stats for debugging
+    const removedCount = session.requests.length - recentRequests.length;
+    if (removedCount > 0) {
+      console.log(`Memory cleanup: Removed ${removedCount} old requests from session ${session.id}`);
+    }
   }
 }

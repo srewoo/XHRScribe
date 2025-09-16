@@ -75,3 +75,6 @@ test-results/
 *.pem
 key.pem
 CLAUDE.md
+.qodo
+.claude
+.backup

@@ -17,12 +17,30 @@ export interface NetworkRequest {
 export interface RecordingSession {
   id: string;
   name: string;
-  startTime: number;
+  startTime?: number;
   endTime?: number;
   requests: NetworkRequest[];
-  tabId: number;
-  url: string;
-  status: 'recording' | 'stopped' | 'processing';
+  tabId?: number;
+  url?: string;
+  status?: 'recording' | 'stopped' | 'processing';
+  metadata?: {
+    source?: string;
+    originalFile?: string;
+    importedAt?: number;
+    sessionId?: string;
+    createdAt?: number;
+    type?: string;
+    collectionName?: string;
+    apiTitle?: string;
+    apiVersion?: string;
+    [key: string]: any;
+  };
+  stats?: {
+    totalRequests: number;
+    uniqueEndpoints: number;
+    methods: string[];
+    domains: string[];
+  };
 }
 
 export interface HAREntry {
@@ -169,6 +187,7 @@ export interface Settings {
   };
   testFramework: TestFramework;
   privacyMode: 'local' | 'cloud' | 'hybrid';
+  authGuide?: string; // Custom authentication instructions for LLM
   dataMasking: {
     enabled: boolean;
     maskPII: boolean;
@@ -209,7 +228,7 @@ export interface Message {
 }
 
 export interface BackgroundMessage extends Message {
-  type: 
+  type:
     | 'START_RECORDING'
     | 'STOP_RECORDING'
     | 'GET_SESSIONS'
@@ -220,7 +239,9 @@ export interface BackgroundMessage extends Message {
     | 'GET_SETTINGS'
     | 'EXPORT_TESTS'
     | 'GET_STATUS'
-    | 'SAVE_SESSION';
+    | 'SAVE_SESSION'
+    | 'IMPORT_SESSION'
+    | 'RESET_SETTINGS';
 }
 
 export interface ContentMessage extends Message {

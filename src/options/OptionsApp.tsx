@@ -279,20 +279,22 @@ export default function OptionsApp() {
             <FormControl fullWidth sx={{ mb: 3 }}>
               <InputLabel>AI Model</InputLabel>
               <Select
-                key={`model-select-${settings.aiProvider}`} // Force re-render when provider changes
-                value={settings.aiModel || getDefaultModelForProvider(settings.aiProvider)}
+                value={settings.aiModel}
                 onChange={(e) => {
                   const newModel = e.target.value as AIModel;
                   console.log('Model selection changed:', newModel);
+                  console.log('Previous model:', settings.aiModel);
+                  console.log('Settings before update:', settings);
                   setSettings({ ...settings, aiModel: newModel });
                 }}
                 label="AI Model"
-                displayEmpty
               >
                 {settings.aiProvider === 'openai' && (
                   <>
                     <MenuItem value="gpt-4o">GPT-4o (Most Capable, Multimodal)</MenuItem>
                     <MenuItem value="gpt-4o-mini">GPT-4o Mini (Fast & Cheap)</MenuItem>
+                    <MenuItem value="gpt-4-turbo">GPT-4 Turbo (Latest GPT-4)</MenuItem>
+                    <MenuItem value="gpt-3.5-turbo">GPT-3.5 Turbo (Fast & Cheap)</MenuItem>
                   </>
                 )}
                 {settings.aiProvider === 'anthropic' && (
@@ -300,12 +302,18 @@ export default function OptionsApp() {
                     <MenuItem value="claude-4-sonnet">Claude 4 Sonnet (Latest & Most Capable)</MenuItem>
                     <MenuItem value="claude-3-7-sonnet">Claude 3.7 Sonnet (Advanced)</MenuItem>
                     <MenuItem value="claude-3-5-sonnet-20241022">Claude 3.5 Sonnet (Proven)</MenuItem>
+                    <MenuItem value="claude-3-opus-20240229">Claude 3 Opus (Legacy - Most Capable)</MenuItem>
+                    <MenuItem value="claude-3-sonnet-20240229">Claude 3 Sonnet (Legacy - Balanced)</MenuItem>
+                    <MenuItem value="claude-3-haiku-20240307">Claude 3 Haiku (Legacy - Fast)</MenuItem>
                   </>
                 )}
                 {settings.aiProvider === 'gemini' && (
                   <>
                     <MenuItem value="gemini-2-5-pro">Gemini 2.5 Pro (Latest & Most Capable)</MenuItem>
                     <MenuItem value="gemini-2-5-flash">Gemini 2.5 Flash (Latest & Fast)</MenuItem>
+                    <MenuItem value="gemini-1.5-pro-latest">Gemini 1.5 Pro (Legacy - 2M Context)</MenuItem>
+                    <MenuItem value="gemini-1.5-flash">Gemini 1.5 Flash (Legacy - Fast)</MenuItem>
+                    <MenuItem value="gemini-1.5-flash-8b">Gemini 1.5 Flash 8B (Legacy - Smaller)</MenuItem>
                   </>
                 )}
                 {settings.aiProvider === 'local' && (
@@ -341,6 +349,30 @@ export default function OptionsApp() {
                 <MenuItem value="supertest">Supertest</MenuItem>
                 <MenuItem value="postman">Postman</MenuItem>
               </Select>
+            </FormControl>
+
+            <FormControl fullWidth sx={{ mb: 3 }}>
+              <TextField
+                label="Custom Authentication Guide (Optional)"
+                multiline
+                rows={6}
+                value={settings.authGuide || ''}
+                onChange={(e) => setSettings({ ...settings, authGuide: e.target.value })}
+                placeholder="Provide specific instructions for authentication in your application. For example:
+
+1. First call POST /api/login with username/password
+2. Extract 'accessToken' from response.data.token
+3. Use Bearer token in Authorization header for all subsequent requests
+4. Token expires after 1 hour, refresh using /api/refresh endpoint
+5. Use environment variables: TEST_USERNAME, TEST_PASSWORD"
+                helperText="Optional: Provide custom authentication flow instructions to help the LLM generate more accurate test scripts for your specific API authentication requirements."
+                sx={{ 
+                  '& .MuiInputBase-root': {
+                    fontFamily: 'Monaco, Consolas, "Courier New", monospace',
+                    fontSize: '12px'
+                  }
+                }}
+              />
             </FormControl>
 
             <Divider sx={{ my: 3 }} />
@@ -422,11 +454,11 @@ export default function OptionsApp() {
                 Current Provider: {settings.aiProvider}<br/>
                 Current Model: {settings.aiModel}<br/>
                 Default Model for Provider: {getDefaultModelForProvider(settings.aiProvider)}<br/>
-                Model Value in Select: {settings.aiModel || getDefaultModelForProvider(settings.aiProvider)}<br/>
+                Model Value in Select: {settings.aiModel}<br/>
                 Available Models for Provider: {
                   settings.aiProvider === 'openai' ? 'gpt-4o, gpt-4o-mini, gpt-4-turbo, gpt-3.5-turbo' :
-                  settings.aiProvider === 'anthropic' ? 'claude-4-sonnet, claude-3-7-sonnet, claude-3-5-sonnet-20241022' :
-                  settings.aiProvider === 'gemini' ? 'gemini-2-5-pro, gemini-2-5-flash' :
+                  settings.aiProvider === 'anthropic' ? 'claude-4-sonnet, claude-3-7-sonnet, claude-3-5-sonnet-20241022, claude-3-opus-20240229, claude-3-sonnet-20240229, claude-3-haiku-20240307' :
+                  settings.aiProvider === 'gemini' ? 'gemini-2-5-pro, gemini-2-5-flash, gemini-1.5-pro-latest, gemini-1.5-flash, gemini-1.5-flash-8b' :
                   settings.aiProvider === 'local' ? 'llama-3.2, codellama-70b, mixtral-8x7b, deepseek-coder (All Coming Soon)' :
                   'Unknown provider'
                 }
@@ -661,8 +693,8 @@ export default function OptionsApp() {
             </Typography>
             
             <Alert severity="warning" sx={{ mb: 2 }}>
-              If you're experiencing "Malformed UTF-8 data" errors or settings won't save, 
-              click the button below to clear corrupted encrypted data.
+              If you're experiencing "Unable to decrypt data with any method" errors, settings won't save,
+              or the extension appears to malfunction, click the button below to fix corrupted data.
             </Alert>
             
             <Button
@@ -728,7 +760,7 @@ export default function OptionsApp() {
           <Button
             variant="outlined"
             size="small"
-            onClick={() => window.open('https://raw.githubusercontent.com/srewoo/XHRScribe/main/help.html', '_blank')}
+            onClick={() => window.open(chrome.runtime.getURL('help.html'), '_blank')}
           >
             Help & User Guide
           </Button>

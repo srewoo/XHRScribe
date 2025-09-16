@@ -8,7 +8,8 @@ export class LocalProvider implements LLMProvider {
   async generateTests(
     harData: HARData,
     options: GenerationOptions,
-    authFlow?: AuthFlow
+    authFlow?: AuthFlow,
+    customAuthGuide?: string
   ): Promise<GeneratedTest> {
     try {
       // For local models, we generate a basic template

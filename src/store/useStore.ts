@@ -23,6 +23,7 @@ interface AppStore {
   loadSettings: () => Promise<void>;
   updateSettings: (settings: Settings) => Promise<void>;
   exportTests: (testId: string, format: string) => Promise<void>;
+  importSession: (sessionData: any) => Promise<string>;
   clearError: () => void;
   setLoading: (loading: boolean) => void;
 }
@@ -321,6 +322,79 @@ export const useStore = create<AppStore>((set, get) => ({
         loading: false,
         error: error instanceof Error ? error.message : 'Failed to export tests',
       });
+    }
+  },
+
+  // Import session from external files
+  importSession: async (sessionData: any): Promise<string> => {
+    set({ loading: true, error: undefined });
+    try {
+      // Create a unique session ID
+      const sessionId = `imported_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+      // Create the session object
+      const newSession: RecordingSession = {
+        id: sessionId,
+        name: sessionData.name || `Imported Session - ${new Date().toLocaleString()}`,
+        requests: sessionData.requests.map((req: any, index: number) => ({
+          id: req.id || `imported_${index}`,
+          method: req.method,
+          url: req.url,
+          status: req.status || 200,
+          requestHeaders: req.requestHeaders || [],
+          responseHeaders: req.responseHeaders || [],
+          requestBody: req.requestBody,
+          responseBody: req.responseBody,
+          timestamp: req.timestamp || Date.now(),
+          duration: req.duration || 0,
+          folder: req.folder,
+          operationId: req.operationId,
+          summary: req.summary,
+        })),
+        metadata: {
+          ...sessionData.metadata,
+          sessionId,
+          createdAt: Date.now(),
+          type: 'imported',
+        },
+        stats: {
+          totalRequests: sessionData.requests.length,
+          uniqueEndpoints: new Set(sessionData.requests.map((r: any) => `${r.method} ${r.url}`)).size,
+          methods: [...new Set(sessionData.requests.map((r: any) => r.method))] as string[],
+          domains: [...new Set(sessionData.requests.map((r: any) => {
+            try {
+              return new URL(r.url).hostname;
+            } catch {
+              return 'unknown';
+            }
+          }))] as string[],
+        },
+      };
+
+      // Store the session via background script
+      const response = await chrome.runtime.sendMessage({
+        type: 'IMPORT_SESSION',
+        payload: newSession,
+      });
+
+      if (response && response.success) {
+        // Update local state
+        set(state => ({
+          sessions: [...state.sessions, newSession],
+          selectedSession: newSession,
+          loading: false,
+        }));
+
+        return sessionId;
+      } else {
+        throw new Error(response?.error || 'Failed to import session');
+      }
+    } catch (error) {
+      set({
+        loading: false,
+        error: error instanceof Error ? error.message : 'Failed to import session',
+      });
+      throw error;
     }
   },
 

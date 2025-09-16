@@ -89,6 +89,10 @@ module.exports = (env, argv) => {
             from: 'privacy-policy.html',
             to: 'privacy-policy.html',
           },
+          {
+            from: 'help.html',
+            to: 'help.html',
+          },
         ],
       }),
     ],

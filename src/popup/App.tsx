@@ -35,6 +35,7 @@ import RecordingPanel from './components/RecordingPanel';
 import SessionList from './components/SessionList';
 import RequestList from './components/RequestList';
 import GeneratePanel from './components/GeneratePanel';
+import ImportPanel from './components/ImportPanel';
 import { useStore } from '@/store/useStore';
 
 interface TabPanelProps {
@@ -162,7 +163,7 @@ export default function App() {
   };
 
   const handleOpenHelp = () => {
-    window.open('https://raw.githubusercontent.com/srewoo/XHRScribe/main/help.html', '_blank');
+    window.open(chrome.runtime.getURL('help.html'), '_blank');
     handleHelpMenuClose();
   };
 
@@ -225,6 +226,7 @@ export default function App() {
           <Tabs value={tabValue} onChange={handleTabChange}>
             <Tab label="Current" disabled={!recording && !currentSession} />
             <Tab label={`Sessions (${sessions.length})`} />
+            <Tab label="Import" />
             <Tab label="Generate" disabled={sessions.length === 0} />
           </Tabs>
         </Box>
@@ -247,6 +249,10 @@ export default function App() {
         </TabPanel>
 
         <TabPanel value={tabValue} index={2}>
+          <ImportPanel />
+        </TabPanel>
+
+        <TabPanel value={tabValue} index={3}>
           <GeneratePanel sessions={sessions} />
         </TabPanel>
       </Box>

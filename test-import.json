@@ -1,0 +1,117 @@
+{
+  "log": {
+    "version": "1.2",
+    "creator": {
+      "name": "XHRScribe Test",
+      "version": "1.0.0"
+    },
+    "entries": [
+      {
+        "_resourceType": "xhr",
+        "startedDateTime": "2024-01-15T10:30:00.000Z",
+        "time": 150,
+        "request": {
+          "method": "GET",
+          "url": "https://jsonplaceholder.typicode.com/posts/1",
+          "httpVersion": "HTTP/1.1",
+          "headers": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ],
+          "queryString": [],
+          "cookies": [],
+          "headersSize": -1,
+          "bodySize": 0
+        },
+        "response": {
+          "status": 200,
+          "statusText": "OK",
+          "httpVersion": "HTTP/1.1",
+          "headers": [
+            {
+              "name": "Content-Type",
+              "value": "application/json; charset=utf-8"
+            }
+          ],
+          "cookies": [],
+          "content": {
+            "size": 292,
+            "mimeType": "application/json",
+            "text": "{\"userId\":1,\"id\":1,\"title\":\"sunt aut facere repellat provident occaecati excepturi optio reprehenderit\",\"body\":\"quia et suscipit\\nsuscipit recusandae consequuntur expedita et cum\\nreprehenderit molestiae ut ut quas totam\\nnostrum rerum est autem sunt rem eveniet architecto\"}"
+          },
+          "redirectURL": "",
+          "headersSize": -1,
+          "bodySize": 292,
+          "_transferSize": 565
+        },
+        "cache": {},
+        "timings": {
+          "blocked": -1,
+          "dns": -1,
+          "connect": -1,
+          "send": 0,
+          "wait": 150,
+          "receive": 0,
+          "ssl": -1
+        }
+      },
+      {
+        "_resourceType": "xhr",
+        "startedDateTime": "2024-01-15T10:31:00.000Z",
+        "time": 200,
+        "request": {
+          "method": "POST",
+          "url": "https://jsonplaceholder.typicode.com/posts",
+          "httpVersion": "HTTP/1.1",
+          "headers": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "queryString": [],
+          "cookies": [],
+          "headersSize": -1,
+          "bodySize": 150,
+          "postData": {
+            "mimeType": "application/json",
+            "text": "{\"title\":\"Test Post\",\"body\":\"This is a test post content\",\"userId\":1}"
+          }
+        },
+        "response": {
+          "status": 201,
+          "statusText": "Created",
+          "httpVersion": "HTTP/1.1",
+          "headers": [
+            {
+              "name": "Content-Type",
+              "value": "application/json; charset=utf-8"
+            }
+          ],
+          "cookies": [],
+          "content": {
+            "size": 65,
+            "mimeType": "application/json",
+            "text": "{\"title\":\"Test Post\",\"body\":\"This is a test post content\",\"userId\":1,\"id\":101}"
+          },
+          "redirectURL": "",
+          "headersSize": -1,
+          "bodySize": 65,
+          "_transferSize": 338
+        },
+        "cache": {},
+        "timings": {
+          "blocked": -1,
+          "dns": -1,
+          "connect": -1,
+          "send": 0,
+          "wait": 200,
+          "receive": 0,
+          "ssl": -1
+        }
+      }
+    ]
+  }
+}

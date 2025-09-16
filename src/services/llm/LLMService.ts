@@ -9,7 +9,8 @@ export interface LLMProvider {
   generateTests(
     harData: HARData,
     options: GenerationOptions,
-    authFlow?: AuthFlow
+    authFlow?: AuthFlow,
+    customAuthGuide?: string
   ): Promise<GeneratedTest>;
   estimateCost(tokenCount: number, model?: string): number;
   countTokens(text: string): number;
