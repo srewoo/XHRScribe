@@ -3,7 +3,6 @@ import { encode } from 'gpt-tokenizer';
 import { HARData, GenerationOptions, GeneratedTest } from '@/types';
 import { LLMProvider } from '../LLMService';
 import { AuthFlow, AuthFlowAnalyzer } from '../../AuthFlowAnalyzer';
-import { PromptBuilder } from '../PromptBuilder';
 
 interface OpenAIErrorResponse {
   error?: {
@@ -18,7 +17,6 @@ export class OpenAIProvider implements LLMProvider {
   private baseUrl = 'https://api.openai.com/v1';
   private maxRetries = 3;
   private retryDelay = 1000;
-  private promptBuilder: PromptBuilder = PromptBuilder.getInstance();
 
   setApiKey(key: string): void {
     this.apiKey = key;
@@ -34,10 +32,7 @@ export class OpenAIProvider implements LLMProvider {
       throw new Error('OpenAI API key not configured');
     }
 
-    // Use standardized prompt for consistency if requested
-    const prompt = (options as any).useStandardizedPrompt
-      ? this.promptBuilder.buildStandardizedPrompt(harData, options, authFlow, customAuthGuide)
-      : this.buildExhaustivePrompt(harData, options, authFlow, customAuthGuide);
+    const prompt = this.buildExhaustivePrompt(harData, options, authFlow, customAuthGuide);
     const promptTokens = this.countTokens(prompt);
     const systemPromptTokens = this.countTokens(this.getSystemPrompt());
     const totalInputTokens = promptTokens + systemPromptTokens;
@@ -240,6 +235,58 @@ YOU MUST GENERATE COMPLETE, FULLY-IMPLEMENTED ${framework} TEST CODE FOR ALL ${u
 Framework: ${framework}
 ${this.getFrameworkInstructions(framework)}
 
+🔥 CRITICAL CODE QUALITY REQUIREMENTS - ZERO TOLERANCE FOR BUGS:
+
+⚠️ IMPORTS & SETUP:
+✅ ALWAYS include proper imports at the top (e.g., const { test, expect } = require('@playwright/test');)
+✅ Define ALL constants: BASE_URL, AUTH_URL, TEST_USERNAME, TEST_PASSWORD
+✅ Use environment variables: process.env.BASE_URL || 'default_value'
+
+⚠️ SYNTAX & STRUCTURE:
+✅ Use ONLY ${framework === 'playwright' ? 'test()' : 'test() or it()'} functions (NO mixing)
+✅ Use proper JavaScript syntax (NO TypeScript type annotations like ': string')
+✅ Ensure proper bracket matching and indentation
+✅ Use consistent request patterns: ${framework === 'playwright' ? 'async ({ request }) =>' : 'appropriate pattern'}
+✅ ONE main describe() block wrapping all endpoints
+
+⚠️ VARIABLE CONSISTENCY:
+✅ Use consistent variable names throughout
+✅ Declare authToken properly: let authToken; (NOT let authToken: string;)
+✅ Use responseBody consistently for all response parsing
+✅ Use standard error property checking (error, not errorCode)
+
+⚠️ REQUEST PATTERNS:
+✅ ${framework === 'playwright' ? 'Always use ({ request }) parameter in test functions' : 'Use consistent request patterns'}
+✅ Consistent header handling for authentication
+✅ Proper async/await usage throughout
+✅ Safe response parsing with content-type checking
+
+⚠️ TEST ORGANIZATION:
+✅ Clear, unique endpoint descriptions (e.g., "POST /login", "GET /users")
+✅ Logical test numbering and grouping
+✅ No duplicate describe blocks for same endpoint
+✅ Proper test interdependency handling
+✅ ONE main describe() wrapper, with individual describe() blocks for each endpoint
+✅ ALL test functions at the same nesting level within their endpoint describe()
+✅ NO describe blocks nested inside other describe blocks
+
+⚠️ STRUCTURAL REQUIREMENTS:
+✅ ALWAYS start with imports: const { test, expect } = require('@playwright/test');
+✅ Declare variables: const BASE_URL, const TEST_USERNAME, const TEST_PASSWORD, let authToken;
+✅ ONE main describe('API Test Suite - Complete Coverage', () => { block
+✅ Authentication setup with test.beforeAll() at the top level
+✅ Each endpoint gets its own describe() block: describe('GET /endpoint', () => {
+✅ All test() functions inside endpoint describe() blocks
+✅ PROPER closing: each describe() ends with });
+✅ Final closing for main describe: });
+
+🚫 NEVER DO THIS:
+❌ describe('API', () => { describe('API', () => { // Nested duplicates
+❌ Missing imports or variable declarations
+❌ Mixing it() and test() functions
+❌ Unclosed describe blocks
+❌ Missing authToken setup
+
 MANDATORY TEST CATEGORIES TO INCLUDE:
 
 1. ✅ POSITIVE/HAPPY PATH TESTS (20% of tests):
@@ -409,9 +456,10 @@ describe('API Test Suite', () => {
   }
 
   private generateAuthenticationSection(authFlow: AuthFlow, framework: string, customAuthGuide?: string): string {
-    let authSection = `\n\n🔐 AUTHENTICATION FLOW DETECTED:\n`;
+    let authSection = `\n\n🔐 ENHANCED AUTHENTICATION FLOW DETECTED:\n`;
     
     authSection += `Authentication Pattern: ${authFlow.authPattern}\n`;
+    authSection += `Session Management: ${authFlow.sessionManagement}\n`;
     
     if (authFlow.loginEndpoint) {
       authSection += `Login Endpoint: ${authFlow.loginEndpoint.method} ${authFlow.loginEndpoint.url}\n`;
@@ -425,38 +473,71 @@ describe('API Test Suite', () => {
       authSection += `Session Cookies: ${authFlow.sessionCookies.join(', ')}\n`;
     }
     
+    // ENHANCED: OAuth 2.0 details
+    if (authFlow.oauthFlow) {
+      authSection += `OAuth Grant Type: ${authFlow.oauthFlow.grantType}\n`;
+      authSection += `OAuth Scopes: ${authFlow.oauthFlow.scopes.join(', ')}\n`;
+      authSection += `PKCE Enabled: ${authFlow.oauthFlow.pkceEnabled}\n`;
+    }
+    
+    // ENHANCED: JWT details
+    if (authFlow.jwtClaims) {
+      authSection += `JWT Claims Detected: ${Object.keys(authFlow.jwtClaims).join(', ')}\n`;
+    }
+    
+    // ENHANCED: Refresh token details
+    if (authFlow.refreshToken) {
+      authSection += `Refresh Token Endpoint: ${authFlow.refreshToken.endpoint}\n`;
+      authSection += `Refresh Mechanism: ${authFlow.refreshToken.mechanism}\n`;
+    }
+    
+    // ENHANCED: Additional security features
+    if (authFlow.mfaRequired) {
+      authSection += `MFA Required: YES\n`;
+    }
+    
+    if (authFlow.csrfProtection) {
+      authSection += `CSRF Protection: ${authFlow.csrfProtection.headerName}\n`;
+    }
+    
     authSection += `Protected Endpoints: ${authFlow.protectedEndpoints.length}\n`;
 
     authSection += `\n🚨 CRITICAL AUTHENTICATION REQUIREMENTS:\n`;
-    authSection += `1. ✅ GENERATE PROPER AUTHENTICATION SETUP using the detected ${authFlow.authPattern} pattern\n`;
+    authSection += `1. ✅ GENERATE COMPLETE AUTHENTICATION SETUP using the detected ${authFlow.authPattern} pattern\n`;
     authSection += `2. ✅ EXTRACT tokens/session data from login response and CHAIN to subsequent requests\n`;
-    authSection += `3. ✅ Use environment variables for credentials (TEST_USERNAME, TEST_PASSWORD)\n`;
-    authSection += `4. ✅ Include beforeAll/beforeEach setup for authentication state\n`;
-    authSection += `5. ✅ Generate auth-related error tests (401, 403)\n`;
+    authSection += `3. ✅ Use environment variables for credentials (TEST_USERNAME, TEST_PASSWORD, API_KEY)\n`;
+    authSection += `4. ✅ Include comprehensive beforeAll/beforeEach setup for authentication state\n`;
+    authSection += `5. ✅ Generate auth-related error tests (401, 403) with proper error handling\n`;
+    authSection += `6. ✅ Implement token refresh logic if refresh tokens are detected\n`;
+    authSection += `7. ✅ Add CSRF token handling if CSRF protection is detected\n`;
+    authSection += `8. ✅ Include proper cleanup/logout in afterAll hooks\n`;
     
-    if (authFlow.loginEndpoint) {
-      authSection += `6. ✅ Create dedicated login endpoint tests with token extraction\n`;
-      authSection += `7. ✅ Pass extracted tokens to protected endpoint requests automatically\n`;
+    if (authFlow.oauthFlow) {
+      authSection += `9. ✅ Implement OAuth 2.0 ${authFlow.oauthFlow.grantType} flow\n`;
+      if (authFlow.oauthFlow.pkceEnabled) {
+        authSection += `10. ✅ Include PKCE code challenge/verifier generation\n`;
+      }
     }
     
-    if (authFlow.authPattern === 'cookie_based') {
-      authSection += `8. ✅ Use ${framework}-specific agent/session management for cookie persistence\n`;
+    if (authFlow.mfaRequired) {
+      authSection += `11. ✅ Handle MFA verification flow in tests\n`;
     }
 
-    // Add custom authentication guide if provided by user
+    // Add custom authentication guide if provided by user (HIGHEST PRIORITY)
     if (customAuthGuide && customAuthGuide.trim()) {
-      authSection += `\n🎯 CUSTOM AUTHENTICATION GUIDE (USER PROVIDED):\n`;
+      authSection += `\n\n🎯 CUSTOM AUTHENTICATION GUIDE (USER PROVIDED - HIGHEST PRIORITY):\n`;
       authSection += `${customAuthGuide.trim()}\n`;
-      authSection += `\n🚨 CRITICAL: Follow the custom authentication guide above EXACTLY. This takes precedence over auto-detected patterns.\n`;
+      authSection += `\n🚨 CRITICAL: Follow the custom authentication guide above EXACTLY. This takes precedence over ALL auto-detected patterns.\n`;
       authSection += `The user has provided specific instructions for their authentication flow - implement it precisely!\n`;
     }
 
-    // Add framework-specific auth setup
-    if (authFlow.loginEndpoint) {
+    // Add comprehensive framework-specific auth setup
+    if (authFlow.loginEndpoint || authFlow.authTokens.length > 0) {
       const authFlowAnalyzer = AuthFlowAnalyzer.getInstance();
       const authSetup = authFlowAnalyzer.generateAuthSetup(authFlow, framework);
       if (authSetup) {
-        authSection += `\n📋 REQUIRED AUTH SETUP PATTERN:\n\`\`\`${framework === 'cypress' ? 'javascript' : 'typescript'}\n${authSetup}\n\`\`\`\n`;
+        authSection += `\n📋 COMPREHENSIVE AUTH SETUP TEMPLATE:\n\`\`\`${framework === 'cypress' ? 'javascript' : 'typescript'}\n${authSetup}\n\`\`\`\n`;
+        authSection += `\n🔥 MANDATORY: Use this template as the foundation and extend it with detected authentication patterns!\n`;
       }
     }
 
@@ -653,153 +734,4 @@ describe('API Test Suite', () => {
 
     return suggestions;
   }
-
-  private buildStandardizedPromptWrapper(harData: HARData, options: GenerationOptions, authFlow?: AuthFlow, customAuthGuide?: string): string {
-    // Inline implementation of standardized prompt to avoid circular dependency
-    const framework = options.framework;
-    const uniqueEndpoints = this.groupUniqueEndpoints(harData.entries);
-
-    // Build validation section
-    const playwrightIndicator = framework === 'playwright' ? ' ← YOUR SELECTED FRAMEWORK' : '';
-    const jestMochaIndicator = ['jest', 'mocha-chai', 'vitest'].includes(framework) ? ' ← YOUR SELECTED FRAMEWORK' : '';
-    const cypressIndicator = framework === 'cypress' ? ' ← YOUR SELECTED FRAMEWORK' : '';
-
-    const validationSection = `⚠️ FRAMEWORK API VALIDATION - DO NOT MIX:
-
-FOR PLAYWRIGHT${playwrightIndicator}:
-❌ WRONG: describe() ➡️ ✅ CORRECT: test.describe()
-❌ WRONG: it() ➡️ ✅ CORRECT: test()
-❌ WRONG: beforeAll() ➡️ ✅ CORRECT: test.beforeAll()
-❌ WRONG: expect(response.status).toBe(200) ➡️ ✅ CORRECT: expect(response.status()).toBe(200)
-
-FOR JEST/MOCHA${jestMochaIndicator}:
-❌ WRONG: test.describe() ➡️ ✅ CORRECT: describe()
-❌ WRONG: test() in Mocha ➡️ ✅ CORRECT: it()
-❌ WRONG: test.beforeAll() ➡️ ✅ CORRECT: beforeAll()
-
-FOR CYPRESS${cypressIndicator}:
-✅ CORRECT: describe() and it() (globally available)
-✅ CORRECT: cy.request() for API calls
-❌ WRONG: request.get() ➡️ ✅ CORRECT: cy.request()`;
-
-    let prompt = `🔥🔥🔥 CRITICAL REQUIREMENT - COMPLETE GENERATION MANDATORY 🔥🔥🔥
-
-YOU MUST GENERATE COMPLETE, PRODUCTION-READY ${framework} TEST CODE FOR ALL ${uniqueEndpoints.length} ENDPOINTS.
-
-🚫 ABSOLUTELY FORBIDDEN (INSTANT REJECTION):
-❌ "Continue adding more tests..." or "Add more tests here"
-❌ "Follow the same pattern" or "Similar tests can be added"
-❌ "TODO", "FIXME", or placeholder comments
-❌ Stopping before all endpoints are complete
-❌ Template or example code instead of actual implementation
-❌ MIXING FRAMEWORK APIs (e.g., using describe() in Playwright instead of test.describe())
-❌ Using wrong assertion methods for the framework
-❌ Missing framework-specific imports or setup patterns
-
-🎯 MANDATORY SUCCESS CRITERIA:
-✅ COMPLETE code for ALL ${uniqueEndpoints.length} endpoints
-✅ Each endpoint has its own test group (describe/test.describe) with 10-15 test cases
-✅ Production-ready, immediately runnable code with ALL REQUIRED IMPORTS
-✅ Comprehensive test coverage: happy path, errors, edge cases, security
-✅ Proper authentication handling with token chaining
-✅ Framework-specific best practices and correct API usage
-✅ Include ALL necessary setup files (package.json, config files)
-✅ NO "ReferenceError: describe/test is not defined" or similar runtime errors
-✅ STRICTLY follow the chosen framework's API patterns (no mixing frameworks)
-
-⚠️ CRITICAL: MUST INCLUDE COMPLETE SETUP AND CONFIGURATION ⚠️
-
-Your response MUST include:
-1. 📄 Complete test file with ALL required imports at the top
-2. 📦 package.json with all necessary dependencies and test scripts
-3. ⚙️ Configuration files (jest.config.js, playwright.config.js, etc.)
-4. 📋 Setup instructions for running the tests immediately
-
-Framework: ${framework}
-${this.getFrameworkInstructions(framework)}
-
-🎯 OUTPUT STRUCTURE REQUIREMENTS:
-1. First provide the complete test file with proper imports
-2. Then provide package.json with dependencies
-3. Then provide configuration files if needed
-4. Finally provide setup/run instructions
-
-📝 CODE STYLE REQUIREMENTS:
-✅ Use 'const' for all variable declarations (NOT let or var)
-✅ Use objects/arrays for data that needs to be modified: const authToken = { value: '' }
-✅ Use descriptive variable names: const apiBaseUrl, const userCredentials
-✅ Use async/await instead of .then() chains
-✅ Include proper error handling with try/catch blocks
-✅ Use template literals with backticks for string interpolation
-
-${validationSection}
-
-REQUIRED TEST CATEGORIES FOR EACH ENDPOINT:
-
-1. 🟢 HAPPY PATH TESTS:
-   - Valid requests with expected responses
-   - Verify response structure and status codes
-   - Data validation and business logic checks
-
-2. 🔴 ERROR SCENARIO TESTS:
-   - 400: Invalid/malformed requests
-   - 401: Missing/invalid authentication
-   - 403: Insufficient permissions
-   - 404: Resource not found
-   - 422: Validation failures
-   - 500: Server error handling
-
-3. ⚠️ EDGE CASE TESTS:
-   - Empty/null/undefined values
-   - Boundary conditions (min/max values)
-   - Special characters and Unicode
-   - Malformed JSON and invalid data types
-
-4. 🔒 SECURITY TESTS:
-   - Authentication bypass attempts
-   - XSS and injection testing
-   - Invalid token handling
-   - CORS validation
-
-`;
-
-    // Add authentication setup if detected
-    if (authFlow) {
-      prompt += `\n🔐 AUTHENTICATION FLOW DETECTED: ${authFlow.authPattern}\n`;
-      if (authFlow.loginEndpoint) {
-        prompt += `- Login Endpoint: ${authFlow.loginEndpoint.method} ${authFlow.loginEndpoint.url}\n`;
-      }
-      prompt += `- Protected Endpoints: ${authFlow.protectedEndpoints.length}\n`;
-      prompt += `- CRITICAL: Include proper beforeAll() authentication setup with token extraction and chaining\n`;
-    }
-
-    // Add custom authentication guide if provided
-    if (customAuthGuide && customAuthGuide.trim()) {
-      prompt += `\n🎯 CUSTOM AUTHENTICATION GUIDE:\n${customAuthGuide.trim()}\n`;
-      prompt += `CRITICAL: Follow the custom guide above EXACTLY.\n`;
-    }
-
-    return prompt;
-  }
-
-  // Helper method copied from AIService to avoid circular dependency
-  private groupUniqueEndpoints(requests: any[]): any[] {
-    const uniqueEndpoints = new Map<string, any>();
-    requests.forEach(request => {
-      try {
-        const url = new URL(request.url);
-        const signature = `${request.method}:${url.pathname}`;
-        if (!uniqueEndpoints.has(signature)) {
-          uniqueEndpoints.set(signature, request);
-        }
-      } catch (error) {
-        const signature = `${request.method}:${request.url}`;
-        if (!uniqueEndpoints.has(signature)) {
-          uniqueEndpoints.set(signature, request);
-        }
-      }
-    });
-    return Array.from(uniqueEndpoints.values());
-  }
-
 }

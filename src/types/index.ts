@@ -12,34 +12,31 @@ export interface NetworkRequest {
   responseBody?: any;
   responseSize?: number;
   error?: string;
+  metadata?: {
+    isStreaming?: boolean;
+    chunks?: number;
+    priority?: string;
+    priorityChanged?: number;
+    isBackground?: boolean;
+    serviceWorker?: string;
+    [key: string]: any;
+  };
 }
 
 export interface RecordingSession {
   id: string;
   name: string;
-  startTime?: number;
+  startTime: number;
   endTime?: number;
   requests: NetworkRequest[];
-  tabId?: number;
-  url?: string;
-  status?: 'recording' | 'stopped' | 'processing';
+  tabId: number;
+  url: string;
+  status: 'recording' | 'stopped' | 'processing';
   metadata?: {
-    source?: string;
-    originalFile?: string;
-    importedAt?: number;
-    sessionId?: string;
-    createdAt?: number;
-    type?: string;
-    collectionName?: string;
-    apiTitle?: string;
-    apiVersion?: string;
+    totalRequests?: number;
+    apiRequests?: number;
+    responseTime?: number;
     [key: string]: any;
-  };
-  stats?: {
-    totalRequests: number;
-    uniqueEndpoints: number;
-    methods: string[];
-    domains: string[];
   };
 }
 
@@ -102,6 +99,7 @@ export type TestFramework =
   | 'jest'
   | 'playwright'
   | 'mocha-chai'
+  | 'mocha'
   | 'cypress'
   | 'puppeteer'
   | 'vitest'
@@ -228,7 +226,7 @@ export interface Message {
 }
 
 export interface BackgroundMessage extends Message {
-  type:
+  type: 
     | 'START_RECORDING'
     | 'STOP_RECORDING'
     | 'GET_SESSIONS'
@@ -239,9 +237,7 @@ export interface BackgroundMessage extends Message {
     | 'GET_SETTINGS'
     | 'EXPORT_TESTS'
     | 'GET_STATUS'
-    | 'SAVE_SESSION'
-    | 'IMPORT_SESSION'
-    | 'RESET_SETTINGS';
+    | 'SAVE_SESSION';
 }
 
 export interface ContentMessage extends Message {

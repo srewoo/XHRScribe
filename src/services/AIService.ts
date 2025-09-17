@@ -5,18 +5,15 @@ import { LocalProvider } from './llm/providers/LocalProvider';
 import { GenerationOptions, RecordingSession, GeneratedTest, Settings, HARData, HAREntry } from '@/types';
 import { StorageService } from './StorageService';
 import { AuthFlowAnalyzer, AuthFlow } from './AuthFlowAnalyzer';
-import { PromptBuilder } from './llm/PromptBuilder';
 
 export class AIService {
   private static instance: AIService;
   private storageService: StorageService;
   private authFlowAnalyzer: AuthFlowAnalyzer;
-  private promptBuilder: PromptBuilder;
 
   private constructor() {
     this.storageService = StorageService.getInstance();
     this.authFlowAnalyzer = AuthFlowAnalyzer.getInstance();
-    this.promptBuilder = PromptBuilder.getInstance();
   }
 
   static getInstance(): AIService {
@@ -105,21 +102,19 @@ export class AIService {
 
   private selectGenerationStrategy(session: RecordingSession, options: GenerationOptions): { mode: 'batch' | 'individual', reason: string } {
     const endpointCount = session.requests.length;
-
-    // Always prefer individual mode for better quality and completeness
-    // Only use batch for very simple cases
-
-    // Use batch only for very small sessions with basic requirements
-    if (endpointCount <= 2 &&
-        options.complexity !== 'advanced' &&
-        !options.includeAuth &&
-        !options.includeErrorScenarios &&
-        !options.includeSecurityTests) {
-      return { mode: 'batch', reason: `Very simple session (${endpointCount} endpoints, basic options) - using batch processing` };
+    
+    // Force individual mode for large sessions
+    if (endpointCount > 5) {
+      return { mode: 'individual', reason: `Too many endpoints (${endpointCount}) for batch processing` };
     }
-
-    // Use individual mode for everything else (this produces better results)
-    return { mode: 'individual', reason: `Using individual processing for guaranteed complete generation (${endpointCount} endpoints)` };
+    
+    // Use individual mode for better quality if explicitly requested
+    if (options.complexity === 'advanced') {
+      return { mode: 'individual', reason: 'Advanced complexity requested - using individual processing for better quality' };
+    }
+    
+    // Default to batch for smaller sessions (≤5 endpoints)
+    return { mode: 'batch', reason: `Small session (${endpointCount} endpoints) - using efficient batch processing` };
   }
 
   private async generateTestsIndividually(session: RecordingSession, options: GenerationOptions, excludedEndpoints?: Set<string>): Promise<GeneratedTest> {
@@ -189,11 +184,10 @@ export class AIService {
             // Create single-endpoint HAR data
             const singleEndpointHAR = this.createSingleEndpointHAR(endpoint);
             
-            // Generate tests for this specific endpoint using standardized prompt
+            // Generate tests for this specific endpoint
             const endpointTest = await provider.generateTests(singleEndpointHAR, {
               ...options,
-              complexity: 'advanced', // Use advanced for better quality in individual mode
-              useStandardizedPrompt: true // Flag to use our unified prompt
+              complexity: 'intermediate' // Use intermediate to get good quality without being too verbose
             }, authFlow, customAuthGuide);
 
             return {
@@ -231,13 +225,6 @@ export class AIService {
       const estimatedCost = provider.estimateCost(estimatedTokens, options.model);
 
       console.log(`✅ Individual processing complete: ${uniqueEndpoints.length} endpoints processed`);
-
-      // Validate generated code matches framework requirements
-      const validationWarnings = this.promptBuilder.validateFrameworkSyntax(mergedTestCode, options.framework);
-      if (validationWarnings.length > 0) {
-        console.warn('⚠️ Framework validation warnings:', validationWarnings);
-        warnings.push(...validationWarnings);
-      }
 
       return {
         id: `test-${Date.now()}`,
@@ -366,14 +353,6 @@ export class AIService {
         console.warn('Missing tests for endpoints:', coverage.missingEndpoints);
         generatedTest.warnings = generatedTest.warnings || [];
         generatedTest.warnings.push(`Missing tests for endpoints: ${coverage.missingEndpoints.join(', ')}`);
-      }
-
-      // Validate generated code matches framework requirements
-      const validationWarnings = this.promptBuilder.validateFrameworkSyntax(generatedTest.code, options.framework);
-      if (validationWarnings.length > 0) {
-        console.warn('⚠️ Framework validation warnings:', validationWarnings);
-        generatedTest.warnings = generatedTest.warnings || [];
-        generatedTest.warnings.push(...validationWarnings);
       }
 
       // The provider already returns a GeneratedTest object
@@ -518,521 +497,6 @@ ${testBlocks.join('\n\n')}
   private estimateTokens(text: string): number {
     // Simple token estimation (roughly 4 characters per token)
     return Math.ceil(text.length / 4);
-  }
-
-  // Unified prompt builder for consistent results across all providers
-  public buildStandardizedPrompt(harData: HARData, options: GenerationOptions, authFlow?: AuthFlow, customAuthGuide?: string): string {
-    const framework = options.framework;
-    const uniqueEndpoints = this.groupUniqueEndpoints(harData.entries);
-
-    // Build validation section outside template literal to avoid syntax issues
-    const playwrightIndicator = framework === 'playwright' ? ' ← YOUR SELECTED FRAMEWORK' : '';
-    const jestMochaIndicator = ['jest', 'mocha-chai', 'vitest'].includes(framework) ? ' ← YOUR SELECTED FRAMEWORK' : '';
-    const cypressIndicator = framework === 'cypress' ? ' ← YOUR SELECTED FRAMEWORK' : '';
-
-    const validationSection = `⚠️ FRAMEWORK API VALIDATION - DO NOT MIX:
-
-FOR PLAYWRIGHT${playwrightIndicator}:
-❌ WRONG: describe() ➡️ ✅ CORRECT: test.describe()
-❌ WRONG: it() ➡️ ✅ CORRECT: test()
-❌ WRONG: beforeAll() ➡️ ✅ CORRECT: test.beforeAll()
-❌ WRONG: expect(response.status).toBe(200) ➡️ ✅ CORRECT: expect(response.status()).toBe(200)
-
-FOR JEST/MOCHA${jestMochaIndicator}:
-❌ WRONG: test.describe() ➡️ ✅ CORRECT: describe()
-❌ WRONG: test() in Mocha ➡️ ✅ CORRECT: it()
-❌ WRONG: test.beforeAll() ➡️ ✅ CORRECT: beforeAll()
-
-FOR CYPRESS${cypressIndicator}:
-✅ CORRECT: describe() and it() (globally available)
-✅ CORRECT: cy.request() for API calls
-❌ WRONG: request.get() ➡️ ✅ CORRECT: cy.request()`;
-
-    let prompt = `🔥🔥🔥 CRITICAL REQUIREMENT - COMPLETE GENERATION MANDATORY 🔥🔥🔥
-
-YOU MUST GENERATE COMPLETE, PRODUCTION-READY ${framework} TEST CODE FOR ALL ${uniqueEndpoints.length} ENDPOINTS.
-
-🚫 ABSOLUTELY FORBIDDEN (INSTANT REJECTION):
-❌ "Continue adding more tests..." or "Add more tests here"
-❌ "Follow the same pattern" or "Similar tests can be added"
-❌ "TODO", "FIXME", or placeholder comments
-❌ Stopping before all endpoints are complete
-❌ Template or example code instead of actual implementation
-❌ MIXING FRAMEWORK APIs (e.g., using describe() in Playwright instead of test.describe())
-❌ Using wrong assertion methods for the framework
-❌ Missing framework-specific imports or setup patterns
-
-🎯 MANDATORY SUCCESS CRITERIA:
-✅ COMPLETE code for ALL ${uniqueEndpoints.length} endpoints
-✅ Each endpoint has its own test group (describe/test.describe) with 10-15 test cases
-✅ Production-ready, immediately runnable code with ALL REQUIRED IMPORTS
-✅ Comprehensive test coverage: happy path, errors, edge cases, security
-✅ Proper authentication handling with token chaining
-✅ Framework-specific best practices and correct API usage
-✅ Include ALL necessary setup files (package.json, config files)
-✅ NO "ReferenceError: describe/test is not defined" or similar runtime errors
-✅ STRICTLY follow the chosen framework's API patterns (no mixing frameworks)
-
-⚠️ CRITICAL: MUST INCLUDE COMPLETE SETUP AND CONFIGURATION ⚠️
-
-Your response MUST include:
-1. 📄 Complete test file with ALL required imports at the top
-2. 📦 package.json with all necessary dependencies and test scripts
-3. ⚙️ Configuration files (jest.config.js, playwright.config.js, etc.)
-4. 📋 Setup instructions for running the tests immediately
-
-Framework: ${framework}
-${this.getFrameworkInstructions(framework)}
-
-🎯 OUTPUT STRUCTURE REQUIREMENTS:
-1. First provide the complete test file with proper imports
-2. Then provide package.json with dependencies
-3. Then provide configuration files if needed
-4. Finally provide setup/run instructions
-
-📝 CODE STYLE REQUIREMENTS:
-✅ Use 'const' for all variable declarations (NOT let or var)
-✅ Use objects/arrays for data that needs to be modified: const authToken = { value: '' }
-✅ Use descriptive variable names: const apiBaseUrl, const userCredentials
-✅ Use async/await instead of .then() chains
-✅ Include proper error handling with try/catch blocks
-✅ Use template literals with backticks for string interpolation
-
-${validationSection}
-
-REQUIRED TEST CATEGORIES FOR EACH ENDPOINT:
-
-1. 🟢 HAPPY PATH TESTS:
-   - Valid requests with expected responses
-   - Verify response structure and status codes
-   - Data validation and business logic checks
-
-2. 🔴 ERROR SCENARIO TESTS:
-   - 400: Invalid/malformed requests
-   - 401: Missing/invalid authentication
-   - 403: Insufficient permissions
-   - 404: Resource not found
-   - 422: Validation failures
-   - 500: Server error handling
-
-3. ⚠️ EDGE CASE TESTS:
-   - Empty/null/undefined values
-   - Boundary conditions (min/max values)
-   - Special characters and Unicode
-   - Malformed JSON and invalid data types
-
-4. 🔒 SECURITY TESTS:
-   - Authentication bypass attempts
-   - XSS and injection testing
-   - Invalid token handling
-   - CORS validation
-
-`;
-
-    // Add authentication setup if detected
-    if (authFlow) {
-      prompt += `\n🔐 AUTHENTICATION FLOW DETECTED: ${authFlow.authPattern}\n`;
-      if (authFlow.loginEndpoint) {
-        prompt += `- Login Endpoint: ${authFlow.loginEndpoint.method} ${authFlow.loginEndpoint.url}\n`;
-      }
-      prompt += `- Protected Endpoints: ${authFlow.protectedEndpoints.length}\n`;
-      prompt += `- CRITICAL: Include proper beforeAll() authentication setup with token extraction and chaining\n`;
-    }
-
-    // Add custom authentication guide if provided
-    if (customAuthGuide && customAuthGuide.trim()) {
-      prompt += `\n🎯 CUSTOM AUTHENTICATION GUIDE:\n${customAuthGuide.trim()}\n`;
-      prompt += `CRITICAL: Follow the custom guide above EXACTLY.\n`;
-    }
-
-    prompt += `\n🎯 GENERATE COMPLETE TESTS FOR ALL ${uniqueEndpoints.length} UNIQUE ENDPOINTS:\n\n`;
-
-    // Add detailed requirements for each endpoint
-    uniqueEndpoints.forEach((endpoint, index) => {
-      const url = new URL(endpoint.url);
-      const method = endpoint.method;
-      const requestBody = endpoint.requestBody ? JSON.stringify(endpoint.requestBody).substring(0, 200) : 'No request body';
-      const responseBody = endpoint.responseBody ? JSON.stringify(endpoint.responseBody).substring(0, 200) : 'No response';
-
-      prompt += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🔥 ENDPOINT ${index + 1}/${uniqueEndpoints.length}: ${method} ${url.pathname}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-URL: ${endpoint.url}
-Status: ${endpoint.status || 200}
-Request: ${requestBody}
-Response: ${responseBody}
-
-MANDATORY TESTS FOR THIS ENDPOINT:
-✅ 1 Happy path test (valid request → expected status)
-✅ 5-8 Error tests (400, 401, 403, 404, 422, 500)
-✅ 3-5 Edge case tests (null values, boundaries, special chars)
-✅ 2-3 Security tests (injection, auth bypass)
-
-`;
-    });
-
-    prompt += `
-🚨🚨🚨 FINAL VERIFICATION CHECKLIST 🚨🚨🚨
-
-BEFORE SUBMITTING, VERIFY:
-✅ ${uniqueEndpoints.length}/${uniqueEndpoints.length} endpoints have complete describe() blocks
-✅ Zero placeholder comments or TODO items
-✅ All tests are production-ready and runnable
-✅ Authentication setup is included in beforeAll()
-✅ Each endpoint has 10-15 individual test cases
-✅ Framework-specific syntax is correct
-
-GENERATE COMPLETE, RUNNABLE ${framework} CODE NOW:`;
-
-    return prompt;
-  }
-
-  private getFrameworkInstructions(framework: string): string {
-    const instructions: Record<string, string> = {
-      jest: `Jest Framework Requirements:
-
-REQUIRED FILE STRUCTURE:
-\`\`\`javascript
-// Required imports and setup at the top of file
-const request = require('supertest'); // or axios for HTTP requests
-const { describe, test, expect, beforeAll, afterAll } = require('@jest/globals');
-
-// Global configuration
-const BASE_URL = process.env.API_BASE_URL || 'https://api.example.com';
-const authToken = { value: '' }; // Use object to allow reassignment
-
-// Setup and teardown
-beforeAll(async () => {
-  // Authentication setup
-});
-
-afterAll(async () => {
-  // Cleanup
-});
-
-describe('API Test Suite', () => {
-  describe('Endpoint Name', () => {
-    test('should handle valid request', async () => {
-      // Test implementation
-    });
-  });
-});
-\`\`\`
-
-MANDATORY REQUIREMENTS:
-- Include ALL necessary imports at file top
-- Use describe() and test()/it() blocks
-- Add beforeAll/beforeEach for setup if needed
-- Use expect() assertions with proper matchers
-- Handle async operations with async/await
-- Include package.json scripts section`,
-
-      playwright: `Playwright Framework Requirements:
-
-REQUIRED FILE STRUCTURE:
-\`\`\`javascript
-// Required imports at top of file
-import { test, expect } from '@playwright/test';
-
-const BASE_URL = process.env.API_BASE_URL || 'https://api.example.com';
-const authToken = { value: '' }; // Use object to allow reassignment
-
-test.beforeAll(async ({ request }) => {
-  // Authentication setup - get token and store in authToken.value
-});
-
-test.describe('API Test Suite', () => {
-  test.describe('Endpoint Name Tests', () => {
-    test('should handle valid request', async ({ request }) => {
-      const response = await request.get(\`\${BASE_URL}/endpoint\`, {
-        headers: {
-          'Authorization': \`Bearer \${authToken.value}\`
-        }
-      });
-
-      expect(response.ok()).toBeTruthy();
-      expect(response.status()).toBe(200);
-
-      const data = await response.json();
-      expect(data).toHaveProperty('id');
-    });
-
-    test('should handle invalid request', async ({ request }) => {
-      const response = await request.get(\`\${BASE_URL}/endpoint/invalid\`, {
-        headers: {
-          'Authorization': \`Bearer \${authToken.value}\`
-        }
-      });
-
-      expect(response.status()).toBe(404);
-    });
-  });
-});
-\`\`\`
-
-CRITICAL PLAYWRIGHT-SPECIFIC REQUIREMENTS:
-- NEVER use describe() - ALWAYS use test.describe()
-- NEVER use it() - ALWAYS use test()
-- NEVER use beforeAll() - ALWAYS use test.beforeAll()
-- NEVER use beforeEach() - ALWAYS use test.beforeEach()
-- Include import { test, expect } from '@playwright/test'
-- Use { request } fixture for API testing in every test
-- Use expect().toBeTruthy(), expect().toBe(), etc. for assertions
-- Include playwright.config.js configuration file`,
-
-      'mocha-chai': `Mocha/Chai Framework Requirements:
-
-REQUIRED FILE STRUCTURE:
-\`\`\`javascript
-// Required imports at top of file
-const { describe, it, before, after } = require('mocha');
-const { expect } = require('chai');
-const axios = require('axios'); // or your HTTP client
-
-const BASE_URL = process.env.API_BASE_URL || 'https://api.example.com';
-const authToken = { value: '' }; // Use object to allow reassignment
-
-before(async function() {
-  // Global setup
-});
-
-after(async function() {
-  // Global cleanup
-});
-
-describe('API Test Suite', function() {
-  describe('Endpoint Name', function() {
-    it('should handle valid request', async function() {
-      // Test implementation
-    });
-  });
-});
-\`\`\`
-
-MANDATORY REQUIREMENTS:
-- Include ALL necessary imports from mocha and chai
-- Use describe() and it() blocks
-- Include before/after hooks for setup
-- Use chai expect() for assertions
-- Handle async with async/await
-- Include .mocharc.json configuration`,
-
-      cypress: `Cypress Framework Requirements:
-
-REQUIRED FILE STRUCTURE:
-\`\`\`javascript
-// cypress/e2e/api-tests.cy.js
-// Cypress globals are automatically available
-
-const BASE_URL = Cypress.env('API_BASE_URL') || 'https://api.example.com';
-const authToken = { value: '' }; // Use object to allow reassignment
-
-describe('API Test Suite', () => {
-  before(() => {
-    // Global setup
-  });
-
-  describe('Endpoint Name', () => {
-    it('should handle valid request', () => {
-      cy.request({
-        method: 'GET',
-        url: \`\${BASE_URL}/endpoint\`,
-        headers: {
-          'Authorization': \`Bearer \${authToken.value}\`
-        }
-      }).should((response) => {
-        expect(response.status).to.eq(200);
-      });
-    });
-  });
-});
-\`\`\`
-
-MANDATORY REQUIREMENTS:
-- File must be in cypress/e2e/ directory with .cy.js extension
-- Use describe() and it() blocks (globally available)
-- Use cy.request() for API calls
-- Include proper cy.intercept() for mocking when needed
-- Use should() and expect() assertions
-- Include cypress.config.js configuration`,
-
-      vitest: `Vitest Framework Requirements:
-
-REQUIRED FILE STRUCTURE:
-\`\`\`javascript
-// Required imports at top of file
-import { describe, test, expect, beforeAll, afterAll, vi } from 'vitest';
-import axios from 'axios'; // or your HTTP client
-
-const BASE_URL = process.env.API_BASE_URL || 'https://api.example.com';
-const authToken = { value: '' }; // Use object to allow reassignment
-
-beforeAll(async () => {
-  // Global setup
-});
-
-afterAll(async () => {
-  // Global cleanup
-});
-
-describe('API Test Suite', () => {
-  describe('Endpoint Name', () => {
-    test('should handle valid request', async () => {
-      // Test implementation
-    });
-  });
-});
-\`\`\`
-
-MANDATORY REQUIREMENTS:
-- Include import { describe, test, expect } from 'vitest'
-- Use describe() and test() blocks
-- Include beforeAll/afterAll hooks for setup
-- Use expect() assertions
-- Use vi.mock() for mocking
-- Include vitest.config.js configuration`,
-
-      supertest: `Supertest Framework Requirements:
-
-REQUIRED FILE STRUCTURE:
-\`\`\`javascript
-// Required imports at top of file
-const request = require('supertest');
-const { describe, it, before, after } = require('mocha'); // or jest globals
-const { expect } = require('chai'); // or jest expect
-const app = require('../app'); // Your Express app
-
-const authToken = { value: '' }; // Use object to allow reassignment
-
-before(async function() {
-  // Global setup
-});
-
-after(async function() {
-  // Global cleanup
-});
-
-describe('API Test Suite', function() {
-  describe('Endpoint Name', function() {
-    it('should handle valid request', async function() {
-      const response = await request(app)
-        .get('/endpoint')
-        .set('Authorization', \`Bearer \${authToken.value}\`)
-        .expect(200);
-
-      expect(response.body).to.have.property('data');
-    });
-  });
-});
-\`\`\`
-
-MANDATORY REQUIREMENTS:
-- Include const request = require('supertest')
-- Include test framework imports (mocha/jest)
-- Use describe() and it() blocks from test framework
-- Use supertest(app) for requests
-- Chain .expect() for status assertions
-- Use chai/jest expect for detailed assertions`,
-
-      puppeteer: `Puppeteer Framework Requirements:
-
-REQUIRED FILE STRUCTURE:
-\`\`\`javascript
-// Required imports at top of file
-const puppeteer = require('puppeteer');
-const { describe, it, before, after } = require('mocha');
-const { expect } = require('chai');
-
-const browserManager = { browser: null, page: null }; // Use object to manage state
-const BASE_URL = process.env.API_BASE_URL || 'https://api.example.com';
-
-before(async function() {
-  browserManager.browser = await puppeteer.launch({ headless: true });
-  browserManager.page = await browserManager.browser.newPage();
-});
-
-after(async function() {
-  await browserManager.browser.close();
-});
-
-describe('API Test Suite', function() {
-  describe('Endpoint Name', function() {
-    it('should handle API request via browser', async function() {
-      // Use page.evaluate() for API calls or page.goto() for endpoints
-      const response = await browserManager.page.evaluate(async () => {
-        const res = await fetch('/api/endpoint');
-        return await res.json();
-      });
-
-      expect(response).to.have.property('data');
-    });
-  });
-});
-\`\`\`
-
-MANDATORY REQUIREMENTS:
-- Include const puppeteer = require('puppeteer')
-- Include test framework imports (mocha/jest)
-- Use browser/page lifecycle management
-- Use describe() and it() blocks from test framework
-- Include proper browser setup/teardown`,
-
-      postman: `Postman Collection Requirements:
-
-REQUIRED COLLECTION STRUCTURE:
-\`\`\`json
-{
-  "info": {
-    "name": "API Test Collection",
-    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
-  },
-  "variable": [
-    {
-      "key": "baseUrl",
-      "value": "{{API_BASE_URL}}",
-      "type": "string"
-    },
-    {
-      "key": "authToken",
-      "value": "",
-      "type": "string"
-    }
-  ],
-  "auth": {
-    "type": "bearer",
-    "bearer": [
-      {
-        "key": "token",
-        "value": "{{authToken}}",
-        "type": "string"
-      }
-    ]
-  },
-  "item": [
-    {
-      "name": "Authentication",
-      "item": []
-    },
-    {
-      "name": "Endpoint Tests",
-      "item": []
-    }
-  ]
-}
-\`\`\`
-
-MANDATORY REQUIREMENTS:
-- Valid Postman Collection v2.1.0 JSON format
-- Include collection-level variables and auth
-- Proper folder structure for organization
-- Pre-request scripts for token management
-- Test scripts with pm.test() assertions
-- Environment variables for configuration
-- Each request must have comprehensive tests`,
-    };
-
-    return instructions[framework] || instructions.jest;
   }
 
   private getProvider(settings: any, providerType: string): any {
@@ -1450,7 +914,7 @@ MANDATORY REQUIREMENTS:
         const result = await provider.generateTests(harData, options, authFlow, customAuthGuide);
         
         // Comprehensive validation of the result
-        const validation = this.comprehensiveValidation(result, harData, options.framework);
+        const validation = await this.comprehensiveValidation(result, harData, options.framework);
         
         console.log(`Attempt ${attempt} quality score: ${validation.overallScore}/10`);
         
@@ -1516,8 +980,7 @@ MANDATORY REQUIREMENTS:
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
-  // Enhanced comprehensive validation with stricter quality gates
-  private comprehensiveValidation(result: GeneratedTest, harData: HARData, framework: string): {
+  private async comprehensiveValidation(result: GeneratedTest, harData: HARData, framework: string): Promise<{
     isComplete: boolean;
     overallScore: number;
     issues: string[];
@@ -1526,172 +989,136 @@ MANDATORY REQUIREMENTS:
       completeness: number;
       coverage: number;
       readiness: number;
-      quality: number;
     };
-  } {
-    const issues: string[] = [];
-
-    // 1. Syntax validation (must be perfect)
-    const syntaxValidation = this.validateSyntax(result.code, framework);
-    const syntaxScore = syntaxValidation.isValid ? 10 : 0; // No tolerance for syntax errors
-
-    if (!syntaxValidation.isValid) {
-      issues.push(...syntaxValidation.errors);
-    }
-
-    // 2. Completeness validation (zero tolerance for placeholders)
-    const placeholderCheck = this.checkForPlaceholders(result.code);
-    const completenessScore = placeholderCheck.found ? 0 : 10; // No tolerance for placeholders
-
-    if (placeholderCheck.found) {
-      issues.push(`CRITICAL: Found ${placeholderCheck.placeholders.length} placeholder comments - code is incomplete`);
-    }
-
-    // 3. Coverage validation (must cover all endpoints)
-    const endpoints = harData.entries.map(entry => {
-      try {
-        return `${entry.request.method} ${new URL(entry.request.url).pathname}`;
-      } catch {
-        return `${entry.request.method} ${entry.request.url}`;
+  }> {
+    console.log('🔍 Starting comprehensive validation (simplified)...');
+    
+    try {
+      // TEMPORARY: Use simplified validation until DOM dependencies are resolved
+      const issues: string[] = [];
+      let overallScore = 70; // Base score
+      
+      // Basic syntax validation
+      const syntaxValidation = this.validateSyntax(result.code, framework);
+      let syntaxScore = syntaxValidation.isValid ? 90 : 50;
+      
+      if (!syntaxValidation.isValid) {
+        issues.push(...syntaxValidation.errors.map(err => `[SYNTAX] ${err}`));
+        overallScore -= 20;
       }
-    });
-    const coverageValidation = this.validateTestCoverage(result.code, endpoints);
-    const coverageScore = (coverageValidation.coveragePercentage / 100) * 10;
-
-    if (coverageValidation.missingEndpoints.length > 0) {
-      issues.push(`Missing coverage for ${coverageValidation.missingEndpoints.length} endpoints: ${coverageValidation.missingEndpoints.slice(0, 3).join(', ')}`);
+      
+      // Completeness check
+      const placeholderCheck = this.checkForPlaceholders(result.code);
+      let completenessScore = placeholderCheck.found ? 30 : 85;
+      
+      if (placeholderCheck.found) {
+        issues.push('[COMPLETENESS] Code contains placeholder comments');
+        overallScore -= 25;
+      }
+      
+      // Coverage check (basic)
+      const endpointCount = harData.entries?.length || 0;
+      const testCount = this.countDescribeBlocks(result.code);
+      const coverageScore = Math.min(90, (testCount / Math.max(endpointCount, 1)) * 90);
+      
+      if (coverageScore < 50) {
+        issues.push('[COVERAGE] Insufficient test coverage for endpoints');
+        overallScore -= 15;
+      }
+      
+      // Readiness check
+      let readinessScore = 70;
+      if (result.code.includes('authToken') || result.code.includes('beforeAll')) {
+        readinessScore += 10; // Bonus for auth setup
+      }
+      if (result.code.includes('expect(') && result.code.includes('toBe')) {
+        readinessScore += 10; // Bonus for assertions
+      }
+      
+      // Apply auto-fix for common issues
+      if (syntaxScore < 80 || completenessScore < 70) {
+        console.log('🔧 Applying basic auto-fix...');
+        result.code = this.autoFixCommonIssues(result.code, framework);
+        // Recalculate after fixes
+        const newSyntaxValidation = this.validateSyntax(result.code, framework);
+        if (newSyntaxValidation.isValid && !syntaxValidation.isValid) {
+          syntaxScore = 85;
+          overallScore += 15;
+          result.warnings = result.warnings || [];
+          result.warnings.push('🔧 Auto-fixed syntax issues');
+        }
+      }
+      
+      // Ensure scores are within bounds
+      overallScore = Math.max(0, Math.min(100, overallScore));
+      syntaxScore = Math.max(0, Math.min(100, syntaxScore));
+      completenessScore = Math.max(0, Math.min(100, completenessScore));
+      readinessScore = Math.max(0, Math.min(100, readinessScore));
+      
+      // Add quality insights to result
+      if (result.metadata) {
+        result.metadata.validationResult = {
+          readinessLevel: overallScore >= 80 ? 'production' : overallScore >= 60 ? 'staging' : 'development',
+          estimatedFixTime: issues.length * 2, // 2 minutes per issue
+          improvementSuggestions: issues.length > 0 ? ['Fix identified issues for better code quality'] : ['Code looks good!']
+        };
+      }
+      
+      console.log(`📊 Comprehensive validation completed: ${overallScore}/100`);
+      
+      return {
+        isComplete: issues.length === 0,
+        overallScore,
+        issues,
+        breakdown: {
+          syntax: syntaxScore,
+          completeness: completenessScore,
+          coverage: coverageScore,
+          readiness: readinessScore
+        }
+      };
+      
+    } catch (error) {
+      console.warn('⚠️ Validation failed, using fallback:', error);
+      
+      return {
+        isComplete: false,
+        overallScore: 50,
+        issues: ['Validation system temporarily unavailable'],
+        breakdown: {
+          syntax: 50,
+          completeness: 50,
+          coverage: 50,
+          readiness: 50
+        }
+      };
     }
-
-    // 4. Readiness validation (must be runnable)
-    const readinessScore = this.calculateReadinessScore(result.code, framework);
-
-    if (readinessScore < 8) {
-      issues.push('Code is not ready to run - missing critical components');
-    }
-
-    // 5. NEW: Quality validation (test depth and sophistication)
-    const qualityScore = this.calculateTestQuality(result.code, harData.entries.length);
-
-    if (qualityScore < 7) {
-      issues.push('Generated tests lack sufficient depth and coverage');
-    }
-
-    const breakdown = {
-      syntax: syntaxScore,
-      completeness: completenessScore,
-      coverage: coverageScore,
-      readiness: readinessScore,
-      quality: qualityScore
-    };
-
-    // Stricter overall scoring - all categories must pass
-    const overallScore = Math.min(breakdown.syntax, breakdown.completeness, breakdown.coverage, breakdown.readiness, breakdown.quality);
-
-    // Higher standards for "complete" - must be excellent across all dimensions
-    const isComplete = overallScore >= 8.5 &&
-                      syntaxValidation.isValid &&
-                      !placeholderCheck.found &&
-                      coverageValidation.coveragePercentage >= 90;
-
-    return {
-      isComplete,
-      overallScore: Math.round(overallScore * 10) / 10,
-      issues,
-      breakdown
-    };
   }
 
-  // New method to calculate test quality based on sophistication and completeness
-  private calculateTestQuality(code: string, expectedEndpointCount: number): number {
-    let qualityScore = 10;
-
-    // Check for test sophistication
-    const testPatterns = {
-      hasErrorTests: /(?:400|401|403|404|422|500|error|catch)/gi,
-      hasEdgeCases: /(?:null|undefined|empty|boundary|special|max|min)/gi,
-      hasSecurityTests: /(?:injection|xss|auth|security|invalid.*token)/gi,
-      hasAsyncHandling: /(?:async|await|promise|then)/gi,
-      hasAssertions: /(?:expect|assert|should|toBe|toEqual|toHaveProperty)/gi,
-      hasAuthentication: /(?:beforeAll|beforeEach|authToken|x-token|authorization)/gi,
-      hasEnvironmentVars: /process\.env/gi,
-      hasDescribeBlocks: /describe\s*\(/gi,
-      hasTestCases: /(?:test\s*\(|it\s*\()/gi
-    };
-
-    // Check each pattern
-    Object.entries(testPatterns).forEach(([pattern, regex]) => {
-      const matches = code.match(regex) || [];
-      const count = matches.length;
-
-      switch (pattern) {
-        case 'hasDescribeBlocks':
-          // Should have approximately one describe block per endpoint
-          if (count < expectedEndpointCount * 0.8) {
-            qualityScore -= 2;
-          }
-          break;
-
-        case 'hasTestCases':
-          // Should have multiple test cases per endpoint
-          if (count < expectedEndpointCount * 8) { // Expect ~8-10 tests per endpoint
-            qualityScore -= 1.5;
-          }
-          break;
-
-        case 'hasErrorTests':
-          // Must have comprehensive error testing
-          if (count < expectedEndpointCount * 3) { // At least 3 error tests per endpoint
-            qualityScore -= 2;
-          }
-          break;
-
-        case 'hasAuthentication':
-          // If auth is needed, must be properly implemented
-          if (code.includes('x-token') || code.includes('Authorization')) {
-            if (count < 2) { // Need setup + usage
-              qualityScore -= 1.5;
-            }
-          }
-          break;
-
-        default:
-          // Other patterns - missing = minor penalty
-          if (count === 0) {
-            qualityScore -= 0.5;
-          }
+  private async applyIntelligentAutoFix(
+    result: GeneratedTest, 
+    issues: any[], 
+    framework: string
+  ): Promise<void> {
+    try {
+      const { IntelligentAutoFixer } = await import('./IntelligentAutoFixer');
+      const autoFixer = IntelligentAutoFixer.getInstance();
+      
+      const fixResult = await autoFixer.autoFixWithAI(result.code, issues, framework as any);
+      
+      if (fixResult.success && fixResult.confidenceScore > 70) {
+        result.code = fixResult.fixedCode;
+        result.warnings = result.warnings || [];
+        result.warnings.push(`🤖 Auto-fixed ${fixResult.issuesFixed.length} issues (${fixResult.confidenceScore}% confidence)`);
+        result.warnings.push(...fixResult.fixLog);
+        
+        console.log(`✅ Intelligent auto-fix applied: ${fixResult.issuesFixed.length} issues fixed`);
+      } else {
+        console.log('⚠️ Auto-fix had low confidence or failed, keeping original code');
       }
-    });
-
-    // Check for framework-specific best practices
-    qualityScore += this.checkFrameworkBestPractices(code);
-
-    return Math.max(0, Math.min(10, qualityScore));
-  }
-
-  private checkFrameworkBestPractices(code: string): number {
-    let bonus = 0;
-
-    // Playwright specific
-    if (code.includes('{ request }')) {
-      bonus += 0.5; // Using proper fixture
+    } catch (error) {
+      console.warn('Auto-fix failed:', error);
     }
-
-    // Jest specific
-    if (code.includes('beforeAll') || code.includes('beforeEach')) {
-      bonus += 0.5; // Good test setup
-    }
-
-    // Environment variables
-    if (code.includes('process.env')) {
-      bonus += 0.5; // Good configuration practice
-    }
-
-    // Proper error handling
-    if (code.includes('try') && code.includes('catch')) {
-      bonus += 0.5; // Error handling
-    }
-
-    return bonus;
   }
 
   private calculateReadinessScore(code: string, framework: string): number {
@@ -1795,43 +1222,55 @@ GENERATE COMPLETE, RUNNABLE, ERROR-FREE CODE NOW!`;
     return refinedOptions;
   }
 
-  // Enhanced Auto-Fixing Pipeline for Consistent Quality
+  // Enhancement 3: Code Auto-Fixing Pipeline
   private autoFixCommonIssues(code: string, framework: string): string {
     console.log('🔧 Auto-fixing common issues in generated code...');
-
+    
     let fixedCode = code;
-
-    // Step 1: Remove all placeholder comments (most critical)
+    
+    // Step 1: Remove all placeholder comments
     fixedCode = this.removePlaceholderComments(fixedCode);
-
-    // Step 2: Ensure complete test structure
-    fixedCode = this.ensureCompleteTestStructure(fixedCode, framework);
-
-    // Step 3: Fix syntax issues
+    
+    // Step 2: Fix test structure inconsistencies (it vs test)
+    fixedCode = this.fixTestStructure(fixedCode, framework);
+    
+    // Step 3: Fix undefined variables and add proper setup
+    fixedCode = this.fixUndefinedVariables(fixedCode, framework);
+    
+    // Step 4: Fix TypeScript syntax in JavaScript files
+    fixedCode = this.fixTypeScriptSyntax(fixedCode);
+    
+    // Step 5: Fix improper nesting of describe blocks
+    fixedCode = this.fixDescribeBlockNesting(fixedCode);
+    
+    // Step 6: Fix syntax issues
     fixedCode = this.fixSyntaxIssues(fixedCode);
-
-    // Step 4: Add missing imports
+    
+    // Step 7: Add missing imports
     fixedCode = this.addMissingImports(fixedCode, framework);
-
-    // Step 5: Fix async/await issues
+    
+    // Step 8: Fix async/await issues
     fixedCode = this.fixAsyncAwaitIssues(fixedCode);
-
-    // Step 6: Fix incomplete describe blocks
+    
+    // Step 9: Fix inconsistent request handling
+    fixedCode = this.fixRequestHandling(fixedCode, framework);
+    
+    // Step 10: Fix assertions and error handling
+    fixedCode = this.fixAssertions(fixedCode, framework);
+    
+    // Step 11: Fix incomplete describe blocks
     fixedCode = this.fixIncompleteDescribeBlocks(fixedCode);
-
-    // Step 7: Add environment variable usage
+    
+    // Step 12: Add environment variable usage
     fixedCode = this.addEnvironmentVariables(fixedCode);
-
-    // Step 8: Ensure proper authentication setup
-    fixedCode = this.ensureAuthenticationSetup(fixedCode, framework);
-
-    // Step 9: Clean up formatting
+    
+    // Step 13: Fix specific generated code issues (comprehensive fix)
+    fixedCode = this.fixSpecificGeneratedCodeIssues(fixedCode);
+    
+    // Step 14: Clean up formatting
     fixedCode = this.cleanupFormatting(fixedCode);
-
-    // Step 10: Final validation and completion check
-    fixedCode = this.performFinalValidation(fixedCode, framework);
-
-    console.log('✅ Enhanced auto-fixing completed');
+    
+    console.log('✅ Auto-fixing completed');
     return fixedCode;
   }
 
@@ -2079,153 +1518,265 @@ GENERATE COMPLETE, RUNNABLE, ERROR-FREE CODE NOW!`;
     return indentedLines.join('\n');
   }
 
-  // New enhanced auto-fix methods
-
-  private ensureCompleteTestStructure(code: string, framework: string): string {
-    // Check if the code has proper test structure
-    if (!code.includes('describe(') && framework !== 'postman') {
-      // Wrap the entire code in a describe block if missing
-      return `describe('API Test Suite', () => {
-${code.split('\n').map(line => `  ${line}`).join('\n')}
-});`;
+  // NEW: Fix test structure inconsistencies (it vs test)
+  private fixTestStructure(code: string, framework: string): string {
+    if (framework === 'playwright') {
+      // Playwright uses test(), not it()
+      code = code.replace(/\bit\s*\(/g, 'test(');
+      console.log('🔧 Fixed test structure: converted it() to test() for Playwright');
+    } else if (framework === 'mocha' || framework === 'jest') {
+      // Mocha/Jest can use either, but let's standardize on test()
+      code = code.replace(/\bit\s*\(/g, 'test(');
     }
     return code;
   }
 
-  private ensureAuthenticationSetup(code: string, framework: string): string {
-    // Check if authentication setup is present
-    const hasAuthSetup = code.includes('beforeAll') || code.includes('before(') || code.includes('test.beforeAll');
-    const hasTokenUsage = code.includes('authToken') || code.includes('x-token') || code.includes('Authorization');
-
-    if (hasTokenUsage && !hasAuthSetup) {
-      // Add basic auth setup if missing
-      const authSetup = this.generateBasicAuthSetup(framework);
-
-      // Insert after the first describe block opening
-      const describeMatch = code.match(/(describe\([^{]+\{)/);
-      if (describeMatch) {
-        const insertPoint = code.indexOf(describeMatch[1]) + describeMatch[1].length;
-        return code.slice(0, insertPoint) + '\n' + authSetup + '\n' + code.slice(insertPoint);
-      }
+  // NEW: Fix undefined variables and add proper setup
+  private fixUndefinedVariables(code: string, framework: string): string {
+    let fixedCode = code;
+    
+    // Fix BASE_URL
+    if (code.includes('BASE_URL') && !code.includes('const BASE_URL') && !code.includes('let BASE_URL')) {
+      const baseUrlDeclaration = "const BASE_URL = process.env.BASE_URL || 'https://api.example.com';\n";
+      fixedCode = this.addToTopOfFile(fixedCode, baseUrlDeclaration);
     }
-
-    return code;
+    
+    // Fix AUTH_URL
+    if (code.includes('AUTH_URL') && !code.includes('const AUTH_URL') && !code.includes('let AUTH_URL')) {
+      const authUrlDeclaration = "const AUTH_URL = process.env.AUTH_URL || BASE_URL + '/auth';\n";
+      fixedCode = this.addToTopOfFile(fixedCode, authUrlDeclaration);
+    }
+    
+    // Fix API_URL
+    if (code.includes('API_URL') && !code.includes('const API_URL') && !code.includes('let API_URL')) {
+      const apiUrlDeclaration = "const API_URL = process.env.API_URL || BASE_URL;\n";
+      fixedCode = this.addToTopOfFile(fixedCode, apiUrlDeclaration);
+    }
+    
+    // Fix TEST_USERNAME and TEST_PASSWORD
+    if (code.includes('TEST_USERNAME') && !code.includes('process.env.TEST_USERNAME')) {
+      fixedCode = fixedCode.replace(/TEST_USERNAME/g, "process.env.TEST_USERNAME || 'test@example.com'");
+    }
+    if (code.includes('TEST_PASSWORD') && !code.includes('process.env.TEST_PASSWORD')) {
+      fixedCode = fixedCode.replace(/TEST_PASSWORD/g, "process.env.TEST_PASSWORD || 'testpassword'");
+    }
+    
+    console.log('🔧 Fixed undefined variables and added proper setup');
+    return fixedCode;
   }
 
-  private generateBasicAuthSetup(framework: string): string {
-    switch (framework) {
-      case 'playwright':
-        return `  let authToken;
-
-  test.beforeAll(async ({ request }) => {
-    const response = await request.post(process.env.LOGIN_URL || 'https://api.example.com/login', {
-      data: {
-        username: process.env.TEST_USERNAME || 'test@example.com',
-        password: process.env.TEST_PASSWORD || 'testpassword'
-      }
-    });
-    const responseBody = await response.json();
-    authToken = responseBody.token || responseBody['x-token'];
-  });`;
-
-      case 'jest':
-        return `  let authToken;
-
-  beforeAll(async () => {
-    const response = await axios.post(process.env.LOGIN_URL || 'https://api.example.com/login', {
-      username: process.env.TEST_USERNAME || 'test@example.com',
-      password: process.env.TEST_PASSWORD || 'testpassword'
-    });
-    authToken = response.data.token || response.data['x-token'];
-  });`;
-
-      default:
-        return `  let authToken;
-
-  beforeAll(async () => {
-    // Add authentication setup here
-    authToken = 'your-auth-token';
-  });`;
-    }
+  // NEW: Fix TypeScript syntax in JavaScript files
+  private fixTypeScriptSyntax(code: string): string {
+    // Remove TypeScript type annotations
+    let fixedCode = code;
+    
+    // Fix variable type annotations like: let authToken: string;
+    fixedCode = fixedCode.replace(/:\s*string\s*;/g, ';');
+    fixedCode = fixedCode.replace(/:\s*number\s*;/g, ';');
+    fixedCode = fixedCode.replace(/:\s*boolean\s*;/g, ';');
+    fixedCode = fixedCode.replace(/:\s*any\s*;/g, ';');
+    fixedCode = fixedCode.replace(/:\s*object\s*;/g, ';');
+    
+    // Fix function parameter type annotations
+    fixedCode = fixedCode.replace(/\(([^)]*?):\s*[A-Za-z][A-Za-z0-9]*\s*\)/g, '($1)');
+    
+    console.log('🔧 Fixed TypeScript syntax for JavaScript file');
+    return fixedCode;
   }
 
-  private performFinalValidation(code: string, framework: string): string {
-    let validatedCode = code;
-
-    // Ensure the code ends properly
-    if (!validatedCode.trim().endsWith('});')) {
-      validatedCode += '\n});';
-    }
-
-    // Check for minimum test count per describe block
-    const describeBlocks = validatedCode.match(/describe\([^{]+\{/g) || [];
-    const testCases = validatedCode.match(/test\(|it\(/g) || [];
-
-    // If we have describe blocks but very few tests, add a basic test
-    if (describeBlocks.length > 0 && testCases.length < describeBlocks.length * 2) {
-      // Add a basic test to each describe block that seems incomplete
-      // This is a simple heuristic to ensure minimum test coverage
-      const basicTest = this.generateBasicTest(framework);
-
-      // Find describe blocks that might be missing tests
-      const lines = validatedCode.split('\n');
-      let inDescribeBlock = false;
-      let describeTestCount = 0;
-      let describeStartLine = -1;
-
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-
-        if (line.includes('describe(')) {
-          if (inDescribeBlock && describeTestCount < 2) {
-            // Previous describe block was incomplete, add a test
-            lines.splice(i - 1, 0, basicTest);
-            i++; // Adjust index after insertion
+  // NEW: Fix improper nesting of describe blocks
+  private fixDescribeBlockNesting(code: string): string {
+    let fixedCode = code;
+    
+    // Remove nested describe blocks that should be at the same level
+    // Pattern: describe('API Test Suite - Complete Coverage', () => { describe('API Test Suite', () => {
+    fixedCode = fixedCode.replace(
+      /describe\s*\(\s*['"`]API Test Suite[^'"`]*['"`]\s*,\s*\(\)\s*=>\s*\{\s*describe\s*\(\s*['"`]API Test Suite[^'"`]*['"`]/g,
+      "describe('API Test Suite - Complete Coverage', () => {\n  // Authentication setup and endpoint tests"
+    );
+    
+    // Remove duplicate top-level describe blocks
+    const lines = fixedCode.split('\n');
+    const cleanedLines: string[] = [];
+    let seenMainDescribe = false;
+    let braceLevel = 0;
+    let skipUntilClosing = false;
+    
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      
+      // Track opening of main describe block
+      if (line.includes("describe('API Test Suite") && !seenMainDescribe) {
+        cleanedLines.push(line);
+        seenMainDescribe = true;
+        braceLevel = 1;
+      }
+      // Skip duplicate main describe blocks
+      else if (line.includes("describe('API Test Suite") && seenMainDescribe) {
+        skipUntilClosing = true;
+        braceLevel = 1;
+        continue;
+      }
+      // Handle content inside describe blocks
+      else if (skipUntilClosing) {
+        braceLevel += (line.match(/\{/g) || []).length;
+        braceLevel -= (line.match(/\}/g) || []).length;
+        
+        // If it's not a closing brace of the skipped describe, include the content
+        if (braceLevel > 0 || !line.trim().match(/^}\s*\)?\s*;?\s*$/)) {
+          if (!line.includes("describe('API Test Suite")) {
+            cleanedLines.push(line);
           }
-          inDescribeBlock = true;
-          describeTestCount = 0;
-          describeStartLine = i;
         }
-
-        if (inDescribeBlock && (line.includes('test(') || line.includes('it('))) {
-          describeTestCount++;
-        }
-
-        if (inDescribeBlock && line.includes('});') && i > describeStartLine + 2) {
-          if (describeTestCount < 2) {
-            // This describe block is incomplete, add a test
-            lines.splice(i, 0, basicTest);
-            i++; // Adjust index after insertion
-          }
-          inDescribeBlock = false;
+        
+        // Reset when we exit the skipped describe block
+        if (braceLevel === 0) {
+          skipUntilClosing = false;
         }
       }
-
-      validatedCode = lines.join('\n');
+      // Normal content
+      else {
+        cleanedLines.push(line);
+      }
     }
-
-    return validatedCode;
+    
+    fixedCode = cleanedLines.join('\n');
+    
+    console.log('🔧 Fixed describe block nesting');
+    return fixedCode;
   }
 
-  private generateBasicTest(framework: string): string {
-    switch (framework) {
-      case 'playwright':
-        return `  test('should be accessible', async ({ request }) => {
-    // Basic connectivity test
-    expect(true).toBeTruthy();
-  });`;
-
-      case 'jest':
-        return `  test('should be accessible', async () => {
-    // Basic connectivity test
-    expect(true).toBeTruthy();
-  });`;
-
-      default:
-        return `  it('should be accessible', async () => {
-    // Basic connectivity test
-    expect(true).toBeTruthy();
-  });`;
+  // NEW: Fix inconsistent request handling
+  private fixRequestHandling(code: string, framework: string): string {
+    let fixedCode = code;
+    
+    if (framework === 'playwright') {
+      // Standardize on ({ request }) parameter pattern
+      fixedCode = fixedCode.replace(/test\.request/g, 'request');
+      
+      // Ensure all test functions have proper request parameter
+      fixedCode = fixedCode.replace(/test\s*\(\s*['"`]([^'"`]+)['"`]\s*,\s*async\s*\(\s*\)\s*=>/g, 
+        "test('$1', async ({ request }) =>");
+      
+      // Fix cases where request parameter is missing
+      fixedCode = fixedCode.replace(/test\s*\(\s*['"`]([^'"`]+)['"`]\s*,\s*async\s*\(\s*\{\s*\}\s*\)\s*=>/g, 
+        "test('$1', async ({ request }) =>");
     }
+    
+    console.log('🔧 Fixed inconsistent request handling');
+    return fixedCode;
+  }
+
+  // NEW: Fix assertions and error handling
+  private fixAssertions(code: string, framework: string): string {
+    let fixedCode = code;
+    
+    // Fix unreliable assertions like expect(response.status()).not.toBe(200)
+    fixedCode = fixedCode.replace(/expect\(response\.status\(\)\)\.not\.toBe\(200\)/g, 
+      'expect(response.status()).toBeGreaterThanOrEqual(400)');
+    
+    // Standardize error property checking - choose the most common one in the code
+    const errorOccurrences = (fixedCode.match(/\.toHaveProperty\('error'\)/g) || []).length;
+    const errorCodeOccurrences = (fixedCode.match(/\.toHaveProperty\('errorCode'\)/g) || []).length;
+    
+    if (errorOccurrences > errorCodeOccurrences) {
+      // Standardize on 'error'
+      fixedCode = fixedCode.replace(/\.toHaveProperty\('errorCode'[^)]*\)/g, ".toHaveProperty('error')");
+    } else if (errorCodeOccurrences > 0) {
+      // Standardize on 'errorCode' 
+      fixedCode = fixedCode.replace(/\.toHaveProperty\('error'\)/g, ".toHaveProperty('errorCode')");
+    }
+    
+    // Add proper error response validation
+    fixedCode = fixedCode.replace(/expect\(responseBody\)\.toHaveProperty\('error'\);/g, 
+      "expect(responseBody).toHaveProperty('error');\n      expect(responseBody.error).toBeTruthy();");
+    
+    // Add safer response body parsing (but not for every occurrence - only when missing)
+    if (framework === 'playwright' && !fixedCode.includes('contentType')) {
+      fixedCode = fixedCode.replace(
+        /const responseBody = await response\.json\(\);/g, 
+        `const contentType = response.headers()['content-type'] || '';
+      const responseBody = contentType.includes('application/json') 
+        ? await response.json() 
+        : await response.text();`
+      );
+    }
+    
+    console.log('🔧 Fixed assertions and error handling');
+    return fixedCode;
+  }
+
+  // Helper method to add content to the top of the file (after imports)
+  private addToTopOfFile(code: string, content: string): string {
+    const lines = code.split('\n');
+    let insertIndex = 0;
+    
+    // Find the end of imports/requires
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].includes('import ') || lines[i].includes('require(') || lines[i].includes('///')) {
+        insertIndex = i + 1;
+      } else if (lines[i].trim() === '') {
+        continue;
+      } else {
+        break;
+      }
+    }
+    
+    lines.splice(insertIndex, 0, '', content);
+    return lines.join('\n');
+  }
+
+  // COMPREHENSIVE: Fix the exact patterns found in user's generated code
+  private fixSpecificGeneratedCodeIssues(code: string): string {
+    let fixedCode = code;
+    
+    // 1. Add missing imports and variable declarations at the top
+    if (!fixedCode.includes('const { test, expect }') && !fixedCode.includes('import { test, expect }')) {
+      fixedCode = `const { test, expect } = require('@playwright/test');
+
+const BASE_URL = process.env.BASE_URL || 'https://api.example.com';
+const TEST_USERNAME = process.env.TEST_USERNAME || 'test@example.com';
+const TEST_PASSWORD = process.env.TEST_PASSWORD || 'testpassword';
+let authToken;
+
+${fixedCode}`;
+    }
+
+    // 2. Fix nested describe structure - flatten improperly nested describes
+    // Remove cases where describe blocks are inside other describe blocks when they should be siblings
+    fixedCode = fixedCode.replace(
+      /(\s*)\}\s*\n\s*\/\/\s*Endpoint\s+\d+\s+tests\s*\n\s*describe\s*\(/g,
+      '$1});\n\n  // Endpoint tests\n  describe('
+    );
+
+    // 3. Convert all it() to test() consistently
+    fixedCode = fixedCode.replace(/\bit\s*\(/g, 'test(');
+
+    // 4. Fix missing closing braces - ensure proper structure
+    const openDescribes = (fixedCode.match(/describe\s*\(/g) || []).length;
+    const closeDescribes = (fixedCode.match(/\}\s*\);\s*$/gm) || []).length;
+    
+    if (openDescribes > closeDescribes) {
+      const missing = openDescribes - closeDescribes;
+      for (let i = 0; i < missing; i++) {
+        fixedCode += '\n});';
+      }
+    }
+
+    // 5. Fix authentication setup placement - move to top level
+    const authSetupMatch = fixedCode.match(/(test\.beforeAll[\s\S]*?authToken[\s\S]*?\}\);)/);
+    if (authSetupMatch) {
+      const authSetup = authSetupMatch[1];
+      // Remove from current location
+      fixedCode = fixedCode.replace(authSetupMatch[1], '');
+      // Add after main describe opening
+      fixedCode = fixedCode.replace(
+        /(describe\s*\(\s*['"`]API Test Suite[^'"`]*['"`]\s*,\s*\(\)\s*=>\s*\{)/,
+        `$1\n  // Authentication setup\n  ${authSetup}\n`
+      );
+    }
+
+    console.log('🔧 Fixed specific generated code issues');
+    return fixedCode;
   }
 }

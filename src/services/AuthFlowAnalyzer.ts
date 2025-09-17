@@ -13,7 +13,29 @@ export interface AuthFlow {
   protectedEndpoints: NetworkRequest[];
   authTokens: AuthToken[];
   sessionCookies: string[];
-  authPattern: 'token_based' | 'cookie_based' | 'api_key' | 'mixed';
+  authPattern: 'token_based' | 'cookie_based' | 'api_key' | 'mixed' | 'oauth2' | 'jwt' | 'saml';
+  // ENHANCED: Advanced authentication flow details
+  oauthFlow?: {
+    authorizationUrl?: string;
+    tokenUrl?: string;
+    scopes: string[];
+    pkceEnabled: boolean;
+    clientId?: string;
+    grantType: 'authorization_code' | 'client_credentials' | 'password' | 'refresh_token';
+  };
+  jwtClaims?: Record<string, any>;
+  refreshToken?: {
+    endpoint: string;
+    mechanism: 'rotation' | 'reuse';
+    tokenField: string;
+  };
+  mfaRequired?: boolean;
+  sessionManagement: 'stateless' | 'stateful' | 'hybrid';
+  csrfProtection?: {
+    tokenName: string;
+    headerName: string;
+    cookieName?: string;
+  };
 }
 
 export class AuthFlowAnalyzer {
@@ -31,14 +53,39 @@ export class AuthFlowAnalyzer {
     const protectedEndpoints = this.detectProtectedEndpoints(requests);
     const authTokens = this.extractAuthTokens(requests, loginEndpoint);
     const sessionCookies = this.extractSessionCookies(requests);
-    const authPattern = this.determineAuthPattern(authTokens, sessionCookies);
+    
+    // ENHANCED: Advanced authentication pattern detection
+    const oauthFlow = this.detectOAuthFlow(requests);
+    const jwtClaims = this.extractJWTClaims(authTokens);
+    const refreshToken = this.detectRefreshTokenFlow(requests);
+    const mfaRequired = this.detectMFARequirement(requests);
+    const csrfProtection = this.detectCSRFProtection(requests);
+    
+    const authPattern = this.determineAdvancedAuthPattern(
+      authTokens, 
+      sessionCookies, 
+      oauthFlow, 
+      jwtClaims
+    );
+    
+    const sessionManagement = this.determineSessionManagement(
+      authTokens, 
+      sessionCookies, 
+      refreshToken
+    );
 
     return {
       loginEndpoint,
       protectedEndpoints,
       authTokens,
       sessionCookies,
-      authPattern
+      authPattern,
+      oauthFlow,
+      jwtClaims,
+      refreshToken,
+      mfaRequired,
+      sessionManagement,
+      csrfProtection
     };
   }
 
@@ -278,17 +325,282 @@ export class AuthFlowAnalyzer {
     return Array.from(cookies);
   }
 
-  private determineAuthPattern(tokens: AuthToken[], cookies: string[]): AuthFlow['authPattern'] {
+  // ENHANCED: Advanced authentication pattern determination
+  private determineAdvancedAuthPattern(
+    tokens: AuthToken[], 
+    cookies: string[], 
+    oauthFlow?: AuthFlow['oauthFlow'],
+    jwtClaims?: Record<string, any>
+  ): AuthFlow['authPattern'] {
     const hasTokens = tokens.length > 0;
     const hasCookies = cookies.length > 0;
     const hasApiKeys = tokens.some(t => t.type === 'api_key');
+    const hasJWT = jwtClaims && Object.keys(jwtClaims).length > 0;
+    const hasOAuth = oauthFlow && (oauthFlow.authorizationUrl || oauthFlow.tokenUrl);
 
+    // Priority order: OAuth2 > JWT > API Key > Mixed > Cookie > Token
+    if (hasOAuth) return 'oauth2';
+    if (hasJWT) return 'jwt';
     if (hasApiKeys && !hasCookies) return 'api_key';
     if (hasTokens && hasCookies) return 'mixed';
     if (hasCookies && !hasTokens) return 'cookie_based';
     if (hasTokens && !hasCookies) return 'token_based';
     
     return 'token_based'; // Default assumption
+  }
+
+  // NEW: OAuth 2.0 flow detection
+  private detectOAuthFlow(requests: NetworkRequest[]): AuthFlow['oauthFlow'] | undefined {
+    const authRequests = requests.filter(r => 
+      r.url.includes('/oauth/') || 
+      r.url.includes('/auth/') || 
+      r.url.includes('oauth2') ||
+      r.url.includes('authorization') ||
+      r.url.includes('token')
+    );
+
+    if (authRequests.length === 0) return undefined;
+
+    // Detect authorization endpoint
+    const authEndpoint = authRequests.find(r => 
+      (r.url.includes('authorize') || r.url.includes('consent')) && r.method === 'GET'
+    );
+
+    // Detect token endpoint
+    const tokenEndpoint = authRequests.find(r =>
+      r.url.includes('token') && r.method === 'POST'
+    );
+
+    if (authEndpoint || tokenEndpoint) {
+      const scopes = this.extractScopes(authRequests);
+      const pkceEnabled = this.detectPKCE(authRequests);
+      const clientId = this.extractClientId(authRequests);
+      const grantType = this.detectGrantType(authRequests);
+
+      return {
+        authorizationUrl: authEndpoint?.url,
+        tokenUrl: tokenEndpoint?.url,
+        scopes,
+        pkceEnabled,
+        clientId,
+        grantType
+      };
+    }
+
+    return undefined;
+  }
+
+  private extractScopes(requests: NetworkRequest[]): string[] {
+    const scopes: string[] = [];
+    
+    requests.forEach(request => {
+      const url = request.url;
+      const body = request.requestBody;
+      
+      // Extract scopes from URL parameters
+      const scopeMatch = url.match(/[?&]scope=([^&]+)/);
+      if (scopeMatch) {
+        scopes.push(...scopeMatch[1].split(/[+%20]/));
+      }
+      
+      // Extract scopes from request body
+      if (body && typeof body === 'string') {
+        const bodyScopeMatch = body.match(/scope[=:]([^&\n\r]+)/);
+        if (bodyScopeMatch) {
+          scopes.push(...bodyScopeMatch[1].split(/[+%20 ]/));
+        }
+      }
+    });
+    
+    return [...new Set(scopes)].filter(Boolean);
+  }
+
+  private detectPKCE(requests: NetworkRequest[]): boolean {
+    return requests.some(request => 
+      request.url.includes('code_challenge') || 
+      request.url.includes('code_verifier') ||
+      (request.requestBody && 
+       typeof request.requestBody === 'string' && 
+       (request.requestBody.includes('code_challenge') || 
+        request.requestBody.includes('code_verifier')))
+    );
+  }
+
+  private extractClientId(requests: NetworkRequest[]): string | undefined {
+    for (const request of requests) {
+      const url = request.url;
+      const body = request.requestBody;
+      
+      // Extract from URL
+      const urlMatch = url.match(/[?&]client_id=([^&]+)/);
+      if (urlMatch) return urlMatch[1];
+      
+      // Extract from body
+      if (body && typeof body === 'string') {
+        const bodyMatch = body.match(/client_id[=:]([^&\n\r]+)/);
+        if (bodyMatch) return bodyMatch[1];
+      }
+    }
+    return undefined;
+  }
+
+  private detectGrantType(requests: NetworkRequest[]): AuthFlow['oauthFlow']['grantType'] {
+    for (const request of requests) {
+      const body = request.requestBody;
+      if (body && typeof body === 'string') {
+        if (body.includes('grant_type=authorization_code')) return 'authorization_code';
+        if (body.includes('grant_type=client_credentials')) return 'client_credentials';
+        if (body.includes('grant_type=password')) return 'password';
+        if (body.includes('grant_type=refresh_token')) return 'refresh_token';
+      }
+    }
+    return 'authorization_code'; // Default
+  }
+
+  // NEW: JWT claims extraction
+  private extractJWTClaims(tokens: AuthToken[]): Record<string, any> | undefined {
+    const jwtTokens = tokens.filter(token => 
+      token.value.includes('.') && token.value.split('.').length === 3
+    );
+
+    if (jwtTokens.length === 0) return undefined;
+
+    try {
+      // Decode the first JWT found
+      const jwt = jwtTokens[0].value;
+      const parts = jwt.split('.');
+      
+      // Decode the payload (second part)
+      const payload = JSON.parse(atob(parts[1]));
+      
+      return payload;
+    } catch (error) {
+      console.warn('Failed to decode JWT:', error);
+      return undefined;
+    }
+  }
+
+  // NEW: Refresh token flow detection
+  private detectRefreshTokenFlow(requests: NetworkRequest[]): AuthFlow['refreshToken'] | undefined {
+    const refreshRequests = requests.filter(r => 
+      r.url.includes('refresh') || 
+      r.url.includes('renew') ||
+      (r.requestBody && 
+       typeof r.requestBody === 'string' && 
+       r.requestBody.includes('refresh_token'))
+    );
+
+    if (refreshRequests.length === 0) return undefined;
+
+    const refreshEndpoint = refreshRequests[0];
+    
+    // Determine mechanism based on response
+    const mechanism = this.determineRefreshMechanism(refreshRequests);
+    const tokenField = this.extractRefreshTokenField(refreshRequests);
+
+    return {
+      endpoint: refreshEndpoint.url,
+      mechanism,
+      tokenField
+    };
+  }
+
+  private determineRefreshMechanism(requests: NetworkRequest[]): 'rotation' | 'reuse' {
+    // If multiple refresh requests with different tokens, it's rotation
+    const refreshTokens = new Set();
+    
+    requests.forEach(request => {
+      if (request.requestBody && typeof request.requestBody === 'string') {
+        const tokenMatch = request.requestBody.match(/refresh_token[=:]([^&\n\r]+)/);
+        if (tokenMatch) {
+          refreshTokens.add(tokenMatch[1]);
+        }
+      }
+    });
+    
+    return refreshTokens.size > 1 ? 'rotation' : 'reuse';
+  }
+
+  private extractRefreshTokenField(requests: NetworkRequest[]): string {
+    // Look for the field name used for refresh tokens
+    for (const request of requests) {
+      if (request.requestBody && typeof request.requestBody === 'string') {
+        if (request.requestBody.includes('refresh_token')) return 'refresh_token';
+        if (request.requestBody.includes('refreshToken')) return 'refreshToken';
+        if (request.requestBody.includes('refresh')) return 'refresh';
+      }
+    }
+    return 'refresh_token'; // Default
+  }
+
+  // NEW: MFA detection
+  private detectMFARequirement(requests: NetworkRequest[]): boolean {
+    return requests.some(request => 
+      request.url.includes('mfa') ||
+      request.url.includes('2fa') ||
+      request.url.includes('totp') ||
+      request.url.includes('otp') ||
+      request.url.includes('verify') ||
+      (request.requestBody && 
+       typeof request.requestBody === 'string' && 
+       (request.requestBody.includes('verification_code') ||
+        request.requestBody.includes('mfa_token') ||
+        request.requestBody.includes('totp_code')))
+    );
+  }
+
+  // NEW: CSRF protection detection
+  private detectCSRFProtection(requests: NetworkRequest[]): AuthFlow['csrfProtection'] | undefined {
+    for (const request of requests) {
+      const headers = request.requestHeaders || {};
+      
+      // Check for CSRF headers
+      for (const [headerName, headerValue] of Object.entries(headers)) {
+        if (headerName.toLowerCase().includes('csrf') || 
+            headerName.toLowerCase().includes('xsrf')) {
+          
+          // Look for corresponding cookie
+          const cookieName = this.findCSRFCookie(requests, headerValue);
+          
+          return {
+            tokenName: 'csrf_token',
+            headerName,
+            cookieName
+          };
+        }
+      }
+    }
+    
+    return undefined;
+  }
+
+  private findCSRFCookie(requests: NetworkRequest[], tokenValue: string): string | undefined {
+    for (const request of requests) {
+      const cookies = request.requestHeaders?.cookie || '';
+      if (cookies.includes(tokenValue)) {
+        // Extract cookie name
+        const cookieMatch = cookies.match(/([^=]+)=${tokenValue}/);
+        return cookieMatch ? cookieMatch[1] : undefined;
+      }
+    }
+    return undefined;
+  }
+
+  // NEW: Session management determination
+  private determineSessionManagement(
+    tokens: AuthToken[], 
+    cookies: string[], 
+    refreshToken?: AuthFlow['refreshToken']
+  ): AuthFlow['sessionManagement'] {
+    const hasTokens = tokens.length > 0;
+    const hasCookies = cookies.length > 0;
+    const hasRefresh = !!refreshToken;
+
+    if (hasTokens && !hasCookies && !hasRefresh) return 'stateless';
+    if (!hasTokens && hasCookies) return 'stateful';
+    if (hasTokens && (hasCookies || hasRefresh)) return 'hybrid';
+    
+    return 'stateless'; // Default
   }
 
   private getNestedValue(obj: any, path: string): any {

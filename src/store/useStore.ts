@@ -336,6 +336,10 @@ export const useStore = create<AppStore>((set, get) => ({
       const newSession: RecordingSession = {
         id: sessionId,
         name: sessionData.name || `Imported Session - ${new Date().toLocaleString()}`,
+        startTime: Date.now(),
+        tabId: -1, // Not applicable for imported sessions
+        url: sessionData.url || 'imported',
+        status: 'stopped' as const,
         requests: sessionData.requests.map((req: any, index: number) => ({
           id: req.id || `imported_${index}`,
           method: req.method,
@@ -356,8 +360,6 @@ export const useStore = create<AppStore>((set, get) => ({
           sessionId,
           createdAt: Date.now(),
           type: 'imported',
-        },
-        stats: {
           totalRequests: sessionData.requests.length,
           uniqueEndpoints: new Set(sessionData.requests.map((r: any) => `${r.method} ${r.url}`)).size,
           methods: [...new Set(sessionData.requests.map((r: any) => r.method))] as string[],

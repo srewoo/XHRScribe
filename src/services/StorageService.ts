@@ -4,13 +4,11 @@ import { RecordingSession, Settings } from '@/types';
 export class StorageService {
   private static instance: StorageService;
   private encryptionKey: string;
-  private keyInitialized: boolean = false;
-  private keyInitPromise: Promise<void>;
 
   private constructor() {
     // Initialize with a temporary key, will be replaced async
     this.encryptionKey = 'temp-key';
-    this.keyInitPromise = this.initializeEncryptionKey();
+    this.initializeEncryptionKey();
   }
 
   static getInstance(): StorageService {
@@ -31,26 +29,21 @@ export class StorageService {
         this.encryptionKey = newKey;
         await chrome.storage.local.set({ persistentEncryptionKey: newKey });
       }
-      this.keyInitialized = true;
-      console.log('Encryption key initialized successfully');
     } catch (error) {
       console.error('Failed to initialize encryption key:', error);
       // Fallback to a static key if storage fails
       this.encryptionKey = CryptoJS.SHA256(`${chrome.runtime.id}_fallback`).toString();
-      this.keyInitialized = true;
     }
   }
 
   // Encrypt sensitive data
-  private async encrypt(data: any): Promise<string> {
-    await this.keyInitPromise; // Ensure key is initialized
+  private encrypt(data: any): string {
     const jsonString = JSON.stringify(data);
     return CryptoJS.AES.encrypt(jsonString, this.encryptionKey).toString();
   }
 
   // Decrypt sensitive data with multiple fallback strategies
-  private async decrypt(encryptedData: string): Promise<any> {
-    await this.keyInitPromise; // Ensure key is initialized
+  private decrypt(encryptedData: string): any {
     if (!encryptedData || typeof encryptedData !== 'string') {
       console.warn('Invalid encrypted data');
       return null;
@@ -60,14 +53,6 @@ export class StorageService {
     const result = this.tryDecrypt(encryptedData, this.encryptionKey);
     if (result !== null) return result;
 
-    // Try with fallback key (in case key changed)
-    const fallbackKey = CryptoJS.SHA256(`${chrome.runtime.id}_fallback`).toString();
-    const fallbackResult = this.tryDecrypt(encryptedData, fallbackKey);
-    if (fallbackResult !== null) {
-      console.log('Successfully decrypted with fallback key');
-      return fallbackResult;
-    }
-
     // Try without encryption (backward compatibility)
     try {
       const parsed = JSON.parse(encryptedData);
@@ -75,16 +60,8 @@ export class StorageService {
       return parsed;
     } catch {}
 
-    // Try base64 decode (in case it was just encoded)
-    try {
-      const decoded = atob(encryptedData);
-      const parsed = JSON.parse(decoded);
-      console.log('Data was base64 encoded, decoded successfully');
-      return parsed;
-    } catch {}
-
-    // Data is corrupted - log but don't throw
-    console.warn('Unable to decrypt data with any method, returning null');
+    // Data is corrupted
+    console.warn('Unable to decrypt data with any method');
     return null;
   }
 
@@ -113,7 +90,7 @@ export class StorageService {
       sessions.shift();
     }
 
-    const encrypted = await this.encrypt(sessions);
+    const encrypted = this.encrypt(sessions);
     await chrome.storage.local.set({ sessions: encrypted });
   }
 
@@ -121,7 +98,7 @@ export class StorageService {
   async getSessions(): Promise<RecordingSession[]> {
     const result = await chrome.storage.local.get('sessions');
     if (result.sessions) {
-      const decrypted = await this.decrypt(result.sessions);
+      const decrypted = this.decrypt(result.sessions);
       return decrypted || [];
     }
     return [];
@@ -131,7 +108,7 @@ export class StorageService {
   async deleteSession(sessionId: string): Promise<void> {
     const sessions = await this.getSessions();
     const filtered = sessions.filter(s => s.id !== sessionId);
-    const encrypted = await this.encrypt(filtered);
+    const encrypted = this.encrypt(filtered);
     await chrome.storage.local.set({ sessions: encrypted });
   }
 
@@ -141,7 +118,7 @@ export class StorageService {
     const updated = sessions.map(s => 
       s.id === sessionId ? { ...s, name: newName } : s
     );
-    const encrypted = await this.encrypt(updated);
+    const encrypted = this.encrypt(updated);
     await chrome.storage.local.set({ sessions: encrypted });
   }
 
@@ -149,142 +126,54 @@ export class StorageService {
   async saveSettings(settings: Settings): Promise<void> {
     // Encrypt API keys separately for extra security
     const apiKeys = settings.apiKeys;
-    const encryptedKeys = await this.encrypt(apiKeys);
-
+    const encryptedKeys = this.encrypt(apiKeys);
+    
     // Save settings with encrypted API keys
     const settingsToSave = {
       ...settings,
       apiKeys: undefined // Don't save plain API keys
     };
 
-    await chrome.storage.sync.set({
+    await chrome.storage.sync.set({ 
       settings: settingsToSave,
       encryptedApiKeys: encryptedKeys
     });
-    console.log('Settings saved successfully with encrypted API keys');
   }
 
-  // Get settings with enhanced error recovery
+  // Get settings
   async getSettings(): Promise<Settings | null> {
     try {
       const result = await chrome.storage.sync.get(['settings', 'encryptedApiKeys']);
-
+      
       if (result.settings) {
-        let settings = result.settings as Settings;
-
-        // Validate settings structure
-        if (!this.isValidSettingsObject(settings)) {
-          console.warn('Invalid settings structure detected, using defaults');
-          settings = this.getDefaultSettings();
-        }
-
-        // Handle API keys with enhanced error recovery
+        const settings = result.settings as Settings;
+        
+        // Decrypt API keys if they exist
         if (result.encryptedApiKeys) {
-          try {
-            const decryptedKeys = await this.decrypt(result.encryptedApiKeys);
-
-            if (decryptedKeys && typeof decryptedKeys === 'object') {
-              settings.apiKeys = { ...settings.apiKeys, ...decryptedKeys };
-              console.log('API keys successfully decrypted');
-            } else {
-              console.warn('API key decryption returned invalid data, using empty keys');
-              settings.apiKeys = settings.apiKeys || {};
-
-              // Clear corrupted data after a delay to avoid infinite loops
-              setTimeout(async () => {
-                try {
-                  await chrome.storage.sync.remove('encryptedApiKeys');
-                  console.log('Corrupted API keys cleared from storage');
-                } catch (error) {
-                  console.error('Failed to clear corrupted API keys:', error);
-                }
-              }, 1000);
-            }
-          } catch (decryptError) {
-            console.error('Error during API key decryption:', decryptError);
-            settings.apiKeys = settings.apiKeys || {};
+          const decryptedKeys = this.decrypt(result.encryptedApiKeys);
+          // If decryption failed, reset to empty object rather than failing
+          settings.apiKeys = decryptedKeys || {};
+          
+          // If decryption failed, clear the corrupted data
+          if (!decryptedKeys && result.encryptedApiKeys) {
+            console.warn('Clearing corrupted API keys, user will need to re-enter them');
+            await chrome.storage.sync.remove('encryptedApiKeys');
           }
         } else {
-          settings.apiKeys = settings.apiKeys || {};
+          settings.apiKeys = {};
         }
-
+        
         return settings;
-      } else {
-        console.log('No settings found, returning defaults');
-        return this.getDefaultSettings();
       }
     } catch (error) {
       console.error('Error loading settings:', error);
-
-      // Try to recover by clearing potentially corrupted data
-      try {
-        await this.clearCorruptedData();
-      } catch (clearError) {
-        console.error('Failed to clear corrupted data:', clearError);
-      }
-
+      // Return default settings on error
       return this.getDefaultSettings();
     }
+    
+    return null;
   }
-
-  // Validate settings object structure
-  private isValidSettingsObject(settings: any): boolean {
-    if (!settings || typeof settings !== 'object') {
-      return false;
-    }
-
-    // Check for required properties
-    const requiredProps = ['aiProvider', 'testFramework', 'privacyMode'];
-    for (const prop of requiredProps) {
-      if (!(prop in settings)) {
-        return false;
-      }
-    }
-
-    return true;
-  }
-
-  // Clear potentially corrupted data
-  private async clearCorruptedData(): Promise<void> {
-    try {
-      console.log('Attempting to clear corrupted storage data...');
-
-      // Remove potentially corrupted items
-      await chrome.storage.sync.remove(['encryptedApiKeys']);
-      await chrome.storage.local.remove(['persistentEncryptionKey']);
-
-      // Reinitialize encryption key
-      await this.initializeEncryptionKey();
-
-      console.log('Corrupted data cleared, storage reset');
-    } catch (error) {
-      console.error('Failed to clear corrupted data:', error);
-    }
-  }
-
-  // Reset all settings to defaults (public method for user-initiated reset)
-  async resetSettings(): Promise<void> {
-    try {
-      console.log('Resetting all settings to defaults...');
-
-      // Clear all storage
-      await chrome.storage.sync.clear();
-      await chrome.storage.local.clear();
-
-      // Reinitialize encryption key
-      await this.initializeEncryptionKey();
-
-      // Save default settings
-      const defaultSettings = this.getDefaultSettings();
-      await chrome.storage.sync.set({ settings: defaultSettings });
-
-      console.log('Settings reset completed successfully');
-    } catch (error) {
-      console.error('Failed to reset settings:', error);
-      throw error;
-    }
-  }
-
+  
   // Get default settings
   private getDefaultSettings(): Settings {
     return {
@@ -334,7 +223,7 @@ export class StorageService {
     // Clear sessions if they're corrupted
     const result = await chrome.storage.local.get('sessions');
     if (result.sessions && typeof result.sessions === 'string') {
-      const testDecrypt = await this.decrypt(result.sessions);
+      const testDecrypt = this.decrypt(result.sessions);
       if (!testDecrypt) {
         console.warn('Sessions data is corrupted, clearing...');
         await chrome.storage.local.remove('sessions');
@@ -373,7 +262,7 @@ export class StorageService {
       const data = JSON.parse(jsonData);
       
       if (data.sessions) {
-        const encrypted = await this.encrypt(data.sessions);
+        const encrypted = this.encrypt(data.sessions);
         await chrome.storage.local.set({ sessions: encrypted });
       }
       

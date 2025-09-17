@@ -17,9 +17,7 @@ export class BackgroundService {
   private storageService: StorageService = StorageService.getInstance();
   private aiService: AIService = AIService.getInstance();
   private exportService: ExportService = ExportService.getInstance();
-  private memoryCleanupIntervals: Map<string, number> = new Map();
-  private readonly MAX_REQUESTS_PER_SESSION = 500; // Limit requests to prevent memory issues
-  private readonly MAX_REQUEST_AGE_MS = 5 * 60 * 1000; // 5 minutes
+  // private requestIdCounter = 0;
 
   private constructor() {}
 
@@ -138,16 +136,6 @@ export class BackgroundService {
           sendResponse({ success: true, content: exportContent });
           break;
 
-        case 'IMPORT_SESSION':
-          await this.storageService.saveSession(message.payload);
-          sendResponse({ success: true });
-          break;
-
-        case 'RESET_SETTINGS':
-          await this.storageService.resetSettings();
-          sendResponse({ success: true });
-          break;
-
         default:
           sendResponse({ success: false, error: 'Unknown message type' });
       }
@@ -172,11 +160,38 @@ export class BackgroundService {
     // Attach debugger
     await chrome.debugger.attach({ tabId }, '1.3');
     
-    // Enable network domain
+    // Enable comprehensive network monitoring
     await chrome.debugger.sendCommand({ tabId }, 'Network.enable', {
       maxTotalBufferSize: 10000000,
       maxResourceBufferSize: 5000000
     });
+    
+    // ENHANCED: Enable additional debugging domains for complete capture
+    // These are optional enhancements - failure won't prevent basic recording
+    
+    // Enable Service Worker debugging (optional)
+    try {
+      await chrome.debugger.sendCommand({ tabId }, 'ServiceWorker.enable');
+      console.log('✅ ServiceWorker debugging enabled');
+    } catch (error) {
+      console.log('ℹ️ ServiceWorker debugging not available (Chrome version may not support it)');
+    }
+    
+    // Enable background services monitoring (optional)
+    try {
+      await chrome.debugger.sendCommand({ tabId }, 'BackgroundService.startObserving', {
+        service: 'backgroundFetch'
+      });
+      await chrome.debugger.sendCommand({ tabId }, 'BackgroundService.startObserving', {
+        service: 'pushMessaging'
+      });
+      await chrome.debugger.sendCommand({ tabId }, 'BackgroundService.startObserving', {
+        service: 'backgroundSync'
+      });
+      console.log('✅ Background services monitoring enabled');
+    } catch (error) {
+      console.log('ℹ️ Background services monitoring not available');
+    }
 
     // Create recording session
     const session: RecordingSession = {
@@ -188,9 +203,6 @@ export class BackgroundService {
       url: tab.url || '',
       status: 'recording'
     };
-
-    // Set up memory cleanup interval (every 30 seconds)
-    this.startMemoryCleanup(session);
 
     this.recordingSessions.set(tabId, session);
     this.harProcessor.startSession(session.id);
@@ -218,7 +230,6 @@ export class BackgroundService {
     await this.storageService.saveSession(session);
 
     // Clean up
-    this.stopMemoryCleanup(session.id);
     this.recordingSessions.delete(tabId);
     this.harProcessor.endSession(session.id);
 
@@ -245,8 +256,9 @@ export class BackgroundService {
     const session = this.recordingSessions.get(source.tabId);
     if (!session) return;
 
-    // Process network events
+    // Process ALL network events for comprehensive capture
     switch (method) {
+      // Standard network events
       case 'Network.requestWillBeSent':
         this.handleRequestWillBeSent(session, params);
         break;
@@ -263,6 +275,7 @@ export class BackgroundService {
         this.handleLoadingFailed(session, params);
         break;
 
+      // ENHANCED: WebSocket events
       case 'Network.webSocketCreated':
         this.handleWebSocketCreated(session, params);
         break;
@@ -271,20 +284,62 @@ export class BackgroundService {
       case 'Network.webSocketFrameReceived':
         this.handleWebSocketFrame(session, method, params);
         break;
+
+      case 'Network.webSocketWillSendHandshakeRequest':
+        this.handleWebSocketHandshake(session, params);
+        break;
+
+      case 'Network.webSocketHandshakeResponseReceived':
+        this.handleWebSocketHandshakeResponse(session, params);
+        break;
+
+      // NEW: Server-Sent Events (SSE)
+      case 'Network.eventSourceMessageReceived':
+        this.handleServerSentEvent(session, params);
+        break;
+
+      // NEW: Service Worker network events
+      case 'ServiceWorker.workerCreated':
+        this.handleServiceWorkerCreated(session, params);
+        break;
+
+      case 'ServiceWorker.workerDestroyed':
+        this.handleServiceWorkerDestroyed(session, params);
+        break;
+
+      // NEW: Background service events
+      case 'BackgroundService.recordingStateChanged':
+        this.handleBackgroundServiceEvent(session, params);
+        break;
+
+      // NEW: Network state changes
+      case 'Network.dataReceived':
+        this.handleDataReceived(session, params);
+        break;
+
+      case 'Network.resourceChangedPriority':
+        this.handleResourcePriorityChange(session, params);
+        break;
     }
   }
 
   private handleRequestWillBeSent(session: RecordingSession, params: any): void {
     const { requestId, request, timestamp, type, initiator } = params;
 
-    // Check if it's an API request
-    if (!this.isApiRequest(request.url, type)) return;
-
-    // Check for duplicate request within the last 5 seconds
-    if (this.isDuplicateRequest(session, request)) {
-      console.log(`Skipping duplicate request: ${request.method} ${request.url}`);
-      return;
+    // Enhanced debugging for authentication requests
+    if (request.url.includes('/wapi/') || request.url.includes('/auth')) {
+      console.log('🔍 Potential auth request detected:', {
+        url: request.url,
+        method: request.method,
+        type,
+        cookies: request.headers?.cookie ? 'Present' : 'None',
+        headers: Object.keys(request.headers || {}),
+        isApiRequest: this.isApiRequest(request.url, type, request, initiator)
+      });
     }
+
+    // Check if it's an API request with enhanced detection
+    if (!this.isApiRequest(request.url, type, request, initiator)) return;
 
     const networkRequest: NetworkRequest = {
       id: requestId,
@@ -301,67 +356,6 @@ export class BackgroundService {
 
     // Process in HAR processor
     this.harProcessor.addRequest(session.id, networkRequest);
-  }
-
-  /**
-   * Check if this is a duplicate request based on method, URL, and body
-   * within a time window (5 seconds by default)
-   */
-  private isDuplicateRequest(session: RecordingSession, request: any, timeWindowMs: number = 5000): boolean {
-    const now = Date.now();
-    const requestSignature = this.getRequestSignature(request);
-
-    // Check recent requests for duplicates
-    const recentRequests = session.requests.filter(r =>
-      (now - r.timestamp) <= timeWindowMs
-    );
-
-    for (const existingRequest of recentRequests) {
-      const existingSignature = this.getRequestSignature({
-        method: existingRequest.method,
-        url: existingRequest.url,
-        postData: existingRequest.requestBody
-      });
-
-      if (requestSignature === existingSignature) {
-        return true;
-      }
-    }
-
-    return false;
-  }
-
-  /**
-   * Create a signature for a request to identify duplicates
-   */
-  private getRequestSignature(request: any): string {
-    const method = request.method || '';
-    const url = request.url || '';
-
-    // Parse URL to ignore query params that might change (like timestamps)
-    let urlPath = url;
-    try {
-      const urlObj = new URL(url);
-      // Keep pathname and important params, ignore cache-busting params
-      urlPath = urlObj.pathname;
-      const importantParams = ['id', 'action', 'type', 'filter', 'page', 'limit'];
-      const relevantParams = Array.from(urlObj.searchParams.entries())
-        .filter(([key]) => importantParams.includes(key))
-        .sort()
-        .map(([k, v]) => `${k}=${v}`)
-        .join('&');
-      if (relevantParams) {
-        urlPath += '?' + relevantParams;
-      }
-    } catch (e) {
-      // If URL parsing fails, use the original URL
-    }
-
-    // Include body in signature for POST/PUT requests
-    const body = request.postData || '';
-
-    // Create signature
-    return `${method}:${urlPath}:${body}`;
   }
 
   private handleResponseReceived(session: RecordingSession, params: any): void {
@@ -458,47 +452,347 @@ export class BackgroundService {
     }
   }
 
-  private isApiRequest(url: string, type: string): boolean {
+  private isApiRequest(url: string, type: string, request?: any, initiator?: any): boolean {
     // Filter out static resources
-    const staticExtensions = ['.css', '.js', '.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico', '.woff', '.woff2', '.ttf', '.map', '.wasm'];
+    const staticExtensions = ['.css', '.js', '.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico', '.woff', '.woff2', '.ttf', '.map', '.wasm', '.webp', '.avif'];
     const urlLower = url.toLowerCase();
     
     if (staticExtensions.some(ext => urlLower.includes(ext))) {
       return false;
     }
 
-    // Enhanced API endpoint detection patterns
+    // ENHANCED: Comprehensive API endpoint detection patterns
     const apiPatterns = [
-      '/api/', '/v1/', '/v2/', '/v3/', '/v4/', '/graphql', '.json', '.xml',
+      // Standard API patterns
+      '/api/', '/wapi/', '/webapi/', '/v1/', '/v2/', '/v3/', '/v4/', '/v5/', '/graphql', '.json', '.xml',
       '/collect', '/track', '/analytics', '/metrics', '/webhook', '/beacon',
       '.ashx', '.asmx', '.php', '/rest/', '/service/', '/data/',
-      '/ccm/', '/g/', '/ping', '/log', '/event', '/submit'
+      '/ccm/', '/g/', '/ping', '/log', '/event', '/submit',
+      
+      // ADVANCED: Additional business logic endpoints
+      '/execute', '/process', '/handle', '/workflow', '/action',
+      '/command', '/query', '/search', '/filter', '/validate',
+      
+      // ENHANCED: Authentication and session endpoints
+      '/auth', '/auth/', '/login', '/logout', '/signin', '/signout',
+      '/token', '/refresh', '/session', '/user', '/profile',
+      
+      // ADVANCED: Real-time communication endpoints
+      '/sse', '/events', '/stream', '/push', '/live', '/realtime',
+      '/ws/', '/websocket', '/socket.io', '/signalr',
+      
+      // ADVANCED: File operations
+      '/upload', '/download', '/export', '/import', '/sync',
+      '/backup', '/restore', '/migrate',
+      
+      // ADVANCED: Microservice patterns
+      '/internal/', '/micro/', '/service-', '/lambda/', '/function/',
+      '/rpc/', '/grpc/', '/thrift/',
+      
+      // ADVANCED: API versioning and environments
+      '/alpha/', '/beta/', '/canary/', '/preview/', '/staging/',
+      '/dev/', '/test/', '/sandbox/',
+      
+      // ADVANCED: Integration and automation
+      '/integration/', '/automation/', '/scheduler/', '/job/',
+      '/task/', '/worker/', '/queue/'
     ];
     
     const isApiPattern = apiPatterns.some(pattern => url.includes(pattern));
     const isXhrOrFetch = type === 'XHR' || type === 'Fetch';
     
-    // Check for query parameters that indicate API calls
+    // ENHANCED: Content-Type based API detection
+    const isApiContentType = this.hasApiContentType(request?.headers || {});
+    
+    // ENHANCED: Query parameters that indicate API calls
     const hasApiQueryParams = url.includes('?') && (
-      url.includes('callback=') || 
-      url.includes('format=') || 
-      url.includes('api_key=') ||
-      url.includes('token=') ||
-      url.includes('auth=') ||
-      url.includes('key=') ||
-      url.includes('id=') ||
-      url.includes('data=')
+      url.includes('callback=') || url.includes('format=') || 
+      url.includes('api_key=') || url.includes('token=') ||
+      url.includes('auth=') || url.includes('key=') ||
+      url.includes('id=') || url.includes('data=') ||
+      url.includes('query=') || url.includes('filter=') ||
+      url.includes('sort=') || url.includes('limit=') ||
+      url.includes('offset=') || url.includes('page=')
     );
 
-    // Check for common API domains/subdomains
+    // ENHANCED: API domains/subdomains detection
     const apiDomainPatterns = [
       'api.', 'analytics.', 'tracking.', 'metrics.', 'data.',
-      'collect.', 'beacon.', 'events.', 'telemetry.'
+      'collect.', 'beacon.', 'events.', 'telemetry.',
+      'graph.', 'gateway.', 'service.', 'micro.',
+      'backend.', 'server.', 'endpoint.', 'rest.'
     ];
     
     const hasApiDomain = apiDomainPatterns.some(pattern => url.includes(pattern));
 
-    return isXhrOrFetch || isApiPattern || hasApiQueryParams || hasApiDomain;
+    // ADVANCED: Single Page Application (SPA) API detection
+    const isSpaApiCall = this.isSinglePageAppApiCall(initiator, url);
+    
+    // ADVANCED: HTTP method based detection (non-GET requests are often APIs)
+    const isNonGetMethod = request?.method && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method);
+    
+    // ENHANCED: Authentication-specific detection
+    const isAuthRelated = this.isAuthenticationRelated(url, request);
+
+    // COMPREHENSIVE: Combine all detection methods
+    return isXhrOrFetch || isApiPattern || hasApiQueryParams || hasApiDomain || 
+           isApiContentType || isSpaApiCall || isNonGetMethod || isAuthRelated;
+  }
+
+  // NEW: Content-Type based API detection
+  private hasApiContentType(headers: Record<string, string>): boolean {
+    const contentType = headers['content-type'] || headers['Content-Type'] || '';
+    const acceptHeader = headers['accept'] || headers['Accept'] || '';
+    
+    const apiContentTypes = [
+      'application/json', 'application/xml', 'application/x-www-form-urlencoded',
+      'multipart/form-data', 'application/protobuf', 'application/msgpack',
+      'application/grpc', 'application/x-protobuf', 'application/octet-stream'
+    ];
+    
+    const apiAcceptTypes = [
+      'application/json', 'application/xml', 'text/xml',
+      'application/hal+json', 'application/vnd.api+json'
+    ];
+    
+    return apiContentTypes.some(type => contentType.includes(type)) ||
+           apiAcceptTypes.some(type => acceptHeader.includes(type));
+  }
+
+  // NEW: Single Page Application API call detection
+  private isSinglePageAppApiCall(initiator: any, url: string): boolean {
+    if (!initiator) return false;
+    
+    // Check if request originated from JavaScript in a SPA context
+    const isSpaInitiator = initiator.type === 'script' || initiator.type === 'fetch';
+    
+    // Check for common SPA frameworks patterns in URLs
+    const spaPatterns = [
+      '_next/', '_nuxt/', '__webpack', '__vite', '/_app/',
+      '/api/', '/trpc/', '/graphql', '/_server/'
+    ];
+    
+    const hasSpaPattern = spaPatterns.some(pattern => url.includes(pattern));
+    
+    // Check for AJAX-like headers (common in SPAs)
+    const hasAjaxHeaders = initiator?.stack && 
+      typeof initiator.stack === 'string' &&
+      (initiator.stack.includes('XMLHttpRequest') || 
+       initiator.stack.includes('fetch') ||
+       initiator.stack.includes('axios'));
+    
+    return isSpaInitiator && (hasSpaPattern || hasAjaxHeaders);
+  }
+
+  // NEW: Authentication-specific request detection
+  private isAuthenticationRelated(url: string, request?: any): boolean {
+    // Check for authentication-related URL patterns
+    const authUrlPatterns = [
+      '/auth', '/login', '/logout', '/signin', '/signout',
+      '/token', '/refresh', '/session', '/user', '/profile',
+      '/oauth', '/sso', '/saml', '/oidc', '/jwt'
+    ];
+    
+    const hasAuthUrlPattern = authUrlPatterns.some(pattern => 
+      url.toLowerCase().includes(pattern)
+    );
+    
+    // Check for authentication headers
+    const headers = request?.headers || {};
+    const hasAuthHeaders = this.hasAuthenticationHeaders(headers);
+    
+    // Check for authentication cookies
+    const hasAuthCookies = this.hasAuthenticationCookies(headers);
+    
+    // Check for authentication query parameters
+    const hasAuthQueryParams = this.hasAuthenticationQueryParams(url);
+    
+    return hasAuthUrlPattern || hasAuthHeaders || hasAuthCookies || hasAuthQueryParams;
+  }
+
+  private hasAuthenticationHeaders(headers: Record<string, string>): boolean {
+    const authHeaderNames = [
+      'authorization', 'x-auth-token', 'x-access-token', 'x-api-key',
+      'x-session-id', 'x-csrf-token', 'x-xsrf-token'
+    ];
+    
+    return authHeaderNames.some(headerName => 
+      Object.keys(headers).some(key => key.toLowerCase() === headerName)
+    );
+  }
+
+  private hasAuthenticationCookies(headers: Record<string, string>): boolean {
+    const cookieHeader = headers['cookie'] || headers['Cookie'] || '';
+    
+    // Look for common authentication cookie patterns
+    const authCookiePatterns = [
+      'session', 'auth', 'token', 'login', 'userid', 'companyid',
+      '_csrf', 'PLAY_SESSION', 'connect.sid'
+    ];
+    
+    return authCookiePatterns.some(pattern => 
+      cookieHeader.toLowerCase().includes(pattern.toLowerCase())
+    );
+  }
+
+  private hasAuthenticationQueryParams(url: string): boolean {
+    try {
+      const urlObj = new URL(url);
+      const authQueryParams = [
+        'token', 'auth', 'session', 'userid', 'companyid',
+        'access_token', 'refresh_token', 'api_key'
+      ];
+      
+      return authQueryParams.some(param => urlObj.searchParams.has(param));
+    } catch {
+      // If URL parsing fails, check string patterns
+      const authParamPatterns = [
+        'token=', 'auth=', 'session=', 'userid=', 'access_token=', 'api_key='
+      ];
+      
+      return authParamPatterns.some(pattern => 
+        url.toLowerCase().includes(pattern)
+      );
+    }
+  }
+
+  // NEW: Enhanced WebSocket handshake handling
+  private handleWebSocketHandshake(session: RecordingSession, params: any): void {
+    const { requestId, request, timestamp } = params;
+    
+    console.log('🔌 WebSocket handshake request detected:', request.url);
+    
+    const networkRequest: NetworkRequest = {
+      id: requestId,
+      url: request.url,
+      method: 'WEBSOCKET_HANDSHAKE',
+      type: 'WebSocket',
+      timestamp: timestamp * 1000,
+      requestHeaders: request.headers,
+      requestBody: 'WebSocket handshake request'
+    };
+    
+    session.requests.push(networkRequest);
+    this.harProcessor.addRequest(session.id, networkRequest);
+  }
+
+  private handleWebSocketHandshakeResponse(session: RecordingSession, params: any): void {
+    const { requestId, response, timestamp } = params;
+    
+    const request = session.requests.find(r => r.id === requestId);
+    if (!request) return;
+    
+    request.status = response.status;
+    request.responseHeaders = response.headers;
+    request.duration = (timestamp * 1000) - request.timestamp;
+    request.responseBody = 'WebSocket handshake successful';
+    
+    console.log('🔌 WebSocket handshake response received for:', request.url);
+    this.harProcessor.updateResponse(session.id, requestId, response);
+  }
+
+  // NEW: Server-Sent Events handling
+  private handleServerSentEvent(session: RecordingSession, params: any): void {
+    const { requestId, timestamp, eventName, eventId, data } = params;
+    
+    console.log('📡 Server-Sent Event received:', eventName);
+    
+    // Find the SSE connection request
+    let sseRequest = session.requests.find(r => r.id === requestId);
+    
+    if (!sseRequest) {
+      // Create a new SSE request if not found
+      sseRequest = {
+        id: requestId,
+        url: 'SSE_CONNECTION',
+        method: 'GET',
+        type: 'XHR', // SSE uses XHR under the hood
+        timestamp: timestamp * 1000,
+        requestHeaders: { 'Accept': 'text/event-stream' },
+        responseBody: []
+      };
+      session.requests.push(sseRequest);
+      this.harProcessor.addRequest(session.id, sseRequest);
+    }
+    
+    // Add SSE data to response body
+    if (!sseRequest.responseBody) {
+      sseRequest.responseBody = [];
+    }
+    
+    if (Array.isArray(sseRequest.responseBody)) {
+      sseRequest.responseBody.push({
+        timestamp: timestamp * 1000,
+        eventName,
+        eventId,
+        data,
+        type: 'server_sent_event'
+      });
+    }
+  }
+
+  // NEW: Service Worker network handling
+  private handleServiceWorkerCreated(session: RecordingSession, params: any): void {
+    const { workerId, url, scopeURL } = params;
+    
+    console.log('👷 Service Worker created:', url);
+    
+    // Enable network domain for this service worker
+    try {
+      chrome.debugger.sendCommand(
+        { tabId: session.tabId },
+        'ServiceWorker.deliverPushMessage',
+        { origin: new URL(url).origin, registrationId: workerId }
+      );
+    } catch (error) {
+      console.warn('Failed to enable Service Worker network monitoring:', error);
+    }
+  }
+
+  private handleServiceWorkerDestroyed(session: RecordingSession, params: any): void {
+    const { workerId } = params;
+    console.log('👷 Service Worker destroyed:', workerId);
+  }
+
+  // NEW: Background service event handling
+  private handleBackgroundServiceEvent(session: RecordingSession, params: any): void {
+    const { isRecording, service } = params;
+    console.log(`📱 Background service ${service} recording state:`, isRecording);
+  }
+
+  // NEW: Data received handling for streaming requests
+  private handleDataReceived(session: RecordingSession, params: any): void {
+    const { requestId, timestamp, dataLength, encodedDataLength } = params;
+    
+    const request = session.requests.find(r => r.id === requestId);
+    if (!request) return;
+    
+    // Track streaming data for large responses
+    if (!request.responseSize) {
+      request.responseSize = 0;
+    }
+    request.responseSize += dataLength;
+    
+    // Mark as streaming request if data is received in chunks
+    if (!request.metadata) {
+      request.metadata = {};
+    }
+    request.metadata.isStreaming = true;
+    request.metadata.chunks = (request.metadata.chunks || 0) + 1;
+  }
+
+  // NEW: Resource priority change handling
+  private handleResourcePriorityChange(session: RecordingSession, params: any): void {
+    const { requestId, newPriority, timestamp } = params;
+    
+    const request = session.requests.find(r => r.id === requestId);
+    if (!request) return;
+    
+    if (!request.metadata) {
+      request.metadata = {};
+    }
+    request.metadata.priority = newPriority;
+    request.metadata.priorityChanged = timestamp * 1000;
   }
 
   private getRequestType(request: any, initiator: any): NetworkRequest['type'] {
@@ -510,14 +804,10 @@ export class BackgroundService {
   }
 
   private async updateIcon(tabId: number, recording: boolean): Promise<void> {
-    const path = recording ? {
-      16: '/icons/icon16-recording.png',
-      32: '/icons/icon32-recording.png',
-      48: '/icons/icon48-recording.png',
-      128: '/icons/icon128-recording.png'
-    } : {
+    // Always use regular icons for now (recording icons not available)
+    const path = {
       16: '/icons/icon16.png',
-      32: '/icons/icon32.png',
+      32: '/icons/icon32.png', 
       48: '/icons/icon48.png',
       128: '/icons/icon128.png'
     };
@@ -526,10 +816,11 @@ export class BackgroundService {
       await chrome.action.setIcon({ tabId, path });
       await chrome.action.setTitle({ 
         tabId, 
-        title: recording ? 'XHRScribe - Recording...' : 'XHRScribe - Click to start recording' 
+        title: recording ? 'XHRScribe - Recording... 🔴' : 'XHRScribe - Click to start recording' 
       });
     } catch (error) {
-      console.warn('Failed to update icon:', error);
+      // Silently continue if icon update fails - it's not critical
+      console.log('Note: Icon update not available in this context');
     }
   }
 
@@ -549,47 +840,5 @@ export class BackgroundService {
       recording: !!session,
       session
     };
-  }
-
-  private startMemoryCleanup(session: RecordingSession): void {
-    const intervalId = setInterval(() => {
-      this.cleanupOldRequests(session);
-    }, 30000); // Run every 30 seconds
-
-    this.memoryCleanupIntervals.set(session.id, intervalId);
-  }
-
-  private stopMemoryCleanup(sessionId: string): void {
-    const intervalId = this.memoryCleanupIntervals.get(sessionId);
-    if (intervalId) {
-      clearInterval(intervalId);
-      this.memoryCleanupIntervals.delete(sessionId);
-    }
-  }
-
-  private cleanupOldRequests(session: RecordingSession): void {
-    const now = Date.now();
-    const maxAge = this.MAX_REQUEST_AGE_MS;
-    const maxRequests = this.MAX_REQUESTS_PER_SESSION;
-
-    // Remove old requests beyond the time window
-    const recentRequests = session.requests.filter(request =>
-      (now - request.timestamp) < maxAge
-    );
-
-    // If still too many requests, keep only the most recent
-    if (recentRequests.length > maxRequests) {
-      // Sort by timestamp descending and keep only the max allowed
-      recentRequests.sort((a, b) => b.timestamp - a.timestamp);
-      session.requests = recentRequests.slice(0, maxRequests);
-    } else {
-      session.requests = recentRequests;
-    }
-
-    // Log cleanup stats for debugging
-    const removedCount = session.requests.length - recentRequests.length;
-    if (removedCount > 0) {
-      console.log(`Memory cleanup: Removed ${removedCount} old requests from session ${session.id}`);
-    }
   }
 }
