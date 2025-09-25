@@ -37,6 +37,7 @@ import RequestList from './components/RequestList';
 import GeneratePanel from './components/GeneratePanel';
 import ImportPanel from './components/ImportPanel';
 import { useStore } from '@/store/useStore';
+import { ErrorBoundary } from '@/components/ErrorBoundary';
 
 interface TabPanelProps {
   children?: React.ReactNode;
@@ -88,41 +89,45 @@ export default function App() {
     try {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (tab.id) {
-        // Check if the background script is responding
-        try {
+        // Use a more robust approach with retry logic
+        await waitForBackgroundAndCheck(tab.id, 3); // Try 3 times with delays
+      }
+    } catch (error) {
+      console.error('Failed to check recording status:', error);
+    }
+  };
+
+  const waitForBackgroundAndCheck = async (tabId: number, maxRetries: number) => {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        // First, ping the background to ensure it's ready
+        const pingResponse = await chrome.runtime.sendMessage({ type: 'PING' });
+        
+        if (pingResponse?.success) {
+          // Background is ready, now check recording status
           const response = await chrome.runtime.sendMessage({
             type: 'GET_STATUS',
-            tabId: tab.id,
+            tabId: tabId,
           });
-          if (response && response.success && response.status.recording) {
+          
+          if (response && response.success && response.status?.recording) {
             useStore.setState({ 
               recording: true, 
               currentSession: response.status.session 
             });
           }
-        } catch (messageError) {
-          // Background script not ready or not responding
-          console.log('Background script not ready yet');
-          // Try again in a moment
-          setTimeout(() => {
-            chrome.runtime.sendMessage({
-              type: 'GET_STATUS',
-              tabId: tab.id,
-            }).then(response => {
-              if (response && response.success && response.status.recording) {
-                useStore.setState({ 
-                  recording: true, 
-                  currentSession: response.status.session 
-                });
-              }
-            }).catch(() => {
-              // Silent fail - background not ready
-            });
-          }, 500);
+          return; // Success, exit retry loop
+        }
+      } catch (error) {
+        console.log(`Background not ready yet (attempt ${attempt}/${maxRetries})`);
+        
+        if (attempt < maxRetries) {
+          // Wait before retrying, with exponential backoff
+          await new Promise(resolve => setTimeout(resolve, attempt * 300));
+        } else {
+          console.warn('Background script failed to respond after multiple attempts');
         }
       }
-    } catch (error) {
-      console.error('Failed to check recording status:', error);
     }
   };
 
@@ -168,15 +173,31 @@ export default function App() {
   };
 
   return (
-    <Box sx={{ width: 400, minHeight: 500, bgcolor: 'background.default' }}>
+    <Box sx={{ width: 480, minHeight: 500, bgcolor: 'background.default' }}>
       {/* Header */}
       <Paper elevation={0} sx={{ p: 2, borderRadius: 0 }}>
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
             <Code color="primary" />
-            <Typography variant="h6" fontWeight="bold">
-              XHRScribe
-            </Typography>
+            <Box sx={{ display: 'flex', flexDirection: 'column', lineHeight: 1 }}>
+              <Typography variant="h6" fontWeight="bold" sx={{ lineHeight: 1.2 }}>
+                XHRScribe
+              </Typography>
+              <Typography 
+                variant="caption" 
+                color="text.secondary" 
+                sx={{ 
+                  fontSize: '0.7rem',
+                  fontStyle: 'italic',
+                  fontWeight: 500,
+                  letterSpacing: '0.02em',
+                  lineHeight: 1,
+                  mt: -0.3
+                }}
+              >
+                Turn traffic into tests
+              </Typography>
+            </Box>
             {recording && (
               <Chip
                 label="Recording"

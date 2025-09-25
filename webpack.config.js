@@ -16,6 +16,7 @@ module.exports = (env, argv) => {
     output: {
       path: path.resolve(__dirname, 'dist'),
       filename: '[name].js',
+      chunkFilename: '[name].chunk.js',
       clean: true,
     },
     module: {
@@ -100,11 +101,54 @@ module.exports = (env, argv) => {
     optimization: {
       minimize: isProduction,
       splitChunks: {
-        chunks: (chunk) => {
-          // Don't split the background script
+        chunks(chunk) {
+          // Don't split chunks for background script - it needs to be a single file
           return chunk.name !== 'background';
         },
+        cacheGroups: {
+          vendor: {
+            test: /[\\/]node_modules[\\/]/,
+            name: 'vendors',
+            priority: 10,
+            reuseExistingChunk: true,
+            enforce: true,
+            chunks(chunk) {
+              return chunk.name !== 'background';
+            },
+          },
+          mui: {
+            test: /[\\/]node_modules[\\/]@mui[\\/]/,
+            name: 'mui',
+            priority: 20,
+            reuseExistingChunk: true,
+            chunks(chunk) {
+              return chunk.name !== 'background';
+            },
+          },
+          crypto: {
+            test: /[\\/]node_modules[\\/]crypto-js[\\/]/,
+            name: 'crypto',
+            priority: 15,
+            reuseExistingChunk: true,
+            chunks(chunk) {
+              return chunk.name !== 'background';
+            },
+          },
+          common: {
+            minChunks: 2,
+            priority: 5,
+            reuseExistingChunk: true,
+            chunks(chunk) {
+              return chunk.name !== 'background';
+            },
+          },
+        },
       },
+      runtimeChunk: {
+        name: (entrypoint) => entrypoint.name !== 'background' ? 'runtime' : false,
+      },
+      usedExports: true,
+      sideEffects: false,
     },
     performance: {
       hints: false,

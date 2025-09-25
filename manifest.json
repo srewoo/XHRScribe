@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "XHRScribe - AI-Powered API Test Generator",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Turn traffic into tests",
   "permissions": [
     "debugger",
@@ -16,8 +16,7 @@
     "https://*/*"
   ],
   "background": {
-    "service_worker": "dist/background.js",
-    "type": "module"
+    "service_worker": "dist/background.js"
   },
   "action": {
     "default_popup": "dist/popup.html",

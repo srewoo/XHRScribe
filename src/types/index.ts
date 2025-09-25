@@ -104,7 +104,8 @@ export type TestFramework =
   | 'puppeteer'
   | 'vitest'
   | 'supertest'
-  | 'postman';
+  | 'postman'
+  | 'restassured';
 
 export type AIProvider = 
   | 'openai'
@@ -158,6 +159,10 @@ export interface GenerationOptions {
   customPrompt?: string;
 }
 
+export interface GenerationProgressCallback {
+  (current: number, total: number, stage: string, endpoint?: string): void;
+}
+
 export interface GeneratedTest {
   id: string;
   framework: TestFramework;
@@ -183,7 +188,6 @@ export interface Settings {
     anthropic?: string;
     gemini?: string;
   };
-  testFramework: TestFramework;
   privacyMode: 'local' | 'cloud' | 'hybrid';
   authGuide?: string; // Custom authentication instructions for LLM
   dataMasking: {
@@ -237,7 +241,11 @@ export interface BackgroundMessage extends Message {
     | 'GET_SETTINGS'
     | 'EXPORT_TESTS'
     | 'GET_STATUS'
-    | 'SAVE_SESSION';
+    | 'SAVE_SESSION'
+    | 'IMPORT_SESSION'
+    | 'PING'
+    | 'CHECK_READY'
+    | 'GENERATION_PROGRESS';
 }
 
 export interface ContentMessage extends Message {

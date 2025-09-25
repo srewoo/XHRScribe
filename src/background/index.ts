@@ -1,3 +1,5 @@
+console.log('🎬 XHRScribe background script loading...');
+
 import { BackgroundService } from './services/BackgroundService';
 import { ServiceWorkerManager } from './services/ServiceWorkerManager';
 
@@ -5,8 +7,28 @@ import { ServiceWorkerManager } from './services/ServiceWorkerManager';
 const backgroundService = BackgroundService.getInstance();
 const serviceWorkerManager = ServiceWorkerManager.getInstance();
 
-// Keep service worker alive
-serviceWorkerManager.startPersistence();
+console.log('📦 Services instantiated');
+
+// Initialize background script
+async function initializeBackground() {
+  try {
+    // Keep service worker alive
+    await serviceWorkerManager.startPersistence();
+    
+    // Signal that background is ready
+    console.log('✅ XHRScribe background script ready');
+    
+    // Store ready flag for popup to check
+    chrome.storage.session.set({ backgroundReady: true }).catch(() => {
+      // Ignore storage errors, not critical
+    });
+  } catch (error) {
+    console.error('❌ Background initialization failed:', error);
+  }
+}
+
+// Start initialization
+initializeBackground();
 
 // Handle extension installation
 chrome.runtime.onInstalled.addListener((details) => {
@@ -20,10 +42,13 @@ chrome.runtime.onInstalled.addListener((details) => {
 
 // Handle messages from popup and content scripts with proper error handling
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  console.log('📨 Background received message:', message?.type, message);
+  
   // Wrap in try-catch to prevent uncaught errors
   try {
     // Check if message is valid
     if (!message || !message.type) {
+      console.warn('Invalid message received:', message);
       sendResponse({ success: false, error: 'Invalid message format' });
       return false;
     }

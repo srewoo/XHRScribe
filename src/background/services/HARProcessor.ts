@@ -63,7 +63,16 @@ export class HARProcessor {
       try {
         // Create unique signature based on method + path (not full URL with query params)
         const url = new URL(request.url);
-        const signature = `${request.method}:${url.pathname}`;
+        let signature = `${request.method}:${url.pathname}`;
+        
+        // ENHANCED: Special handling for GraphQL endpoints
+        if (this.isGraphQLEndpoint(url.pathname, request)) {
+          const graphqlOperation = this.extractGraphQLOperation(request);
+          if (graphqlOperation) {
+            signature = `${request.method}:${url.pathname}:${graphqlOperation}`;
+            console.log(`GraphQL operation detected: ${signature}`);
+          }
+        }
         
         // Keep the first occurrence of each unique endpoint
         // This ensures we capture all distinct API endpoints
@@ -84,6 +93,74 @@ export class HARProcessor {
     return Array.from(endpointMap.values());
   }
 
+  private isGraphQLEndpoint(pathname: string, request: NetworkRequest): boolean {
+    return pathname.includes('graphql') || pathname.includes('gql') || 
+           (request.requestBody && this.looksLikeGraphQL(request.requestBody));
+  }
+
+  private looksLikeGraphQL(requestBody: any): boolean {
+    if (!requestBody) return false;
+    
+    try {
+      const bodyStr = typeof requestBody === 'string' ? requestBody : JSON.stringify(requestBody);
+      const body = typeof requestBody === 'object' ? requestBody : JSON.parse(bodyStr);
+      
+      // Check for GraphQL query patterns
+      return !!(body.query || body.operationName || body.variables || 
+                bodyStr.includes('query ') || bodyStr.includes('mutation ') || 
+                bodyStr.includes('subscription '));
+    } catch {
+      return false;
+    }
+  }
+
+  private extractGraphQLOperation(request: NetworkRequest): string | null {
+    if (!request.requestBody) return null;
+    
+    try {
+      const bodyStr = typeof request.requestBody === 'string' ? request.requestBody : JSON.stringify(request.requestBody);
+      const body = typeof request.requestBody === 'object' ? request.requestBody : JSON.parse(bodyStr);
+      
+      // Priority 1: Use operationName if available
+      if (body.operationName && typeof body.operationName === 'string') {
+        return body.operationName;
+      }
+      
+      // Priority 2: Extract operation name from query string
+      if (body.query && typeof body.query === 'string') {
+        const queryMatch = body.query.match(/(?:query|mutation|subscription)\s+([a-zA-Z][a-zA-Z0-9_]*)/);
+        if (queryMatch && queryMatch[1]) {
+          return queryMatch[1];
+        }
+        
+        // Priority 3: Use operation type + hash for unnamed operations
+        const operationType = body.query.trim().match(/^(query|mutation|subscription)/);
+        if (operationType) {
+          const queryHash = this.simpleHash(body.query);
+          return `${operationType[1]}_${queryHash}`;
+        }
+      }
+      
+      // Priority 4: Fallback to request body hash
+      const bodyHash = this.simpleHash(bodyStr);
+      return `operation_${bodyHash}`;
+      
+    } catch (error) {
+      console.warn('Failed to extract GraphQL operation:', error);
+      return null;
+    }
+  }
+
+  private simpleHash(str: string): string {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+      const char = str.charCodeAt(i);
+      hash = ((hash << 5) - hash) + char;
+      hash = hash & hash; // Convert to 32-bit integer
+    }
+    return Math.abs(hash).toString(16).substring(0, 8);
+  }
+
   private createHAREntry(request: NetworkRequest): HAREntry {
     const url = new URL(request.url);
     const queryString = Array.from(url.searchParams.entries()).map(([name, value]) => ({
@@ -93,6 +170,11 @@ export class HARProcessor {
 
     const requestHeaders = this.formatHeaders(request.requestHeaders || {});
     const responseHeaders = this.formatHeaders(request.responseHeaders || {});
+    
+    // Extract cookies from request headers
+    const requestCookies = this.extractCookiesFromHeaders(request.requestHeaders);
+    // Extract cookies from response headers (Set-Cookie)
+    const responseCookies = this.extractSetCookiesFromHeaders(request.responseHeaders);
 
     return {
       startedDateTime: new Date(request.timestamp).toISOString(),
@@ -101,7 +183,7 @@ export class HARProcessor {
         method: request.method,
         url: request.url,
         httpVersion: 'HTTP/1.1',
-        cookies: [],
+        cookies: requestCookies,
         headers: requestHeaders,
         queryString,
         postData: request.requestBody ? {
@@ -118,7 +200,7 @@ export class HARProcessor {
         status: request.status || 0,
         statusText: this.getStatusText(request.status),
         httpVersion: 'HTTP/1.1',
-        cookies: [],
+        cookies: responseCookies,
         headers: responseHeaders,
         content: {
           size: request.responseSize || 0,
@@ -147,6 +229,85 @@ export class HARProcessor {
 
   private formatHeaders(headers: Record<string, string>): Array<{ name: string; value: string }> {
     return Object.entries(headers).map(([name, value]) => ({ name, value }));
+  }
+
+  private extractCookiesFromHeaders(headers?: Record<string, string>): Array<{ name: string; value: string; domain?: string; path?: string; httpOnly?: boolean; secure?: boolean }> {
+    if (!headers) return [];
+    
+    // Look for Cookie header (case-insensitive)
+    const cookieHeader = headers.cookie || headers.Cookie || headers.COOKIE;
+    if (!cookieHeader) return [];
+
+    // Parse cookie string: "name1=value1; name2=value2; name3=value3"
+    return cookieHeader.split(';').map(cookie => {
+      const [name, ...valueParts] = cookie.trim().split('=');
+      const value = valueParts.join('='); // Handle values that contain '='
+      return {
+        name: name.trim(),
+        value: value || '',
+        domain: '', // Not available in request cookies
+        path: '', // Not available in request cookies
+        httpOnly: false, // Not available in request cookies
+        secure: false // Not available in request cookies
+      };
+    }).filter(cookie => cookie.name); // Filter out empty names
+  }
+
+  private extractSetCookiesFromHeaders(headers?: Record<string, string>): Array<{ name: string; value: string; domain?: string; path?: string; httpOnly?: boolean; secure?: boolean }> {
+    if (!headers) return [];
+    
+    // Look for Set-Cookie headers (case-insensitive)
+    const setCookieHeaders: string[] = [];
+    Object.entries(headers).forEach(([key, value]) => {
+      if (key.toLowerCase() === 'set-cookie') {
+        // Set-Cookie can be an array or single string
+        if (Array.isArray(value)) {
+          setCookieHeaders.push(...value);
+        } else {
+          setCookieHeaders.push(value);
+        }
+      }
+    });
+
+    return setCookieHeaders.map(cookieString => {
+      // Parse Set-Cookie: "name=value; Domain=example.com; Path=/; HttpOnly; Secure"
+      const parts = cookieString.split(';').map(part => part.trim());
+      const [nameValue] = parts;
+      const [name, ...valueParts] = nameValue.split('=');
+      const value = valueParts.join('=');
+
+      const cookie = {
+        name: name.trim(),
+        value: value || '',
+        domain: '',
+        path: '',
+        httpOnly: false,
+        secure: false
+      };
+
+      // Parse additional attributes
+      parts.slice(1).forEach(part => {
+        const [attr, attrValue] = part.split('=');
+        const attrName = attr.toLowerCase();
+        
+        switch (attrName) {
+          case 'domain':
+            cookie.domain = attrValue || '';
+            break;
+          case 'path':
+            cookie.path = attrValue || '';
+            break;
+          case 'httponly':
+            cookie.httpOnly = true;
+            break;
+          case 'secure':
+            cookie.secure = true;
+            break;
+        }
+      });
+
+      return cookie;
+    }).filter(cookie => cookie.name); // Filter out invalid cookies
   }
 
   private getMimeType(headers?: Record<string, string>): string {

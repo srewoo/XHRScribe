@@ -23,6 +23,74 @@ import {
 } from '@mui/icons-material';
 import { RecordingSession, NetworkRequest } from '@/types';
 
+// GraphQL detection and operation extraction helpers
+const isGraphQLEndpoint = (pathname: string, request: NetworkRequest): boolean => {
+  return pathname.includes('graphql') || pathname.includes('gql') || 
+         (request.requestBody && looksLikeGraphQL(request.requestBody));
+};
+
+const looksLikeGraphQL = (requestBody: any): boolean => {
+  if (!requestBody) return false;
+  
+  try {
+    const bodyStr = typeof requestBody === 'string' ? requestBody : JSON.stringify(requestBody);
+    const body = typeof requestBody === 'object' ? requestBody : JSON.parse(bodyStr);
+    
+    // Check for GraphQL query patterns
+    return !!(body.query || body.operationName || body.variables || 
+              bodyStr.includes('query ') || bodyStr.includes('mutation ') || 
+              bodyStr.includes('subscription '));
+  } catch {
+    return false;
+  }
+};
+
+const extractGraphQLOperation = (request: NetworkRequest): string | null => {
+  if (!request.requestBody) return null;
+  
+  try {
+    const bodyStr = typeof request.requestBody === 'string' ? request.requestBody : JSON.stringify(request.requestBody);
+    const body = typeof request.requestBody === 'object' ? request.requestBody : JSON.parse(bodyStr);
+    
+    // Priority 1: Use operationName if available
+    if (body.operationName && typeof body.operationName === 'string') {
+      return body.operationName;
+    }
+    
+    // Priority 2: Extract operation name from query string
+    if (body.query && typeof body.query === 'string') {
+      const queryMatch = body.query.match(/(?:query|mutation|subscription)\s+([a-zA-Z][a-zA-Z0-9_]*)/);
+      if (queryMatch && queryMatch[1]) {
+        return queryMatch[1];
+      }
+      
+      // Priority 3: Use operation type + hash for unnamed operations
+      const operationType = body.query.trim().match(/^(query|mutation|subscription)/);
+      if (operationType) {
+        const queryHash = simpleHash(body.query);
+        return `${operationType[1]}_${queryHash}`;
+      }
+    }
+    
+    // Priority 4: Fallback to request body hash
+    const bodyHash = simpleHash(bodyStr);
+    return `operation_${bodyHash}`;
+    
+  } catch (error) {
+    return null;
+  }
+};
+
+const simpleHash = (str: string): string => {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash; // Convert to 32-bit integer
+  }
+  return Math.abs(hash).toString(16).substring(0, 8);
+};
+
 interface EndpointInfo {
   method: string;
   path: string;
@@ -53,7 +121,17 @@ const EndpointPreview: React.FC<EndpointPreviewProps> = ({
     session.requests.forEach(req => {
       try {
         const url = new URL(req.url);
-        const signature = `${req.method}:${url.pathname}`;
+        let signature = `${req.method}:${url.pathname}`;
+        let displayPath = url.pathname;
+        
+        // ENHANCED: Special handling for GraphQL endpoints
+        if (isGraphQLEndpoint(url.pathname, req)) {
+          const graphqlOperation = extractGraphQLOperation(req);
+          if (graphqlOperation) {
+            signature = `${req.method}:${url.pathname}:${graphqlOperation}`;
+            displayPath = `${url.pathname}:${graphqlOperation}`;
+          }
+        }
         
         if (endpointMap.has(signature)) {
           const existing = endpointMap.get(signature)!;
@@ -64,7 +142,7 @@ const EndpointPreview: React.FC<EndpointPreviewProps> = ({
         } else {
           endpointMap.set(signature, {
             method: req.method,
-            path: url.pathname,
+            path: displayPath,
             fullUrl: req.url,
             count: 1,
             statusCodes: req.status ? [req.status] : [],

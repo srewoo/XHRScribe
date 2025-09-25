@@ -180,7 +180,6 @@ export class StorageService {
       aiProvider: 'openai',
       aiModel: 'gpt-4o-mini',
       apiKeys: {},
-      testFramework: 'jest',
       privacyMode: 'cloud',
       authGuide: undefined, // Custom auth instructions (optional)
       dataMasking: {

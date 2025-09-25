@@ -33,7 +33,6 @@ export class BackgroundService {
       aiProvider: 'openai',
       aiModel: 'gpt-4o-mini',
       apiKeys: {},
-      testFramework: 'jest',
       privacyMode: 'cloud',
       authGuide: undefined, // Custom auth instructions (optional)
       dataMasking: {
@@ -126,7 +125,22 @@ export class BackgroundService {
           // Convert excluded endpoints array back to Set
           const excludedEndpoints = options.excludedEndpoints ? new Set<string>(options.excludedEndpoints) : undefined;
           
-          const generatedTest = await this.aiService.generateTests(targetSession, options, excludedEndpoints);
+          // Create progress callback to send updates to popup
+          const progressCallback = (current: number, total: number, stage: string, endpoint?: string) => {
+            // Send progress update to all popup instances
+            try {
+              chrome.runtime.sendMessage({
+                type: 'GENERATION_PROGRESS',
+                payload: { current, total, stage, endpoint }
+              }).catch(() => {
+                // Ignore errors if popup is closed
+              });
+            } catch (error) {
+              // Ignore messaging errors
+            }
+          };
+          
+          const generatedTest = await this.aiService.generateTests(targetSession, options, excludedEndpoints, progressCallback);
           sendResponse({ success: true, test: generatedTest });
           break;
 
@@ -136,8 +150,22 @@ export class BackgroundService {
           sendResponse({ success: true, content: exportContent });
           break;
 
+        case 'IMPORT_SESSION':
+          await this.storageService.saveSession(message.payload);
+          sendResponse({ success: true });
+          break;
+
+        case 'PING':
+          sendResponse({ success: true, status: 'alive', timestamp: Date.now() });
+          break;
+
+        case 'CHECK_READY':
+          sendResponse({ success: true, ready: true, status: 'ready', timestamp: Date.now() });
+          break;
+
         default:
-          sendResponse({ success: false, error: 'Unknown message type' });
+          console.warn('Unknown message type:', message.type);
+          sendResponse({ success: false, error: `Unknown message type: ${message.type}` });
       }
     } catch (error) {
       console.error('Error handling message:', error);
@@ -145,6 +173,84 @@ export class BackgroundService {
         success: false, 
         error: error instanceof Error ? error.message : 'Unknown error' 
       });
+    }
+  }
+
+  /**
+   * Generate detailed debugger environment report
+   */
+  private async generateDebuggerReport(): Promise<string> {
+    try {
+      const targets = await chrome.debugger.getTargets();
+      const attachedTargets = targets.filter(t => t.attached);
+      
+      let report = `📊 Debugger Environment Report:\n`;
+      report += `• Total active debuggers: ${attachedTargets.length}\n`;
+      
+      if (attachedTargets.length > 0) {
+        const tabTargets = attachedTargets.filter(t => t.type === 'page');
+        const workerTargets = attachedTargets.filter(t => t.type === 'background_page');
+        const otherTargets = attachedTargets.filter(t => t.type === 'other');
+        
+        report += `• Tab debuggers: ${tabTargets.length}\n`;
+        report += `• Worker debuggers: ${workerTargets.length}\n`;
+        report += `• Other debuggers: ${otherTargets.length}\n`;
+        
+        if (attachedTargets.length <= 5) {
+          report += `\n🔍 Active debugger details:\n`;
+          attachedTargets.forEach((target, i) => {
+            const url = target.url ? new URL(target.url).hostname : 'unknown';
+            report += `  ${i + 1}. ${target.type || 'unknown'} - ${url}\n`;
+          });
+        }
+      }
+      
+      return report;
+    } catch (error) {
+      return `📊 Could not generate debugger report: ${error}`;
+    }
+  }
+
+  /**
+   * Advanced debugger conflict detection and resolution
+   */
+  private async resolveDebuggerConflicts(tabId: number): Promise<boolean> {
+    try {
+      const targets = await chrome.debugger.getTargets();
+      const attachedTargets = targets.filter(t => t.attached);
+      
+      console.log(`🔍 Analyzing debugger landscape: ${attachedTargets.length} total debuggers`);
+      
+      // Check for debuggers on the specific tab
+      const tabDebuggers = attachedTargets.filter(t => t.tabId === tabId);
+      if (tabDebuggers.length > 0) {
+        console.log(`⚠️  Found ${tabDebuggers.length} debugger(s) on target tab`);
+        
+        // Try to detach existing debuggers from this tab
+        for (const target of tabDebuggers) {
+          try {
+            await chrome.debugger.detach({ tabId: target.tabId });
+            console.log(`✅ Detached debugger from tab ${target.tabId}`);
+          } catch (e) {
+            console.log(`❌ Could not detach debugger from tab ${target.tabId}`);
+          }
+        }
+        
+        // Wait for detachment to process
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        return true;
+      }
+      
+      // Check for global debugger conflicts (too many active debuggers)
+      if (attachedTargets.length > 10) {
+        console.log(`⚠️  High debugger usage detected (${attachedTargets.length} active)`);
+        return false; // Suggest user action
+      }
+      
+      return true;
+    } catch (error) {
+      console.log('Could not analyze debugger conflicts:', error);
+      return true; // Proceed anyway
     }
   }
 
@@ -157,14 +263,129 @@ export class BackgroundService {
     // Get tab info
     const tab = await chrome.tabs.get(tabId);
     
-    // Attach debugger
-    await chrome.debugger.attach({ tabId }, '1.3');
+    // Validate tab URL - can't record on restricted pages
+    if (!tab.url) {
+      throw new Error('Cannot record on this page: No URL available');
+    }
+    
+    const url = tab.url.toLowerCase();
+    if (url.startsWith('chrome://') || 
+        url.startsWith('chrome-extension://') || 
+        url.startsWith('moz-extension://') || 
+        url.startsWith('edge://') || 
+        url.startsWith('about:') ||
+        url.startsWith('data:') ||
+        url.startsWith('file://')) {
+      throw new Error('Cannot record on browser internal pages. Please navigate to a website (http:// or https://)');
+    }
+    
+    console.log(`Starting recording on: ${tab.url}`);
+    console.log(`Tab status - loaded: ${tab.status}, title: ${tab.title}`);
+    
+    // Pre-flight debugger conflict resolution
+    console.log('🔧 Resolving debugger conflicts...');
+    const conflictResolved = await this.resolveDebuggerConflicts(tabId);
+    if (!conflictResolved) {
+      throw new Error('Too many active debuggers detected. Please:\n1. Close other debugging tools\n2. Disable debugging extensions\n3. Restart Chrome if needed');
+    }
+    
+    // Advanced debugger attachment with retry logic
+    let debuggerAttached = false;
+    let retryCount = 0;
+    const maxRetries = 3;
+    
+    while (!debuggerAttached && retryCount < maxRetries) {
+      try {
+        retryCount++;
+        console.log(`🔧 Debugger attachment attempt ${retryCount}/${maxRetries}`);
+        
+        // Check for existing debuggers
+        const targets = await chrome.debugger.getTargets();
+        const attachedTargets = targets.filter(t => t.attached);
+        console.log(`📊 Total attached debuggers: ${attachedTargets.length}`);
+        
+        // Check if this specific tab already has a debugger
+        const tabTarget = attachedTargets.find(t => t.tabId === tabId);
+        if (tabTarget) {
+          console.log('⚠️  Debugger already attached to this tab, attempting to detach...');
+          try {
+            await chrome.debugger.detach({ tabId });
+            console.log('✅ Previous debugger detached');
+            // Wait a moment for Chrome to process the detachment
+            await new Promise(resolve => setTimeout(resolve, 500));
+          } catch (detachError) {
+            console.log('Could not detach existing debugger:', detachError);
+          }
+        }
+        
+        // Try to attach debugger with protocol fallback
+        const protocols = ['1.3', '1.2', '1.1']; // Try newer protocols first
+        let attachmentSuccess = false;
+        
+        for (const protocol of protocols) {
+          try {
+            await chrome.debugger.attach({ tabId }, protocol);
+            attachmentSuccess = true;
+            console.log(`✅ Debugger attached successfully with protocol ${protocol}`);
+            break;
+          } catch (protocolError) {
+            console.log(`❌ Protocol ${protocol} failed, trying next...`);
+            if (protocol === protocols[protocols.length - 1]) {
+              // Last protocol failed, throw the error
+              throw protocolError;
+            }
+          }
+        }
+        
+        if (attachmentSuccess) {
+          debuggerAttached = true;
+        }
+        
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        console.error(`❌ Debugger attachment attempt ${retryCount} failed:`, errorMessage);
+        
+        if (retryCount >= maxRetries) {
+          // Final attempt failed, provide comprehensive error handling
+          console.error('❌ Tab URL was:', tab.url);
+          console.error('❌ Tab ID was:', tabId);
+          
+          // Generate comprehensive error report
+          const debuggerReport = await this.generateDebuggerReport();
+          
+          if (errorMessage.includes('Cannot access a chrome-extension')) {
+            throw new Error(`❌ Chrome Security Restriction Detected\n\n🔍 DIAGNOSIS:\n${debuggerReport}\n\n✅ SOLUTIONS (try in order):\n1. 🚫 Disable other extensions temporarily\n2. 🕵️ Use incognito mode (enable XHRScribe in incognito)\n3. 📄 Try the homepage instead of login page\n4. 🔧 Close any open DevTools (F12)\n5. 🔄 Restart Chrome if problem persists\n\n💡 This happens when other extensions interfere with debugger access.`);
+          } else if (errorMessage.includes('Another debugger is already attached')) {
+            throw new Error(`❌ Debugger Conflict Detected\n\n🔍 DIAGNOSIS:\n${debuggerReport}\n\n✅ SOLUTIONS:\n1. 🔧 Close Chrome DevTools (F12) on this tab\n2. 🚫 Disable other debugging extensions\n3. 🔄 Restart Chrome to clear all debugger sessions\n\n💡 Only one debugger can be attached to a tab at a time.`);
+          } else if (errorMessage.includes('Inspected target navigated or closed')) {
+            throw new Error('❌ Page Changed During Setup\n\n✅ SOLUTION:\n1. 🔄 Refresh the page\n2. ⏳ Wait for full page load\n3. 🎬 Try recording again');
+          } else if (errorMessage.includes('No such target')) {
+            throw new Error('❌ Tab No Longer Available\n\n✅ SOLUTION:\n1. 🔄 Refresh the page\n2. ⏳ Wait for full page load\n3. 🎬 Try recording again');
+          } else {
+            throw new Error(`❌ Debugger Attachment Failed\n\n🔍 DIAGNOSIS:\n${debuggerReport}\n\n❌ Error: ${errorMessage}\n\n✅ SOLUTIONS:\n1. 🔄 Refresh the page\n2. 🚫 Disable other extensions\n3. 🕵️ Use incognito mode\n4. 🌐 Try a different website\n5. 🔄 Restart Chrome\n\n💡 After ${maxRetries} attempts, this appears to be a system-level issue.`);
+          }
+        } else {
+          // Wait before retry with exponential backoff
+          const waitTime = Math.pow(2, retryCount - 1) * 1000; // 1s, 2s, 4s
+          console.log(`⏳ Waiting ${waitTime}ms before retry...`);
+          await new Promise(resolve => setTimeout(resolve, waitTime));
+        }
+      }
+    }
     
     // Enable comprehensive network monitoring
-    await chrome.debugger.sendCommand({ tabId }, 'Network.enable', {
-      maxTotalBufferSize: 10000000,
-      maxResourceBufferSize: 5000000
-    });
+    try {
+      await chrome.debugger.sendCommand({ tabId }, 'Network.enable', {
+        maxTotalBufferSize: 10000000,
+        maxResourceBufferSize: 5000000
+      });
+      console.log('✅ Network monitoring enabled');
+    } catch (error) {
+      console.error('❌ Failed to enable network monitoring:', error);
+      // Detach debugger if network monitoring fails
+      await chrome.debugger.detach({ tabId }).catch(() => {});
+      throw new Error('Failed to enable network monitoring. Please try again.');
+    }
     
     // ENHANCED: Enable additional debugging domains for complete capture
     // These are optional enhancements - failure won't prevent basic recording

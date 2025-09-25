@@ -66,20 +66,13 @@ export default function OptionsApp() {
     loadSettings();
   }, []);
 
+
   const loadSettings = async () => {
     try {
       const savedSettings = await storageService.getSettings();
       if (savedSettings) {
-        // Ensure aiModel is set for the current provider
-        const defaultModel = getDefaultModelForProvider(savedSettings.aiProvider);
-        const finalSettings = {
-          ...savedSettings,
-          aiModel: savedSettings.aiModel || defaultModel
-        };
-        console.log('Loaded settings:', finalSettings);
-        console.log('AI Model after load:', finalSettings.aiModel);
-        console.log('Default model for provider:', defaultModel);
-        setSettings(finalSettings);
+        console.log('Loaded settings:', savedSettings);
+        setSettings(savedSettings);
         setIncludeDomainsText(savedSettings.filtering.includeDomains.join(', '));
         setExcludeDomainsText(savedSettings.filtering.excludeDomains.join(', '));
       } else {
@@ -107,21 +100,12 @@ export default function OptionsApp() {
     }
   };
 
-  const getDefaultModelForProvider = (provider: string): AIModel => {
-    switch (provider) {
-      case 'openai': return 'gpt-4o-mini';
-      case 'anthropic': return 'claude-4-sonnet';
-      case 'gemini': return 'gemini-2-5-flash';
-      case 'local': return 'llama-3.2';
-      default: return 'gpt-4o-mini';
-    }
-  };
+
 
   const getDefaultSettings = (): Settings => ({
     aiProvider: 'openai',
     aiModel: 'gpt-4o-mini',
     apiKeys: {},
-    testFramework: 'jest',
     privacyMode: 'cloud',
     dataMasking: {
       enabled: true,
@@ -238,7 +222,7 @@ export default function OptionsApp() {
         {/* Tabs */}
         <Box sx={{ borderBottom: 1, borderColor: 'divider' }}>
           <Tabs value={tabValue} onChange={(e, v) => setTabValue(v)}>
-            <Tab icon={<Code />} label="AI Provider" />
+            <Tab icon={<Code />} label="API Keys" />
             <Tab icon={<Security />} label="Privacy" />
             <Tab icon={<FilterList />} label="Filtering" />
             <Tab icon={<AttachMoney />} label="Advanced" />
@@ -249,99 +233,11 @@ export default function OptionsApp() {
           {/* AI Provider Tab */}
           <TabPanel value={tabValue} index={0}>
             <Typography variant="h6" gutterBottom>
-              AI Provider Settings
+              API Keys & Authentication
             </Typography>
             
-            <FormControl fullWidth sx={{ mb: 3 }}>
-              <InputLabel>AI Provider</InputLabel>
-              <Select
-                value={settings.aiProvider}
-                onChange={(e) => {
-                  const newProvider = e.target.value as AIProvider;
-                  const newDefaultModel = getDefaultModelForProvider(newProvider);
-                  console.log('Provider changed to:', newProvider);
-                  console.log('Setting default model to:', newDefaultModel);
-                  setSettings({ 
-                    ...settings, 
-                    aiProvider: newProvider,
-                    aiModel: newDefaultModel
-                  });
-                }}
-                label="AI Provider"
-              >
-                <MenuItem value="openai">OpenAI</MenuItem>
-                <MenuItem value="anthropic">Anthropic Claude</MenuItem>
-                <MenuItem value="gemini">Google Gemini</MenuItem>
-                <MenuItem value="local">Local Model (Coming Soon)</MenuItem>
-              </Select>
-            </FormControl>
 
-            <FormControl fullWidth sx={{ mb: 3 }}>
-              <InputLabel>AI Model</InputLabel>
-              <Select
-                key={`model-select-${settings.aiProvider}`} // Force re-render when provider changes
-                value={settings.aiModel || getDefaultModelForProvider(settings.aiProvider)}
-                onChange={(e) => {
-                  const newModel = e.target.value as AIModel;
-                  console.log('Model selection changed:', newModel);
-                  setSettings({ ...settings, aiModel: newModel });
-                }}
-                label="AI Model"
-                displayEmpty
-              >
-                {settings.aiProvider === 'openai' && (
-                  <>
-                    <MenuItem value="gpt-4o">GPT-4o (Most Capable, Multimodal)</MenuItem>
-                    <MenuItem value="gpt-4o-mini">GPT-4o Mini (Fast & Cheap)</MenuItem>
-                  </>
-                )}
-                {settings.aiProvider === 'anthropic' && (
-                  <>
-                    <MenuItem value="claude-4-sonnet">Claude 4 Sonnet (Latest & Most Capable)</MenuItem>
-                    <MenuItem value="claude-3-7-sonnet">Claude 3.7 Sonnet (Advanced)</MenuItem>
-                    <MenuItem value="claude-3-5-sonnet-20241022">Claude 3.5 Sonnet (Proven)</MenuItem>
-                  </>
-                )}
-                {settings.aiProvider === 'gemini' && (
-                  <>
-                    <MenuItem value="gemini-2-5-pro">Gemini 2.5 Pro (Latest & Most Capable)</MenuItem>
-                    <MenuItem value="gemini-2-5-flash">Gemini 2.5 Flash (Latest & Fast)</MenuItem>
-                  </>
-                )}
-                {settings.aiProvider === 'local' && (
-                  <>
-                    <MenuItem value="llama-3.2">Llama 3.2 (Latest) - Coming Soon</MenuItem>
-                    <MenuItem value="codellama-70b">CodeLlama 70B (Code-Optimized) - Coming Soon</MenuItem>
-                    <MenuItem value="mixtral-8x7b">Mixtral 8x7B (MoE) - Coming Soon</MenuItem>
-                    <MenuItem value="deepseek-coder">DeepSeek Coder (Code-Specific) - Coming Soon</MenuItem>
-                  </>
-                )}
-                {/* Fallback if no models are found for the current provider */}
-                {!['openai', 'anthropic', 'gemini', 'local'].includes(settings.aiProvider) && (
-                  <MenuItem value="" disabled>
-                    No models available for {settings.aiProvider}
-                  </MenuItem>
-                )}
-              </Select>
-            </FormControl>
 
-            <FormControl fullWidth sx={{ mb: 3 }}>
-              <InputLabel>Default Test Framework</InputLabel>
-              <Select
-                value={settings.testFramework}
-                onChange={(e) => setSettings({ ...settings, testFramework: e.target.value as TestFramework })}
-                label="Default Test Framework"
-              >
-                <MenuItem value="jest">Jest</MenuItem>
-                <MenuItem value="playwright">Playwright</MenuItem>
-                <MenuItem value="mocha-chai">Mocha/Chai</MenuItem>
-                <MenuItem value="cypress">Cypress</MenuItem>
-                <MenuItem value="puppeteer">Puppeteer</MenuItem>
-                <MenuItem value="vitest">Vitest</MenuItem>
-                <MenuItem value="supertest">Supertest</MenuItem>
-                <MenuItem value="postman">Postman</MenuItem>
-              </Select>
-            </FormControl>
 
             <FormControl fullWidth sx={{ mb: 3 }}>
               <TextField
@@ -439,30 +335,29 @@ export default function OptionsApp() {
               API keys are encrypted and stored securely. Never share your API keys.
             </Alert>
 
-            {/* Debug Information */}
-            <Alert severity="info" sx={{ mt: 2 }}>
-              <Typography variant="body2">
-                <strong>Debug Info:</strong><br/>
-                Current Provider: {settings.aiProvider}<br/>
-                Current Model: {settings.aiModel}<br/>
-                Default Model for Provider: {getDefaultModelForProvider(settings.aiProvider)}<br/>
-                Model Value in Select: {settings.aiModel || getDefaultModelForProvider(settings.aiProvider)}<br/>
-                Available Models for Provider: {
-                  settings.aiProvider === 'openai' ? 'gpt-4o, gpt-4o-mini, gpt-4-turbo, gpt-3.5-turbo' :
-                  settings.aiProvider === 'anthropic' ? 'claude-4-sonnet, claude-3-7-sonnet, claude-3-5-sonnet-20241022' :
-                  settings.aiProvider === 'gemini' ? 'gemini-2-5-pro, gemini-2-5-flash' :
-                  settings.aiProvider === 'local' ? 'llama-3.2, codellama-70b, mixtral-8x7b, deepseek-coder (All Coming Soon)' :
-                  'Unknown provider'
-                }
-              </Typography>
-            </Alert>
           </TabPanel>
 
           {/* Privacy Tab */}
           <TabPanel value={tabValue} index={1}>
-            <Typography variant="h6" gutterBottom>
-              Privacy & Security Settings
-            </Typography>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
+              <Typography variant="h6">
+                Privacy & Security Settings
+              </Typography>
+              <Chip 
+                label="Coming Soon" 
+                size="small" 
+                color="warning" 
+                variant="outlined"
+                sx={{ 
+                  fontSize: '0.7rem', 
+                  height: '20px',
+                  backgroundColor: 'rgba(237, 108, 2, 0.08)',
+                  borderColor: 'warning.main',
+                  color: 'warning.main',
+                  fontWeight: 600
+                }} 
+              />
+            </Box>
 
             <FormControl fullWidth sx={{ mb: 3 }}>
               <InputLabel>Privacy Mode</InputLabel>
@@ -478,61 +373,145 @@ export default function OptionsApp() {
             </FormControl>
 
             <FormGroup>
-              <FormControlLabel
-                control={
-                  <Switch
-                    checked={settings.dataMasking.enabled}
-                    onChange={(e) => setSettings({
-                      ...settings,
-                      dataMasking: { ...settings.dataMasking, enabled: e.target.checked },
-                    })}
-                  />
-                }
-                label="Enable Data Masking"
-              />
-              <FormControlLabel
-                control={
-                  <Switch
-                    checked={settings.dataMasking.maskPII}
-                    onChange={(e) => setSettings({
-                      ...settings,
-                      dataMasking: { ...settings.dataMasking, maskPII: e.target.checked },
-                    })}
-                  />
-                }
-                label="Mask Personal Information (PII)"
-              />
-              <FormControlLabel
-                control={
-                  <Switch
-                    checked={settings.dataMasking.maskTokens}
-                    onChange={(e) => setSettings({
-                      ...settings,
-                      dataMasking: { ...settings.dataMasking, maskTokens: e.target.checked },
-                    })}
-                  />
-                }
-                label="Mask API Tokens & Keys"
-              />
-              <FormControlLabel
-                control={
-                  <Switch
-                    checked={settings.dataMasking.maskEmails}
-                    onChange={(e) => setSettings({
-                      ...settings,
-                      dataMasking: { ...settings.dataMasking, maskEmails: e.target.checked },
-                    })}
-                  />
-                }
-                label="Mask Email Addresses"
-              />
+              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
+                <FormControlLabel
+                  control={
+                    <Switch
+                      checked={settings.dataMasking.enabled}
+                      onChange={(e) => setSettings({
+                        ...settings,
+                        dataMasking: { ...settings.dataMasking, enabled: e.target.checked },
+                      })}
+                      disabled={true}
+                    />
+                  }
+                  label="Enable Data Masking Integration"
+                />
+                <Chip 
+                  label="Coming Soon" 
+                  size="small" 
+                  color="info" 
+                  variant="outlined"
+                  sx={{ 
+                    fontSize: '0.65rem', 
+                    height: '18px',
+                    backgroundColor: 'rgba(2, 136, 209, 0.08)',
+                    borderColor: 'info.main',
+                    color: 'info.main',
+                    fontWeight: 500
+                  }} 
+                />
+              </Box>
+              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
+                <FormControlLabel
+                  control={
+                    <Switch
+                      checked={settings.dataMasking.maskPII}
+                      onChange={(e) => setSettings({
+                        ...settings,
+                        dataMasking: { ...settings.dataMasking, maskPII: e.target.checked },
+                      })}
+                      disabled={true}
+                    />
+                  }
+                  label="Mask Personal Information (PII)"
+                />
+                <Chip 
+                  label="Coming Soon" 
+                  size="small" 
+                  color="info" 
+                  variant="outlined"
+                  sx={{ 
+                    fontSize: '0.65rem', 
+                    height: '18px',
+                    backgroundColor: 'rgba(2, 136, 209, 0.08)',
+                    borderColor: 'info.main',
+                    color: 'info.main',
+                    fontWeight: 500
+                  }} 
+                />
+              </Box>
+              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
+                <FormControlLabel
+                  control={
+                    <Switch
+                      checked={settings.dataMasking.maskTokens}
+                      onChange={(e) => setSettings({
+                        ...settings,
+                        dataMasking: { ...settings.dataMasking, maskTokens: e.target.checked },
+                      })}
+                      disabled={true}
+                    />
+                  }
+                  label="Mask API Tokens & Keys"
+                />
+                <Chip 
+                  label="Coming Soon" 
+                  size="small" 
+                  color="info" 
+                  variant="outlined"
+                  sx={{ 
+                    fontSize: '0.65rem', 
+                    height: '18px',
+                    backgroundColor: 'rgba(2, 136, 209, 0.08)',
+                    borderColor: 'info.main',
+                    color: 'info.main',
+                    fontWeight: 500
+                  }} 
+                />
+              </Box>
+              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
+                <FormControlLabel
+                  control={
+                    <Switch
+                      checked={settings.dataMasking.maskEmails}
+                      onChange={(e) => setSettings({
+                        ...settings,
+                        dataMasking: { ...settings.dataMasking, maskEmails: e.target.checked },
+                      })}
+                      disabled={true}
+                    />
+                  }
+                  label="Mask Email Addresses"
+                />
+                <Chip 
+                  label="Coming Soon" 
+                  size="small" 
+                  color="info" 
+                  variant="outlined"
+                  sx={{ 
+                    fontSize: '0.65rem', 
+                    height: '18px',
+                    backgroundColor: 'rgba(2, 136, 209, 0.08)',
+                    borderColor: 'info.main',
+                    color: 'info.main',
+                    fontWeight: 500
+                  }} 
+                />
+              </Box>
             </FormGroup>
 
             <Divider sx={{ my: 3 }} />
 
-            <Typography variant="h6" gutterBottom>
-              Custom Masking Patterns
-            </Typography>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
+              <Typography variant="h6">
+                Custom Masking Patterns
+              </Typography>
+              <Chip 
+                label="Coming Soon" 
+                size="small" 
+                color="info" 
+                variant="outlined"
+                sx={{ 
+                  fontSize: '0.65rem', 
+                  height: '18px',
+                  backgroundColor: 'rgba(2, 136, 209, 0.08)',
+                  borderColor: 'info.main',
+                  color: 'info.main',
+                  fontWeight: 500
+                }} 
+              />
+            </Box>
 
             <Box sx={{ display: 'flex', gap: 1, mb: 2 }}>
               <TextField
@@ -541,11 +520,13 @@ export default function OptionsApp() {
                 value={customPattern}
                 onChange={(e) => setCustomPattern(e.target.value)}
                 placeholder="e.g., \d{4}-\d{4}-\d{4}-\d{4}"
+                disabled={true}
               />
               <Button
                 variant="contained"
                 onClick={addCustomPattern}
                 startIcon={<Add />}
+                disabled={true}
               >
                 Add
               </Button>
@@ -765,7 +746,7 @@ export default function OptionsApp() {
           </Button>
         </Box>
         <Typography variant="caption" color="text.secondary" display="block">
-          XHRScribe v{chrome.runtime.getManifest().version} - Transform your manual API testing into automated test suites with AI
+          XHRScribe v{chrome.runtime.getManifest().version} - Turn traffic into tests
         </Typography>
       </Box>
     </Container>

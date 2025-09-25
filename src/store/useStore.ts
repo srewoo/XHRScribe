@@ -39,16 +39,40 @@ export const useStore = create<AppStore>((set, get) => ({
   startRecording: async (tabId: number) => {
     set({ loading: true, error: undefined });
     try {
+      // First, ensure background script is ready
+      console.log('Checking background script readiness...');
+      
+      let backgroundReady = false;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          const pingResponse = await chrome.runtime.sendMessage({ type: 'PING' });
+          if (pingResponse?.success) {
+            backgroundReady = true;
+            console.log('Background script is ready');
+            break;
+          }
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+          console.log(`Background readiness check failed (attempt ${attempt}/3):`, errorMessage);
+          if (attempt < 3) {
+            await new Promise(resolve => setTimeout(resolve, 500));
+          }
+        }
+      }
+
+      if (!backgroundReady) {
+        throw new Error('Background script is not responding. Please reload the extension.');
+      }
+
+      // Now try to start recording
+      console.log('Starting recording...');
       const response = await chrome.runtime.sendMessage({
         type: 'START_RECORDING',
         tabId,
-      }).catch((error) => {
-        console.log('Message error:', error);
-        // Return a failure response if messaging fails
-        return { success: false, error: 'Extension not ready. Please refresh and try again.' };
       });
 
       if (response && response.success) {
+        console.log('Recording started successfully');
         set({
           recording: true,
           currentSession: response.session,
@@ -58,6 +82,7 @@ export const useStore = create<AppStore>((set, get) => ({
         throw new Error(response?.error || 'Failed to start recording');
       }
     } catch (error) {
+      console.error('Start recording failed:', error);
       set({
         loading: false,
         error: error instanceof Error ? error.message : 'Failed to start recording',
@@ -233,7 +258,6 @@ export const useStore = create<AppStore>((set, get) => ({
             aiProvider: 'openai',
             aiModel: 'gpt-4o-mini',
             apiKeys: {},
-            testFramework: 'jest',
             privacyMode: 'cloud',
             dataMasking: {
               enabled: true,

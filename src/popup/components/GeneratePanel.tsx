@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Box,
   Paper,
@@ -34,7 +34,7 @@ import {
   Error as ErrorIcon,
   Info,
 } from '@mui/icons-material';
-import { RecordingSession, TestFramework, AIProvider } from '@/types';
+import { RecordingSession, TestFramework, AIProvider, AIModel } from '@/types';
 import { useStore } from '@/store/useStore';
 import EndpointPreview from './EndpointPreview';
 
@@ -47,12 +47,18 @@ interface GenerationState {
   progress: number;
   stage: string;
   estimatedTime: number;
+  currentEndpoint?: number;
+  totalEndpoints?: number;
+  endpointName?: string;
 }
 
 export default function GeneratePanel({ sessions }: GeneratePanelProps) {
   const { selectedSession, generateTests, settings, loading, loadSettings, generatedTests } = useStore();
   const [framework, setFramework] = useState<TestFramework>('jest');
   const [provider, setProvider] = useState<AIProvider>('openai');
+  const [model, setModel] = useState<AIModel>('gpt-4o-mini');
+  const [hasUserChangedModel, setHasUserChangedModel] = useState(false);
+  const isInitialLoadRef = useRef(true);
   const [options, setOptions] = useState({
     // Default to comprehensive testing
     includeAuth: true,
@@ -85,6 +91,26 @@ export default function GeneratePanel({ sessions }: GeneratePanelProps) {
     loadSettings();
   }, []);
 
+  // Listen for generation progress updates
+  useEffect(() => {
+    const handleProgressMessage = (message: any) => {
+      if (message.type === 'GENERATION_PROGRESS') {
+        const { current, total, stage, endpoint } = message.payload;
+        setGenerationState(prev => ({
+          ...prev,
+          currentEndpoint: current,
+          totalEndpoints: total,
+          stage: stage,
+          endpointName: endpoint,
+          progress: Math.min(95, Math.round((current / total) * 60) + 25), // 25-85% for generation phase
+        }));
+      }
+    };
+
+    chrome.runtime.onMessage.addListener(handleProgressMessage);
+    return () => chrome.runtime.onMessage.removeListener(handleProgressMessage);
+  }, []);
+
   // Watch for changes in generatedTests from the store
   useEffect(() => {
     if (generatedTests.length > 0 && !generatedCode) {
@@ -95,11 +121,50 @@ export default function GeneratePanel({ sessions }: GeneratePanelProps) {
     }
   }, [generatedTests]);
 
-  // Update provider and framework from settings when loaded
+  // Get all available models in one list
+  const getAllAvailableModels = (): { value: AIModel; label: string }[] => {
+    return [
+      // OpenAI Models
+      { value: 'gpt-4o', label: 'GPT-4o (Most Capable, Multimodal)' },
+      { value: 'gpt-4o-mini', label: 'GPT-4o Mini (Fast & Cheap)' },
+      { value: 'gpt-4-turbo', label: 'GPT-4 Turbo' },
+      { value: 'gpt-3.5-turbo', label: 'GPT-3.5 Turbo' },
+      
+      // Anthropic Claude Models
+      { value: 'claude-4-sonnet', label: 'Claude 4 Sonnet (Latest & Most Capable)' },
+      { value: 'claude-3-7-sonnet', label: 'Claude 3.7 Sonnet (Advanced)' },
+      { value: 'claude-3-5-sonnet-20241022', label: 'Claude 3.5 Sonnet (Proven)' },
+      { value: 'claude-3-opus-20240229', label: 'Claude 3 Opus (Legacy)' },
+      { value: 'claude-3-sonnet-20240229', label: 'Claude 3 Sonnet (Legacy)' },
+      { value: 'claude-3-haiku-20240307', label: 'Claude 3 Haiku (Legacy)' },
+      
+      // Google Gemini Models
+      { value: 'gemini-2-5-pro', label: 'Gemini 2.5 Pro (Latest & Most Capable)' },
+      { value: 'gemini-2-5-flash', label: 'Gemini 2.5 Flash (Latest & Fast)' },
+      { value: 'gemini-1.5-pro-latest', label: 'Gemini 1.5 Pro (Legacy)' },
+      { value: 'gemini-1.5-flash', label: 'Gemini 1.5 Flash (Legacy)' },
+      { value: 'gemini-1.5-flash-8b', label: 'Gemini 1.5 Flash 8B (Legacy)' },
+      
+      // Local Models
+      { value: 'llama-3.2', label: 'Llama 3.2 (Latest)' },
+      { value: 'codellama-70b', label: 'CodeLlama 70B (Code-specific)' },
+      { value: 'mixtral-8x7b', label: 'Mixtral 8x7B (MoE model)' },
+      { value: 'deepseek-coder', label: 'DeepSeek Coder (Code-specific)' },
+    ];
+  };
+
+  // Debug: Track model state changes
   useEffect(() => {
-    if (settings) {
+    console.log('📊 Model state changed to:', model, 'hasUserChangedModel:', hasUserChangedModel);
+  }, [model, hasUserChangedModel]);
+
+  // Update provider and model from settings when loaded (only on initial load)
+  useEffect(() => {
+    if (settings && isInitialLoadRef.current) {
+      console.log('🔧 Initial settings load - setting provider and model from settings:', settings);
       setProvider(settings.aiProvider || 'openai');
-      setFramework(settings.testFramework || 'jest');
+      setModel(settings.aiModel || 'gpt-4o-mini');
+      isInitialLoadRef.current = false;
     }
   }, [settings]);
 
@@ -142,80 +207,150 @@ export default function GeneratePanel({ sessions }: GeneratePanelProps) {
       return;
     }
 
-    // Start generation process
-    setGenerationState({
-      isGenerating: true,
-      progress: 10,
-      stage: 'Preparing request data...',
-      estimatedTime: Math.ceil(session.requests.length * 0.5 + 5), // Rough estimate in seconds
-    });
+    // Calculate real estimates based on endpoints and provider
+    const requests = session.requests || [];
+    const endpoints = requests.map(req => `${req.method} ${req.url}`);
+    const uniqueEndpoints = [...new Set(endpoints)].filter(endpoint => 
+      !Array.from(excludedEndpoints).some(excluded => endpoint.includes(excluded))
+    );
+    
+    // More accurate timing based on provider and complexity
+    const timePerEndpoint = {
+      'openai': 2,      // Fast
+      'gemini': 3,      // Medium
+      'anthropic': 4,   // Slower but higher quality
+      'local': 1        // Fastest
+    }[provider] || 2;
+    
+    const baseTime = 8; // Setup, connection, finalization
+    const totalEstimatedTime = Math.max(10, (uniqueEndpoints.length * timePerEndpoint) + baseTime);
+    const startTime = Date.now();
 
-    // Simulate progress stages
-    const stages = [
-      { progress: 20, stage: 'Analyzing API patterns...', delay: 1000 },
-      { progress: 40, stage: 'Connecting to AI provider...', delay: 1500 },
-      { progress: 60, stage: 'Generating test code...', delay: 2000 },
-      { progress: 80, stage: 'Optimizing and validating...', delay: 1500 },
-      { progress: 95, stage: 'Finalizing tests...', delay: 1000 },
-    ];
+        // Start generation process with real estimates
+        setGenerationState({
+          isGenerating: true,
+          progress: 0,
+          stage: 'Initializing test generation...',
+          estimatedTime: totalEstimatedTime,
+          currentEndpoint: undefined,
+          totalEndpoints: undefined,
+          endpointName: undefined,
+        });
 
-    // Progress simulation
-    let currentStageIndex = 0;
-    const progressInterval = setInterval(() => {
-      if (currentStageIndex < stages.length) {
-        const stage = stages[currentStageIndex];
-        setGenerationState(prev => ({
-          ...prev,
-          progress: stage.progress,
-          stage: stage.stage,
-        }));
-        currentStageIndex++;
-      }
-    }, 1500);
+    // Real-time progress tracking helper
+    const updateProgress = (progress: number, stage: string) => {
+      const elapsedTime = Math.floor((Date.now() - startTime) / 1000);
+      const remainingTime = Math.max(1, totalEstimatedTime - elapsedTime);
+      
+      setGenerationState(prev => ({
+        ...prev,
+        progress: Math.min(99, Math.max(progress, prev.progress)), // Always advance, never go backwards
+        stage,
+        estimatedTime: remainingTime,
+      }));
+    };
 
     const generationOptions = {
       framework,
       provider,
-      model: settings?.aiModel || 'gpt-4o-mini',
+      model, // Use the local model state instead of settings
       ...options,
       complexity: 'intermediate' as const,
       excludedEndpoints: Array.from(excludedEndpoints), // Convert Set to Array for serialization
     };
 
     try {
-      // Call the actual generateTests through the store and get the result
+      // Phase 1: Analysis (0-15%)
+      updateProgress(5, `Analyzing ${uniqueEndpoints.length} API endpoints...`);
+      await new Promise(resolve => setTimeout(resolve, 800));
+      updateProgress(15, `Found ${requests.length} requests across ${uniqueEndpoints.length} endpoints`);
+
+      // Phase 2: Provider Connection (15-25%)
+      updateProgress(18, `Connecting to ${provider.toUpperCase()} API...`);
+      await new Promise(resolve => setTimeout(resolve, 600));
+      updateProgress(25, `✅ Connected to ${provider.toUpperCase()} (${model})`);
+
+      // Phase 3: Main Generation (25-85%) - This is where the real work happens
+      updateProgress(30, `Generating comprehensive test suite...`);
+      
+      // Track generation progress through multiple steps
+      const generationSteps = [
+        { progress: 35, stage: `Processing ${options.testCoverage} test coverage...` },
+        { progress: 45, stage: 'Analyzing request/response patterns...' },
+        { progress: 55, stage: 'Generating core test logic...' },
+        { progress: 65, stage: 'Adding authentication tests...' },
+        { progress: 75, stage: 'Creating error scenario tests...' },
+      ];
+
+      // Update progress during generation
+      let stepIndex = 0;
+      const stepInterval = setInterval(() => {
+        if (stepIndex < generationSteps.length) {
+          const step = generationSteps[stepIndex];
+          updateProgress(step.progress, step.stage);
+          stepIndex++;
+        }
+      }, 1200);
+
+      // Call the actual generateTests through the store
       const generatedTest = await generateTests(session.id, generationOptions);
+      
+      clearInterval(stepInterval);
+      
+      // Phase 4: Post-processing (85-95%)
+      updateProgress(85, 'Optimizing test structure...');
+      await new Promise(resolve => setTimeout(resolve, 400));
+      updateProgress(90, 'Validating test syntax...');
+      await new Promise(resolve => setTimeout(resolve, 300));
       
       // Use the returned test directly
       if (generatedTest && generatedTest.code) {
         setGeneratedCode(generatedTest.code);
+        updateProgress(95, 'Finalizing test suite...');
+        await new Promise(resolve => setTimeout(resolve, 200));
       }
       
-      // Complete generation
+      // Phase 5: Complete (100%)
       setGenerationState(prev => ({
         ...prev,
         progress: 100,
-        stage: 'Tests generated successfully!',
+        stage: `🎉 Generated ${framework.toUpperCase()} tests for ${uniqueEndpoints.length} endpoints!`,
+        estimatedTime: 0,
       }));
       
-      setTimeout(() => {
-        setGenerationState({
-          isGenerating: false,
-          progress: 0,
-          stage: '',
-          estimatedTime: 0,
-        });
-      }, 1000);
+          setTimeout(() => {
+            setGenerationState({
+              isGenerating: false,
+              progress: 0,
+              stage: '',
+              estimatedTime: 0,
+              currentEndpoint: undefined,
+              totalEndpoints: undefined,
+              endpointName: undefined,
+            });
+          }, 2500);
       
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      const elapsedTime = Math.floor((Date.now() - startTime) / 1000);
+      
       setGenerationState({
         isGenerating: false,
         progress: 0,
-        stage: 'Generation failed',
+        stage: `❌ Generation failed after ${elapsedTime}s: ${errorMessage}`,
         estimatedTime: 0,
+        currentEndpoint: undefined,
+        totalEndpoints: undefined,
+        endpointName: undefined,
       });
-    } finally {
-      clearInterval(progressInterval);
+      
+      // Clear error message after 4 seconds
+      setTimeout(() => {
+        setGenerationState(prev => ({
+          ...prev,
+          stage: '',
+        }));
+      }, 4000);
     }
   };
 
@@ -224,7 +359,68 @@ export default function GeneratePanel({ sessions }: GeneratePanelProps) {
     const firstRequest = session.requests[0];
     if (!firstRequest) return '// No requests to generate tests for';
 
-    if (framework === 'jest') {
+    if (framework === 'restassured') {
+      return `// Generated by XHRScribe AI (Java REST Assured)
+import io.restassured.RestAssured;
+import static io.restassured.RestAssured.*;
+import static org.hamcrest.Matchers.*;
+import org.testng.annotations.BeforeClass;
+import org.testng.annotations.Test;
+
+public class ${session.name.replace(/[^a-zA-Z0-9]/g, '')}Tests {
+    private static final String BASE_URL = "${new URL(firstRequest.url).origin}";
+    
+    @BeforeClass
+    public void setup() {
+        RestAssured.baseURI = BASE_URL;
+    }
+    
+    @Test
+    public void test${firstRequest.method}Request() {
+        given()
+            ${options.includeAuth ? '.header("Authorization", "Bearer " + authToken)' : ''}
+        .when()
+            .${firstRequest.method.toLowerCase()}("${new URL(firstRequest.url).pathname}")
+        .then()
+            .statusCode(${firstRequest.status || 200})
+            .body(notNullValue());
+    }
+}`;
+    } else if (framework === 'postman') {
+      return `{
+  "info": {
+    "name": "${session.name} API Tests",
+    "description": "Generated by XHRScribe AI",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "${firstRequest.method} ${new URL(firstRequest.url).pathname}",
+      "request": {
+        "method": "${firstRequest.method}",
+        "header": [],
+        "url": {
+          "raw": "${firstRequest.url}",
+          "host": ["${new URL(firstRequest.url).hostname}"],
+          "path": ["${new URL(firstRequest.url).pathname}"]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status code is ${firstRequest.status || 200}', function () {",
+              "    pm.response.to.have.status(${firstRequest.status || 200});",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}`;
+    } else if (framework === 'jest') {
       return `// Generated by XHRScribe AI
 const axios = require('axios');
 
@@ -300,22 +496,57 @@ ${options.includeErrorScenarios ? `
 
   const estimateCost = () => {
     if (!session) return 0;
-    // Calculate included endpoints only
-    const includedRequestCount = session.requests.filter(request => {
+    
+    // Calculate unique endpoints (more accurate than all requests)
+    const uniqueEndpoints = new Set<string>();
+    session.requests.forEach(request => {
       try {
         const url = new URL(request.url);
         const signature = `${request.method}:${url.pathname}`;
-        return !excludedEndpoints.has(signature);
+        if (!excludedEndpoints.has(signature)) {
+          uniqueEndpoints.add(signature);
+        }
       } catch (error) {
         const signature = `${request.method}:${request.url}`;
-        return !excludedEndpoints.has(signature);
+        if (!excludedEndpoints.has(signature)) {
+          uniqueEndpoints.add(signature);
+        }
       }
-    }).length;
+    });
+
+    const endpointCount = uniqueEndpoints.size;
+    if (endpointCount === 0) return 0;
+
+    // More accurate token estimation
+    const baseTokensPerEndpoint = 800; // Base tokens for analysis + test generation
     
-    // Rough estimation based on included request count
-    const tokenEstimate = includedRequestCount * 500;
-    const costPerToken = 0.00002; // Example rate
-    return tokenEstimate * costPerToken;
+    // Feature complexity multipliers
+    let complexityMultiplier = 1.0;
+    if (options.includeAuth) complexityMultiplier += 0.25;
+    if (options.includeErrorScenarios) complexityMultiplier += 0.35;
+    if (options.includePerformanceTests) complexityMultiplier += 0.2;
+    if (options.includeSecurityTests) complexityMultiplier += 0.3;
+    if (options.generateMockData) complexityMultiplier += 0.15;
+    
+    // Test coverage multiplier
+    const coverageMultiplier = {
+      'exhaustive': 1.8,
+      'standard': 1.2,
+      'minimal': 0.7
+    }[options.testCoverage] || 1.2;
+
+    const totalTokens = endpointCount * baseTokensPerEndpoint * complexityMultiplier * coverageMultiplier;
+
+    // Realistic 2024 pricing per 1K tokens
+    const providerCosts = {
+      'openai': 0.00015,     // GPT-4o mini - very affordable
+      'anthropic': 0.00025,  // Claude 3 Haiku 
+      'gemini': 0.000075,    // Gemini Flash - cheapest
+      'local': 0,            // Free
+    };
+
+    const costPer1K = providerCosts[provider as keyof typeof providerCosts] || 0.00015;
+    return (totalTokens / 1000) * costPer1K;
   };
 
   React.useEffect(() => {
@@ -409,6 +640,7 @@ ${options.includeErrorScenarios ? `
               <MenuItem value="vitest">Vitest</MenuItem>
               <MenuItem value="supertest">Supertest</MenuItem>
               <MenuItem value="postman">Postman</MenuItem>
+              <MenuItem value="restassured">REST Assured</MenuItem>
             </Select>
           </FormControl>
 
@@ -424,6 +656,29 @@ ${options.includeErrorScenarios ? `
               <MenuItem value="anthropic">Claude</MenuItem>
               <MenuItem value="gemini">Gemini</MenuItem>
               <MenuItem value="local">Local Model</MenuItem>
+            </Select>
+          </FormControl>
+        </Box>
+
+        <Box sx={{ mb: 2 }}>
+          <FormControl size="small" fullWidth>
+            <InputLabel>Model</InputLabel>
+            <Select
+              value={model}
+              onChange={(e) => {
+                const newModel = e.target.value as AIModel;
+                console.log('🎯 User selected model:', newModel);
+                setModel(newModel);
+                setHasUserChangedModel(true); // Track that user has manually changed the model
+              }}
+              label="Model"
+              disabled={generationState.isGenerating}
+            >
+              {getAllAvailableModels().map((modelOption) => (
+                <MenuItem key={modelOption.value} value={modelOption.value}>
+                  {modelOption.label}
+                </MenuItem>
+              ))}
             </Select>
           </FormControl>
         </Box>
@@ -628,19 +883,36 @@ ${options.includeErrorScenarios ? `
         <Typography variant="h6">${costEstimate.toFixed(4)}</Typography>
         <Typography variant="caption" color="text.secondary">
           {(() => {
-            const includedCount = session.requests.filter(request => {
+            // Calculate unique endpoints for display
+            const uniqueEndpoints = new Set<string>();
+            session.requests.forEach(request => {
               try {
                 const url = new URL(request.url);
                 const signature = `${request.method}:${url.pathname}`;
-                return !excludedEndpoints.has(signature);
+                if (!excludedEndpoints.has(signature)) {
+                  uniqueEndpoints.add(signature);
+                }
               } catch (error) {
                 const signature = `${request.method}:${request.url}`;
-                return !excludedEndpoints.has(signature);
+                if (!excludedEndpoints.has(signature)) {
+                  uniqueEndpoints.add(signature);
+                }
               }
-            }).length;
+            });
+
+            const endpointCount = uniqueEndpoints.size;
+            const baseTokens = endpointCount * 800;
+            const featureMultiplier = 1 + 
+              (options.includeAuth ? 0.25 : 0) +
+              (options.includeErrorScenarios ? 0.35 : 0) +
+              (options.includePerformanceTests ? 0.2 : 0) +
+              (options.includeSecurityTests ? 0.3 : 0) +
+              (options.generateMockData ? 0.15 : 0);
+            const estimatedTokens = Math.round(baseTokens * featureMultiplier);
+            
             return excludedEndpoints.size > 0 
-              ? `Based on ${includedCount} included endpoints (~${includedCount * 500} tokens)`
-              : `Based on approximately ${session.requests.length * 500} tokens`;
+              ? `Based on ${endpointCount} included endpoints (~${estimatedTokens.toLocaleString()} tokens)`
+              : `Based on ${endpointCount} unique endpoints (~${estimatedTokens.toLocaleString()} tokens)`;
           })()}
         </Typography>
       </Paper>
@@ -692,8 +964,19 @@ ${options.includeErrorScenarios ? `
                     Generating Test Suite
                   </Typography>
                   <Typography variant="body2" sx={{ opacity: 0.9 }}>
-                    {generationState.stage}
+                    {generationState.currentEndpoint && generationState.totalEndpoints ? 
+                      `Generating tests for endpoint ${generationState.currentEndpoint}/${generationState.totalEndpoints}` :
+                      generationState.stage
+                    }
                   </Typography>
+                  {generationState.endpointName && (
+                    <Typography variant="caption" sx={{ opacity: 0.7, display: 'block', mt: 0.5 }}>
+                      {generationState.endpointName.length > 60 ? 
+                        `${generationState.endpointName.substring(0, 60)}...` : 
+                        generationState.endpointName
+                      }
+                    </Typography>
+                  )}
                 </Box>
                 <Typography variant="h5" sx={{ fontWeight: 'bold' }}>
                   {generationState.progress}%

@@ -44,14 +44,8 @@ ${validationSection}
 
 ⚠️ CRITICAL GENERATION MODE: ${testType === 'individual' ? 'INDIVIDUAL TESTS' : 'SUITE'}
 ${testType === 'individual'
-  ? `For ${testType} mode:
-     - Create ONE describe/test.describe block
-     - Create SEPARATE test/it blocks for EACH endpoint
-     - Each test should be independently runnable
-     - Use proper setup/teardown for test isolation`
-  : `For ${testType} mode:
-     - Create test suites grouped by logical functionality
-     - Share setup between related tests`}
+  ? this.getIndividualModeInstructions(framework)
+  : this.getSuiteModeInstructions(framework)}
 
 ${frameworkExampleSection}
 
@@ -135,11 +129,23 @@ Apply these authentication requirements to all tests.`;
     return `⚠️ FRAMEWORK API VALIDATION - DO NOT MIX:
 
 FOR PLAYWRIGHT${playwrightIndicator}:
+🚨🚨🚨 CRITICAL PLAYWRIGHT WARNING: ANY USE OF JEST SYNTAX WILL BE REJECTED 🚨🚨🚨
 ❌ WRONG: describe() ➡️ ✅ CORRECT: test.describe()
 ❌ WRONG: it() ➡️ ✅ CORRECT: test()
+❌ WRONG: beforeAll() ➡️ ✅ CORRECT: test.beforeAll()
 ❌ WRONG: beforeEach() ➡️ ✅ CORRECT: test.beforeEach()
 ❌ WRONG: afterEach() ➡️ ✅ CORRECT: test.afterEach()
+❌ WRONG: afterAll() ➡️ ✅ CORRECT: test.afterAll()
 ✅ MUST USE: import { test, expect } from '@playwright/test';
+⚠️  VERIFY YOUR OUTPUT: Check that EVERY test uses test.describe() and test(), not describe() and it()
+
+FOR REST ASSURED${framework === 'restassured' ? ' (SELECTED)' : ''}:
+🚨🚨🚨 CRITICAL REST ASSURED WARNING: ABSOLUTELY NO JAVASCRIPT SYNTAX ALLOWED 🚨🚨🚨
+❌ WRONG: describe() or it() blocks ➡️ ✅ CORRECT: @Test methods in Java class
+❌ WRONG: expect() or assert() ➡️ ✅ CORRECT: statusCode(), body(), header() with Hamcrest matchers
+❌ WRONG: async/await, const, let ➡️ ✅ CORRECT: Java syntax only
+✅ MUST USE: public class ClassName { @Test public void testName() { given().when().then(); } }
+⚠️  VERIFY YOUR OUTPUT: Check that it's PURE JAVA with no JavaScript syntax whatsoever
 
 FOR CYPRESS${cypressIndicator}:
 ✅ CORRECT: describe() and it()
@@ -149,6 +155,56 @@ FOR CYPRESS${cypressIndicator}:
 FOR JEST/VITEST:
 ✅ CORRECT: describe() and it() or test()
 ✅ MUST USE: expect() from respective framework`;
+  }
+
+  private getIndividualModeInstructions(framework: string): string {
+    switch (framework) {
+      case 'restassured':
+        return `For REST ASSURED individual mode:
+     - Create ONE Java test class
+     - Create SEPARATE @Test methods for EACH endpoint
+     - Each test should be independently runnable
+     - Use @BeforeClass/@AfterClass for shared setup/teardown`;
+      case 'playwright':
+        return `For PLAYWRIGHT individual mode:
+     - Create ONE test.describe block
+     - Create SEPARATE test() blocks for EACH endpoint
+     - Each test should be independently runnable
+     - Use test.beforeAll/test.afterAll for setup/teardown`;
+      case 'postman':
+        return `For POSTMAN individual mode:
+     - Create ONE collection
+     - Create SEPARATE request items for EACH endpoint
+     - Each request should be independently runnable
+     - Use pre-request scripts for shared setup`;
+      default:
+        return `For ${framework} individual mode:
+     - Create ONE describe block
+     - Create SEPARATE test/it blocks for EACH endpoint
+     - Each test should be independently runnable
+     - Use proper setup/teardown for test isolation`;
+    }
+  }
+
+  private getSuiteModeInstructions(framework: string): string {
+    switch (framework) {
+      case 'restassured':
+        return `For REST ASSURED suite mode:
+     - Create test classes grouped by logical functionality
+     - Share setup between related tests using @BeforeClass`;
+      case 'playwright':
+        return `For PLAYWRIGHT suite mode:
+     - Create test.describe blocks grouped by logical functionality
+     - Share setup between related tests using test.beforeAll`;
+      case 'postman':
+        return `For POSTMAN suite mode:
+     - Create collection folders grouped by logical functionality
+     - Share variables and pre-request scripts between related requests`;
+      default:
+        return `For ${framework} suite mode:
+     - Create test suites grouped by logical functionality
+     - Share setup between related tests`;
+    }
   }
 
   private getFrameworkExampleSection(framework: string, templates: Record<string, string>): string {
@@ -263,6 +319,32 @@ describe('API Tests', () => {
   });
 });`,
 
+      mocha: `const axios = require('axios');
+const assert = require('assert');
+
+describe('API Tests', function() {
+  const baseURL = 'https://api.example.com';
+
+  beforeEach(function() {
+    // Setup code
+  });
+
+  it('should fetch data successfully', async function() {
+    const response = await axios.get(\`\${baseURL}/endpoint\`);
+    assert.strictEqual(response.status, 200);
+    assert(response.data.hasOwnProperty('expected_field'));
+  });
+
+  it('should handle error responses', async function() {
+    try {
+      await axios.get(\`\${baseURL}/nonexistent\`);
+      assert.fail('Expected request to fail');
+    } catch (error) {
+      assert.strictEqual(error.response.status, 404);
+    }
+  });
+});`,
+
       vitest: `import { describe, it, expect, beforeEach } from 'vitest';
 import axios from 'axios';
 
@@ -281,47 +363,191 @@ describe('API Tests', () => {
 });`,
 
       supertest: `const request = require('supertest');
+const app = require('../app'); // Your Express app
 
 describe('API Tests', () => {
-  const baseURL = 'https://api.example.com';
+  let server;
 
   beforeEach(() => {
-    // Setup code
+    server = request(app);
   });
 
-  it('should fetch data successfully', async () => {
-    const response = await request(baseURL)
-      .get('/endpoint')
-      .expect(200);
-    expect(response.body).toHaveProperty('expected_field');
+  it('should GET /api/users successfully', async () => {
+    const response = await server
+      .get('/api/users')
+      .set('Authorization', 'Bearer your-token')
+      .expect(200)
+      .expect('Content-Type', /json/);
+    
+    expect(response.body).toHaveProperty('users');
+    expect(Array.isArray(response.body.users)).toBe(true);
+  });
+
+  it('should POST /api/users with validation', async () => {
+    const newUser = { name: 'John Doe', email: 'john@example.com' };
+    
+    const response = await server
+      .post('/api/users')
+      .send(newUser)
+      .set('Content-Type', 'application/json')
+      .expect(201);
+    
+    expect(response.body).toHaveProperty('id');
+    expect(response.body.name).toBe(newUser.name);
+  });
+
+  it('should return 400 for invalid POST data', async () => {
+    await server
+      .post('/api/users')
+      .send({ invalid: 'data' })
+      .expect(400);
   });
 });`,
 
       puppeteer: `const puppeteer = require('puppeteer');
-const axios = require('axios');
 
 describe('API Tests', () => {
+  let browser, page;
   const baseURL = 'https://api.example.com';
 
-  beforeEach(() => {
-    // Setup code
+  beforeEach(async () => {
+    browser = await puppeteer.launch({ headless: true });
+    page = await browser.newPage();
+    
+    // Enable request interception
+    await page.setRequestInterception(true);
   });
 
-  it('should fetch data successfully', async () => {
-    const response = await axios.get(\`\${baseURL}/endpoint\`);
-    expect(response.status).toBe(200);
-    expect(response.data).toHaveProperty('expected_field');
+  afterEach(async () => {
+    await browser.close();
+  });
+
+  it('should intercept and validate API call', async () => {
+    let apiResponse = null;
+    
+    page.on('response', response => {
+      if (response.url().includes('/api/endpoint')) {
+        apiResponse = response;
+      }
+    });
+    
+    // Navigate to page that makes API call
+    await page.goto('https://example.com/app');
+    
+    // Wait for API call to complete
+    await page.waitForFunction(() => apiResponse !== null);
+    
+    expect(apiResponse.status()).toBe(200);
+    const data = await apiResponse.json();
+    expect(data).toHaveProperty('expected_field');
   });
 });`,
 
-      postman: `pm.test("Status code is 200", function () {
-    pm.response.to.have.status(200);
-});
+      postman: `{
+  "info": {
+    "name": "API Test Collection",
+    "description": "Generated API test collection",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "GET Endpoint Test",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{authToken}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/endpoint",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "endpoint"]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status code is 200', function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "pm.test('Response has expected field', function () {",
+              "    const jsonData = pm.response.json();",
+              "    pm.expect(jsonData).to.have.property('expectedField');",
+              "});",
+              "",
+              "pm.test('Response time is acceptable', function () {",
+              "    pm.expect(pm.response.responseTime).to.be.below(1000);",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "https://api.example.com"
+    },
+    {
+      "key": "authToken",
+      "value": "your-auth-token-here"
+    }
+  ]
+}`,
 
-pm.test("Response has expected field", function () {
-    const jsonData = pm.response.json();
-    pm.expect(jsonData).to.have.property('expected_field');
-});`
+      restassured: `import io.restassured.RestAssured;
+import io.restassured.specification.RequestSpecification;
+import static io.restassured.RestAssured.*;
+import static org.hamcrest.Matchers.*;
+import org.testng.annotations.BeforeClass;
+import org.testng.annotations.Test;
+
+public class APITests {
+    
+    private RequestSpecification requestSpec;
+    
+    @BeforeClass
+    public void setup() {
+        RestAssured.baseURI = "https://api.example.com";
+        requestSpec = given()
+            .header("Content-Type", "application/json")
+            .header("Authorization", "Bearer your-token-here");
+    }
+    
+    @Test
+    public void testGetEndpoint() {
+        given()
+            .spec(requestSpec)
+        .when()
+            .get("/api/endpoint")
+        .then()
+            .statusCode(200)
+            .body("status", equalTo("success"))
+            .body("data", notNullValue())
+            .time(lessThan(1000L));
+    }
+    
+    @Test
+    public void testPostEndpoint() {
+        String requestBody = "{\\"key\\": \\"value\\"}";
+        
+        given()
+            .spec(requestSpec)
+            .body(requestBody)
+        .when()
+            .post("/api/endpoint")
+        .then()
+            .statusCode(201)
+            .body("id", notNullValue())
+            .body("created", equalTo(true));
+    }
+}`
     };
   }
 
@@ -350,6 +576,21 @@ pm.test("Response has expected field", function () {
       case 'cypress':
         if (!code.includes('cy.request') && !code.includes('cy.')) {
           warnings.push('Missing Cypress cy.request() for API calls');
+        }
+        break;
+
+      case 'restassured':
+        if (code.includes('describe(') || code.includes('it(') || code.includes('test(')) {
+          warnings.push('Found JavaScript test syntax in REST Assured Java code - should use @Test methods');
+        }
+        if (code.includes('expect(') && !code.includes('import')) {
+          warnings.push('Found expect() in REST Assured code - should use Hamcrest matchers');
+        }
+        if (!code.includes('@Test') && code.length > 100) {
+          warnings.push('Missing @Test annotations in REST Assured code');
+        }
+        if (!code.includes('given()') && !code.includes('when()') && !code.includes('then()')) {
+          warnings.push('Missing given().when().then() pattern in REST Assured code');
         }
         break;
 

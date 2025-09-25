@@ -1,6 +1,6 @@
 # XHRScribe - Chrome Extension
 
-> Transform your manual API testing into automated test suites with AI
+> Turn traffic into tests
 
 ## 🚀 Overview
 

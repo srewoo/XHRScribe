@@ -151,7 +151,7 @@ export class DeepValidator {
 
     const expectedEndpoints = harData.entries.length;
     const actualTestBlocks = this.countTestBlocks(code);
-    const actualTestCases = this.countTestCases(code);
+    const actualTestCases = this.countTestCases(code, framework);
 
     // Check endpoint coverage
     if (actualTestBlocks < expectedEndpoints) {
@@ -491,9 +491,24 @@ export class DeepValidator {
     return (code.match(/describe\s*\(/g) || []).length;
   }
 
-  private countTestCases(code: string): number {
-    const testMatches = code.match(/(test|it)\s*\(/g) || [];
-    return testMatches.length;
+  private countTestCases(code: string, framework?: string): number {
+    switch (framework) {
+      case 'restassured':
+        // Count Java @Test methods
+        return (code.match(/@Test\s+public\s+void/g) || []).length;
+      case 'postman':
+        // Count test scripts in Postman collection
+        return (code.match(/"test"/g) || []).length;
+      case 'playwright':
+        // Count Playwright test() calls
+        return (code.match(/test\(/g) || []).length;
+      case 'cypress':
+        // Count it() calls in Cypress
+        return (code.match(/it\(/g) || []).length;
+      default:
+        // Default JS/TS test patterns
+        return (code.match(/(test|it)\s*\(/g) || []).length;
+    }
   }
 
   private findPlaceholderComments(code: string): string[] {

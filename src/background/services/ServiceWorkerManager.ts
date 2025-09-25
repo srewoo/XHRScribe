@@ -2,12 +2,11 @@ export type PersistenceMode = 'IDLE' | 'STANDARD' | 'INTENSIVE';
 
 export class ServiceWorkerManager {
   private static instance: ServiceWorkerManager;
-  private mode: PersistenceMode = 'STANDARD';
+  private mode: PersistenceMode = 'IDLE'; // Default to IDLE
   private alarmName = 'xhrscribe-keepalive';
-  private port: chrome.runtime.Port | null = null;
-  private reconnectAttempts = 0;
-  private maxReconnectAttempts = 3;
-  private pingInterval: number | null = null;
+  private isRecording = false;
+  private lastActivity = Date.now();
+  private cleanupInterval: number | null = null;
 
   private constructor() {}
 
@@ -18,59 +17,54 @@ export class ServiceWorkerManager {
     return ServiceWorkerManager.instance;
   }
 
-  async startPersistence(mode: PersistenceMode = 'STANDARD'): Promise<void> {
+  async startPersistence(mode: PersistenceMode = 'IDLE'): Promise<void> {
     this.mode = mode;
-    
-    switch (mode) {
-      case 'INTENSIVE':
-        await this.setupIntensivePersistence();
-        break;
-      case 'STANDARD':
-        await this.setupStandardPersistence();
-        break;
-      case 'IDLE':
-        await this.setupIdlePersistence();
-        break;
+
+    // Only start persistence if recording
+    if (this.isRecording) {
+      switch (mode) {
+        case 'INTENSIVE':
+          await this.setupIntensivePersistence();
+          break;
+        case 'STANDARD':
+          await this.setupStandardPersistence();
+          break;
+        case 'IDLE':
+          await this.setupIdlePersistence();
+          break;
+      }
     }
+
+    // Setup cleanup interval
+    this.startCleanupInterval();
   }
 
   async stopPersistence(): Promise<void> {
     // Clear alarms
     await chrome.alarms.clear(this.alarmName);
-    
-    // Clear ping interval
-    if (this.pingInterval) {
-      clearInterval(this.pingInterval);
-      this.pingInterval = null;
-    }
-    
-    // Close port connection
-    if (this.port) {
-      try {
-        this.port.disconnect();
-      } catch (e) {
-        // Port might already be disconnected
-      }
-      this.port = null;
+
+    // Clear cleanup interval
+    if (this.cleanupInterval) {
+      clearInterval(this.cleanupInterval);
+      this.cleanupInterval = null;
     }
 
-    // Reset reconnect attempts
-    this.reconnectAttempts = 0;
+    this.isRecording = false;
   }
 
   private async setupIntensivePersistence(): Promise<void> {
-    // Use alarm-based persistence only for intensive mode
+    // Use alarm-based persistence for active recording
     await this.setupAlarm(0.5); // Every 30 seconds
   }
 
   private async setupStandardPersistence(): Promise<void> {
-    // Use balanced persistence with just alarms
+    // Balanced persistence
     await this.setupAlarm(1); // Every minute
   }
 
   private async setupIdlePersistence(): Promise<void> {
-    // Minimal persistence for idle periods
-    await this.setupAlarm(2); // Every 2 minutes
+    // Minimal persistence - only cleanup
+    await chrome.alarms.clear(this.alarmName);
   }
 
   private async setupAlarm(periodInMinutes: number): Promise<void> {
@@ -95,13 +89,17 @@ export class ServiceWorkerManager {
   }
 
   private handleAlarm = (alarm: chrome.alarms.Alarm): void => {
-    if (alarm.name === this.alarmName) {
-      // Simple keepalive action - just access storage
-      chrome.storage.local.get('keepalive', () => {
+    if (alarm.name === this.alarmName && this.isRecording) {
+      // Only keep alive if actively recording
+      this.lastActivity = Date.now();
+      chrome.storage.session.set({ keepalive: Date.now() }, () => {
         if (chrome.runtime.lastError) {
-          console.error('Keepalive storage access error:', chrome.runtime.lastError);
+          console.error('Keepalive error:', chrome.runtime.lastError);
         }
       });
+    } else if (!this.isRecording) {
+      // Stop alarms if not recording
+      chrome.alarms.clear(this.alarmName);
     }
   };
 
@@ -112,5 +110,49 @@ export class ServiceWorkerManager {
 
   getMode(): PersistenceMode {
     return this.mode;
+  }
+
+  setRecordingState(isRecording: boolean): void {
+    this.isRecording = isRecording;
+    this.lastActivity = Date.now();
+
+    if (isRecording) {
+      // Switch to STANDARD mode when recording
+      this.setMode('STANDARD');
+    } else {
+      // Switch to IDLE mode when not recording
+      this.setMode('IDLE');
+    }
+  }
+
+  private startCleanupInterval(): void {
+    // Clean up old data every 5 minutes
+    this.cleanupInterval = setInterval(() => {
+      this.performCleanup();
+    }, 5 * 60 * 1000) as unknown as number;
+  }
+
+  private performCleanup(): void {
+    // Remove old temporary data to reduce memory footprint
+    const ONE_HOUR = 60 * 60 * 1000;
+    const now = Date.now();
+
+    chrome.storage.local.get(null, (items) => {
+      const keysToRemove: string[] = [];
+
+      Object.keys(items).forEach(key => {
+        // Remove old cache and temporary data
+        if (key.startsWith('_cache_') || key.startsWith('_temp_')) {
+          const data = items[key];
+          if (data && data.timestamp && (now - data.timestamp) > ONE_HOUR) {
+            keysToRemove.push(key);
+          }
+        }
+      });
+
+      if (keysToRemove.length > 0) {
+        chrome.storage.local.remove(keysToRemove);
+      }
+    });
   }
 }

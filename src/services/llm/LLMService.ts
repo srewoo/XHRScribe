@@ -125,7 +125,7 @@ ${testTypes}
 
 MANDATORY REQUIREMENTS:
 1. Generate tests for ALL ${endpointAnalysis.totalEndpoints} unique endpoints listed above
-2. Each endpoint MUST have its own describe block
+2. Each endpoint MUST have its own complete test block
 3. Use proper async/await patterns
 4. Include meaningful test descriptions
 5. Add proper setup and teardown
@@ -154,11 +154,16 @@ Generate production-ready test code that follows best practices and includes com
 - Include mock functions where appropriate`,
       
       playwright: `PLAYWRIGHT FRAMEWORK REQUIREMENTS:
-- Use test.describe for test organization
-- Use test.beforeAll/beforeEach for setup
-- Include page object patterns where appropriate
-- Use proper selectors and waiting strategies
-- Include screenshot assertions for UI tests`,
+🚨 CRITICAL: NEVER use Jest syntax like describe() or it() - Only use Playwright syntax!
+- MUST use test.describe() for test organization (NOT describe())
+- MUST use test() for individual tests (NOT it())
+- MUST use test.beforeAll/test.beforeEach for setup (NOT beforeAll/beforeEach)
+- MUST use test.afterAll/test.afterEach for cleanup (NOT afterAll/afterEach)
+- MUST import { test, expect } from '@playwright/test'
+- Use { request } fixture for API testing
+- Use expect() with Playwright matchers (NOT Jest matchers)
+❌ FORBIDDEN: describe(), it(), beforeAll(), beforeEach(), afterAll(), afterEach()
+✅ REQUIRED: test.describe(), test(), test.beforeAll(), test.beforeEach(), test.afterAll(), test.afterEach()`,
       
       'mocha-chai': `MOCHA/CHAI FRAMEWORK REQUIREMENTS:
 - Use describe blocks for test organization
@@ -166,6 +171,14 @@ Generate production-ready test code that follows best practices and includes com
 - Use after/afterEach hooks for cleanup
 - Use chai expect/should assertions
 - Include chai-http for API testing`,
+      
+      mocha: `MOCHA FRAMEWORK REQUIREMENTS:
+- Use describe blocks for test organization
+- Use before/beforeEach/after/afterEach hooks for setup and cleanup
+- Use Node.js built-in assert module for assertions
+- Use function() syntax for proper 'this' binding
+- Include async/await for promise handling
+- Add timeout configurations for longer API calls`,
       
       cypress: `CYPRESS FRAMEWORK REQUIREMENTS:
 - Use describe blocks for test organization
@@ -196,11 +209,83 @@ Generate production-ready test code that follows best practices and includes com
 - Add response body validations`,
       
       postman: `POSTMAN COLLECTION REQUIREMENTS:
-- Create proper collection structure
-- Include pre-request scripts
-- Add comprehensive tests in Tests tab
-- Use environment variables
-- Include response schema validation`,
+🚨 CRITICAL: You MUST generate a complete Postman Collection JSON, NOT test code!
+
+MANDATORY OUTPUT FORMAT - Generate VALID JSON following this EXACT structure:
+{
+  "info": {
+    "name": "Generated API Collection",
+    "description": "Generated from XHRScribe recording",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Endpoint Name",
+      "request": {
+        "method": "GET|POST|PUT|DELETE",
+        "header": [],
+        "body": { "mode": "raw", "raw": "{\"key\": \"value\"}" },
+        "url": { "raw": "{{baseUrl}}/endpoint", "host": ["{{baseUrl}}"], "path": ["endpoint"] }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status code is 200', function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "pm.test('Response has required fields', function () {",
+              "    const jsonData = pm.response.json();",
+              "    pm.expect(jsonData).to.have.property('expectedField');",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    { "key": "baseUrl", "value": "https://api.example.com" }
+  ]
+}
+
+⚠️  DO NOT generate describe() or it() blocks - Only valid Postman Collection JSON!`,
+
+        restassured: `REST ASSURED (JAVA) FRAMEWORK REQUIREMENTS:
+🚨 CRITICAL: Generate Java test code using REST Assured library!
+
+MANDATORY JAVA STRUCTURE:
+- Use @Test annotations from TestNG or JUnit
+- Import static io.restassured.RestAssured.*
+- Import static org.hamcrest.Matchers.*
+- Use given().when().then() pattern
+- Include proper assertions with Hamcrest matchers
+- Add JSON/XML response validation
+- Use RequestSpecification for reusable configurations
+- Include proper error handling and logging
+
+EXAMPLE STRUCTURE:
+import io.restassured.RestAssured;
+import static io.restassured.RestAssured.*;
+import static org.hamcrest.Matchers.*;
+import org.testng.annotations.Test;
+
+public class APITests {
+    @Test
+    public void testGetEndpoint() {
+        given()
+            .baseUri("https://api.example.com")
+            .header("Authorization", "Bearer token")
+        .when()
+            .get("/endpoint")
+        .then()
+            .statusCode(200)
+            .body("field", equalTo("expectedValue"));
+    }
+}
+
+⚠️  OUTPUT MUST BE: Complete Java class with REST Assured tests`,
     };
 
     return instructions[framework] || instructions.jest;

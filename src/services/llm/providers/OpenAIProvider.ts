@@ -87,7 +87,7 @@ export class OpenAIProvider implements LLMProvider {
           qualityScore,
           estimatedTokens: totalTokens,
           estimatedCost: this.estimateCost(totalTokens, options.model),
-          warnings: this.analyzeCode(generatedCode),
+          warnings: this.analyzeCode(generatedCode, options.framework),
           suggestions: this.generateSuggestions(generatedCode, options),
         };
       } catch (error) {
@@ -177,7 +177,7 @@ REQUIREMENTS:
 1. Generate tests that cover ALL possible scenarios
 2. Include positive, negative, edge cases, and boundary tests
 3. Add detailed assertions for response structure, data types, and business logic
-4. Use proper test organization with describe/it blocks
+4. Use proper test organization.
 5. Include setup/teardown when necessary
 6. Add comments explaining complex test scenarios
 7. Ensure tests are maintainable and follow best practices
@@ -192,12 +192,21 @@ IMPORTANT: Generate actual runnable code, not pseudocode or examples.`;
     const framework = options.framework;
     const entries = harData.entries; // Process ALL entries, no artificial limits
 
-    // Group endpoints by unique signature to avoid duplicates
+    // Group endpoints by unique signature to avoid duplicates (GraphQL-aware)
     const uniqueEndpoints = new Map<string, typeof entries[0]>();
     entries.forEach(entry => {
       try {
         const url = new URL(entry.request.url);
-        const signature = `${entry.request.method}:${url.pathname}`;
+        let signature = `${entry.request.method}:${url.pathname}`;
+        
+        // ENHANCED: Special handling for GraphQL endpoints
+        if (this.isGraphQLEndpoint(url.pathname, entry.request)) {
+          const graphqlOperation = this.extractGraphQLOperation(entry.request);
+          if (graphqlOperation) {
+            signature = `${entry.request.method}:${url.pathname}:${graphqlOperation}`;
+          }
+        }
+        
         if (!uniqueEndpoints.has(signature)) {
           uniqueEndpoints.set(signature, entry);
         }
@@ -228,7 +237,7 @@ YOU MUST GENERATE COMPLETE, FULLY-IMPLEMENTED ${framework} TEST CODE FOR ALL ${u
 
 🔥 MANDATORY REQUIREMENTS:
 ✅ GENERATE ACTUAL WORKING CODE FOR ALL ${uniqueEndpoints.size} ENDPOINTS
-✅ Each endpoint gets a complete describe() block with 10-15 real test cases
+✅ Each endpoint gets a complete test suite with 10-15 real test cases
 ✅ NO placeholder comments, NO template suggestions
 ✅ Production-ready, runnable code that I can use immediately
 
@@ -247,7 +256,7 @@ ${this.getFrameworkInstructions(framework)}
 ✅ Use proper JavaScript syntax (NO TypeScript type annotations like ': string')
 ✅ Ensure proper bracket matching and indentation
 ✅ Use consistent request patterns: ${framework === 'playwright' ? 'async ({ request }) =>' : 'appropriate pattern'}
-✅ ONE main describe() block wrapping all endpoints
+✅ ONE main test suite wrapping all endpoints
 
 ⚠️ VARIABLE CONSISTENCY:
 ✅ Use consistent variable names throughout
@@ -266,25 +275,25 @@ ${this.getFrameworkInstructions(framework)}
 ✅ Logical test numbering and grouping
 ✅ No duplicate describe blocks for same endpoint
 ✅ Proper test interdependency handling
-✅ ONE main describe() wrapper, with individual describe() blocks for each endpoint
-✅ ALL test functions at the same nesting level within their endpoint describe()
-✅ NO describe blocks nested inside other describe blocks
+✅ ONE main test suite wrapper, with individual test suites for each endpoint  
+✅ ALL test functions at the same nesting level within their endpoint test suite
+✅ NO test suites nested inside other test suites
 
 ⚠️ STRUCTURAL REQUIREMENTS:
 ✅ ALWAYS start with imports: const { test, expect } = require('@playwright/test');
 ✅ Declare variables: const BASE_URL, const TEST_USERNAME, const TEST_PASSWORD, let authToken;
-✅ ONE main describe('API Test Suite - Complete Coverage', () => { block
-✅ Authentication setup with test.beforeAll() at the top level
-✅ Each endpoint gets its own describe() block: describe('GET /endpoint', () => {
-✅ All test() functions inside endpoint describe() blocks
-✅ PROPER closing: each describe() ends with });
-✅ Final closing for main describe: });
+✅ ONE main test suite wrapper with proper framework syntax
+✅ Authentication setup with appropriate beforeAll/setup hook at the top level
+✅ Each endpoint gets its own test suite with proper framework syntax
+✅ All test functions inside endpoint test suites
+✅ PROPER closing: each test suite ends properly
+✅ Final closing for main test suite
 
 🚫 NEVER DO THIS:
-❌ describe('API', () => { describe('API', () => { // Nested duplicates
+❌ Nested test suite duplicates  
 ❌ Missing imports or variable declarations
-❌ Mixing it() and test() functions
-❌ Unclosed describe blocks
+❌ Mixing different test function types
+❌ Unclosed test suite blocks
 ❌ Missing authToken setup
 
 MANDATORY TEST CATEGORIES TO INCLUDE:
@@ -375,10 +384,37 @@ MANDATORY TEST CATEGORIES TO INCLUDE:
 🔥 ENDPOINT ${index + 1}/${uniqueEndpoints.size}: ${method} ${url.pathname}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+🌐 REQUEST DETAILS:
 Full URL: ${entry.request.url}
-Expected Status: ${statusCode}
-${requestBody ? `Request Body Sample: ${requestBody.substring(0, 300)}` : 'No request body'}
-${responseBody ? `Response Sample: ${responseBody.substring(0, 300)}` : 'No response body'}
+Method: ${method}
+${url.search ? `Query Parameters: ${url.search}` : 'No query parameters'}
+
+🔑 REQUEST HEADERS:
+${entry.request.headers && entry.request.headers.length > 0 
+  ? entry.request.headers.map(h => `${h.name}: ${h.value}`).join('\n')
+  : 'No headers captured'}
+
+🍪 REQUEST COOKIES:
+${entry.request.cookies && entry.request.cookies.length > 0 
+  ? entry.request.cookies.map(c => `${c.name}=${c.value}`).join('; ')
+  : 'No cookies'}
+
+📦 REQUEST BODY:
+${requestBody ? requestBody.substring(0, 500) : 'No request body'}
+
+📥 RESPONSE DETAILS:
+Status: ${statusCode}
+${entry.response.headers && entry.response.headers.length > 0 
+  ? `Response Headers:\n${entry.response.headers.map(h => `${h.name}: ${h.value}`).join('\n')}`
+  : 'No response headers'}
+
+🍪 RESPONSE COOKIES:
+${entry.response.cookies && entry.response.cookies.length > 0 
+  ? entry.response.cookies.map(c => `${c.name}=${c.value}${c.domain ? `; Domain=${c.domain}` : ''}${c.httpOnly ? '; HttpOnly' : ''}${c.secure ? '; Secure' : ''}`).join('\n')
+  : 'No response cookies'}
+
+📦 RESPONSE BODY:
+${responseBody ? responseBody.substring(0, 500) : 'No response body'}
 
 🚨 MANDATORY TESTS FOR THIS ENDPOINT (Generate ALL of these):
 
@@ -429,23 +465,12 @@ I WILL REJECT ANY RESPONSE THAT:
 4. No shortcuts, no placeholders, no "continue" instructions
 
 📊 MANDATORY OUTPUT STRUCTURE:
-\`\`\`${framework === 'cypress' ? 'javascript' : 'typescript'}
-describe('API Test Suite', () => {
-  // Authentication setup here
-  
-  describe('${uniqueEndpoints.size > 0 ? Array.from(uniqueEndpoints.values())[0].request.method + ' ' + new URL(Array.from(uniqueEndpoints.values())[0].request.url).pathname : 'METHOD /path'} - Endpoint 1', () => {
-    it('should handle valid request', async () => { /* actual test code */ });
-    it('should return 400 for invalid data', async () => { /* actual test code */ });
-    it('should return 401 for missing auth', async () => { /* actual test code */ });
-    // ... 7-12 more ACTUAL test cases
-  });
-  
-  // REPEAT FOR ALL ${uniqueEndpoints.size} ENDPOINTS - NO SHORTCUTS
-});
-\`\`\`
+Generate ${framework.toUpperCase()} test code following the framework's specific syntax and conventions.
+Each endpoint must have a complete test suite with 10-15 individual test cases.
+Use the framework's proper test organization, imports, and assertion methods.
 
 🚨 BEFORE YOU RESPOND, VERIFY:
-✅ ${uniqueEndpoints.size} describe blocks (one per endpoint)
+✅ ${uniqueEndpoints.size} test suites (one per endpoint)
 ✅ No "continue" or "add more" comments anywhere
 ✅ Every endpoint has complete test implementation
 ✅ Production-ready code that runs immediately
@@ -554,13 +579,16 @@ describe('API Test Suite', () => {
 - jest.mock() for mocking dependencies
 - expect.assertions() for async error tests`,
       
-      playwright: `Use Playwright with:
-- test.describe/test blocks
-- expect assertions
-- API testing context with request fixture
-- test.beforeAll/beforeEach/afterEach/afterAll
-- test.skip/test.only for test control
-- Custom fixtures for reusable setup`,
+      playwright: `🚨 PLAYWRIGHT ONLY - NO JEST SYNTAX ALLOWED:
+- ONLY use test.describe() for test suites (NEVER describe())
+- ONLY use test() for test cases (NEVER it())
+- ONLY use test.beforeAll/test.beforeEach/test.afterEach/test.afterAll (NEVER beforeAll/beforeEach/afterEach/afterAll)
+- MUST import { test, expect } from '@playwright/test'
+- Use { request } fixture for API testing
+- Use expect() with Playwright-specific matchers
+- Use test.skip() and test.only() for test control
+❌ FORBIDDEN JEST SYNTAX: describe(), it(), beforeAll(), beforeEach(), afterAll(), afterEach()
+✅ ONLY PLAYWRIGHT SYNTAX: test.describe(), test(), test.beforeAll(), test.beforeEach(), test.afterAll(), test.afterEach()`,
       
       'mocha-chai': `Use Mocha/Chai with:
 - describe/it blocks
@@ -608,6 +636,19 @@ describe('API Test Suite', () => {
 - Collection variables
 - Response validation
 - Newman CLI compatible`,
+      
+      restassured: `🚨 REST ASSURED (JAVA) ONLY - NO JAVASCRIPT SYNTAX ALLOWED:
+- MANDATORY: Generate complete Java test class using REST Assured library
+- MANDATORY: Use @Test annotations (TestNG or JUnit)
+- MANDATORY: Import static io.restassured.RestAssured.* and static org.hamcrest.Matchers.*
+- MANDATORY: Use given().when().then() BDD syntax for ALL tests
+- MANDATORY: Use RequestSpecification for common configurations
+- Use statusCode(), body(), header() methods for assertions
+- Use Hamcrest matchers: equalTo(), notNullValue(), hasSize(), containsString()
+- Include proper @BeforeClass for setup and @AfterClass for cleanup
+- Use Response response = given().when().get() for advanced validations
+❌ FORBIDDEN: Any JavaScript syntax, describe(), it(), expect(), async/await
+✅ ONLY JAVA: public class, @Test, given().when().then(), assertThat()`,
     };
 
     return instructions[framework] || instructions.jest;
@@ -671,19 +712,20 @@ describe('API Test Suite', () => {
     return Math.min(Math.round(score), maxScore);
   }
 
-  private analyzeCode(code: string): string[] {
+  private analyzeCode(code: string, framework?: string): string[] {
     const warnings: string[] = [];
 
-    // Check for comprehensive coverage
-    if (!code.includes('describe') && !code.includes('test')) {
-      warnings.push('No test blocks found - ensure proper test structure');
+    // Framework-aware test structure detection
+    const hasTests = this.detectTestStructure(code, framework);
+    if (!hasTests) {
+      warnings.push('No test structure found - ensure proper test organization');
     }
 
     if (!code.includes('400') && !code.includes('error')) {
       warnings.push('No error handling tests found - add negative test cases');
     }
 
-    if (!code.includes('null') && !code.includes('undefined')) {
+    if (!code.includes('null') && !code.includes('undefined') && !code.includes('empty')) {
       warnings.push('No null/undefined checks - add edge case validation');
     }
 
@@ -691,17 +733,67 @@ describe('API Test Suite', () => {
       warnings.push('Hardcoded localhost URLs - use environment variables');
     }
 
-    if (!code.includes('async') && !code.includes('await') && !code.includes('.then')) {
-      warnings.push('No asynchronous handling detected - API tests should be async');
+    // Framework-aware async detection
+    const hasAsync = this.detectAsyncHandling(code, framework);
+    if (!hasAsync) {
+      warnings.push('No asynchronous handling detected - API tests should handle async operations');
     }
 
-    // Count test cases
-    const testCount = (code.match(/it\(|test\(|it\.|test\./g) || []).length;
+    // Framework-aware test case counting
+    const testCount = this.countTestCases(code, framework);
     if (testCount < 10) {
       warnings.push(`Only ${testCount} test cases found - consider adding more for better coverage`);
     }
 
     return warnings;
+  }
+
+  private detectTestStructure(code: string, framework?: string): boolean {
+    switch (framework) {
+      case 'restassured':
+        return code.includes('@Test') && code.includes('public');
+      case 'playwright':
+        return code.includes('test.describe') || code.includes('test(');
+      case 'cypress':
+        return code.includes('describe') && code.includes('cy.');
+      case 'postman':
+        return code.includes('"info"') && code.includes('"item"');
+      default:
+        return code.includes('describe') || code.includes('test') || code.includes('@Test');
+    }
+  }
+
+  private detectAsyncHandling(code: string, framework?: string): boolean {
+    switch (framework) {
+      case 'restassured':
+        // REST Assured doesn't need explicit async keywords - it's built into the library
+        return code.includes('given()') || code.includes('when()');
+      case 'postman':
+        // Postman collections don't need async handling
+        return true;
+      default:
+        return code.includes('async') || code.includes('await') || code.includes('.then');
+    }
+  }
+
+  private countTestCases(code: string, framework?: string): number {
+    switch (framework) {
+      case 'restassured':
+        // Count Java @Test methods
+        return (code.match(/@Test\s+public\s+void/g) || []).length;
+      case 'playwright':
+        // Count Playwright test() calls
+        return (code.match(/test\(/g) || []).length;
+      case 'cypress':
+        // Count it() calls in Cypress
+        return (code.match(/it\(/g) || []).length;
+      case 'postman':
+        // Count test scripts in Postman collection items
+        return (code.match(/"test"/g) || []).length;
+      default:
+        // Default JS/TS test patterns
+        return (code.match(/it\(|test\(|it\.|test\./g) || []).length;
+    }
   }
 
   private generateSuggestions(code: string, options: GenerationOptions): string[] {
@@ -733,5 +825,73 @@ describe('API Test Suite', () => {
     }
 
     return suggestions;
+  }
+
+  private isGraphQLEndpoint(pathname: string, request: any): boolean {
+    return pathname.includes('graphql') || pathname.includes('gql') || 
+           (request.postData?.text && this.looksLikeGraphQL(request.postData.text));
+  }
+
+  private looksLikeGraphQL(requestBody: any): boolean {
+    if (!requestBody) return false;
+    
+    try {
+      const bodyStr = typeof requestBody === 'string' ? requestBody : JSON.stringify(requestBody);
+      const body = typeof requestBody === 'object' ? requestBody : JSON.parse(bodyStr);
+      
+      // Check for GraphQL query patterns
+      return !!(body.query || body.operationName || body.variables || 
+                bodyStr.includes('query ') || bodyStr.includes('mutation ') || 
+                bodyStr.includes('subscription '));
+    } catch {
+      return false;
+    }
+  }
+
+  private extractGraphQLOperation(request: any): string | null {
+    const requestBody = request.postData?.text;
+    if (!requestBody) return null;
+    
+    try {
+      const bodyStr = typeof requestBody === 'string' ? requestBody : JSON.stringify(requestBody);
+      const body = typeof requestBody === 'object' ? requestBody : JSON.parse(bodyStr);
+      
+      // Priority 1: Use operationName if available
+      if (body.operationName && typeof body.operationName === 'string') {
+        return body.operationName;
+      }
+      
+      // Priority 2: Extract operation name from query string
+      if (body.query && typeof body.query === 'string') {
+        const queryMatch = body.query.match(/(?:query|mutation|subscription)\s+([a-zA-Z][a-zA-Z0-9_]*)/);
+        if (queryMatch && queryMatch[1]) {
+          return queryMatch[1];
+        }
+        
+        // Priority 3: Use operation type + hash for unnamed operations
+        const operationType = body.query.trim().match(/^(query|mutation|subscription)/);
+        if (operationType) {
+          const queryHash = this.simpleHash(body.query);
+          return `${operationType[1]}_${queryHash}`;
+        }
+      }
+      
+      // Priority 4: Fallback to request body hash
+      const bodyHash = this.simpleHash(bodyStr);
+      return `operation_${bodyHash}`;
+      
+    } catch (error) {
+      return null;
+    }
+  }
+
+  private simpleHash(str: string): string {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+      const char = str.charCodeAt(i);
+      hash = ((hash << 5) - hash) + char;
+      hash = hash & hash; // Convert to 32-bit integer
+    }
+    return Math.abs(hash).toString(16).substring(0, 8);
   }
 }

@@ -108,7 +108,7 @@ export class GeminiProvider implements LLMProvider {
           qualityScore,
           estimatedTokens: totalTokens,
           estimatedCost: this.estimateCost(totalTokens, options.model),
-          warnings: this.analyzeCode(generatedCode),
+          warnings: this.analyzeCode(generatedCode, options.framework),
           suggestions: this.generateSuggestions(generatedCode, options),
         };
       } catch (error) {
@@ -249,12 +249,21 @@ export class GeminiProvider implements LLMProvider {
     const framework = options.framework;
     const entries = harData.entries; // Process ALL entries
 
-    // Group by unique endpoints
+    // Group by unique endpoints (GraphQL-aware)
     const uniqueEndpoints = new Map<string, any>();
     entries.forEach(entry => {
       try {
         const url = new URL(entry.request.url);
-        const signature = `${entry.request.method}:${url.pathname}`;
+        let signature = `${entry.request.method}:${url.pathname}`;
+        
+        // ENHANCED: Special handling for GraphQL endpoints
+        if (this.isGraphQLEndpoint(url.pathname, entry.request)) {
+          const graphqlOperation = this.extractGraphQLOperation(entry.request);
+          if (graphqlOperation) {
+            signature = `${entry.request.method}:${url.pathname}:${graphqlOperation}`;
+          }
+        }
+        
         if (!uniqueEndpoints.has(signature)) {
           uniqueEndpoints.set(signature, entry);
         }
@@ -286,7 +295,7 @@ ${this.getFrameworkInstructions(framework)}
       prompt += `
 ${index + 1}. ${method} ${url.pathname} → ${statusCode}
    URL: ${entry.request.url}
-   🚨 MUST GENERATE: Complete describe() block with 10-15 test() cases
+   🚨 MUST GENERATE: Complete test block with 10-15 test() cases
    - Happy path, errors (400,401,403,404,500), edge cases, security tests
 `;
     });
@@ -294,7 +303,7 @@ ${index + 1}. ${method} ${url.pathname} → ${statusCode}
     prompt += `
 
 🚨 FINAL REQUIREMENTS:
-✅ Generate ${uniqueEndpoints.size} complete describe() blocks
+✅ Generate ${uniqueEndpoints.size} complete test blocks
 ❌ No "// Continue..." placeholder comments
 ✅ Production-ready, runnable ${framework} test code
 ✅ Include setup/teardown hooks
@@ -355,28 +364,56 @@ GENERATE COMPLETE TEST CODE NOW:`;
     for (const [endpoint, requests] of Object.entries(groupedRequests)) {
       prompt += `\n### ${endpoint}\n`;
       requests.forEach((entry, index) => {
-        prompt += `${index + 1}. **${entry.request.method}**\n`;
+        const url = new URL(entry.request.url);
+        prompt += `${index + 1}. **${entry.request.method} ${url.pathname}**\n`;
+        prompt += `   URL: ${entry.request.url}\n`;
         
-        // Add request details
+        // Query parameters
+        if (url.search) {
+          prompt += `   Query Parameters: ${url.search}\n`;
+        }
+        
+        // Request headers
         if (entry.request.headers && entry.request.headers.length > 0) {
-          const authHeader = entry.request.headers.find((h: any) => 
-            h.name.toLowerCase() === 'authorization'
-          );
-          if (authHeader) {
-            prompt += `   - Auth: ${authHeader.value.substring(0, 20)}...\n`;
-          }
+          prompt += `   Request Headers:\n`;
+          entry.request.headers.forEach((h: any) => {
+            prompt += `      ${h.name}: ${h.value}\n`;
+          });
         }
         
+        // Request cookies
+        if (entry.request.cookies && entry.request.cookies.length > 0) {
+          prompt += `   Request Cookies: ${entry.request.cookies.map((c: any) => `${c.name}=${c.value}`).join('; ')}\n`;
+        }
+        
+        // Request body
         if (entry.request.postData?.text) {
-          const bodyPreview = entry.request.postData.text.substring(0, 150);
-          prompt += `   - Request Body: \`${bodyPreview}...\`\n`;
+          const bodyPreview = entry.request.postData.text.substring(0, 300);
+          prompt += `   Request Body: \`${bodyPreview}${entry.request.postData.text.length > 300 ? '...' : ''}\`\n`;
         }
         
-        prompt += `   - Response Status: ${entry.response.status}\n`;
+        prompt += `   Response Status: ${entry.response.status}\n`;
         
+        // Response headers
+        if (entry.response.headers && entry.response.headers.length > 0) {
+          prompt += `   Response Headers:\n`;
+          entry.response.headers.forEach((h: any) => {
+            prompt += `      ${h.name}: ${h.value}\n`;
+          });
+        }
+        
+        // Response cookies
+        if (entry.response.cookies && entry.response.cookies.length > 0) {
+          prompt += `   Response Cookies:\n`;
+          entry.response.cookies.forEach((c: any) => {
+            prompt += `      ${c.name}=${c.value}${c.domain ? `; Domain=${c.domain}` : ''}${c.httpOnly ? '; HttpOnly' : ''}${c.secure ? '; Secure' : ''}\n`;
+          });
+        }
+        
+        // Response body
         if (entry.response.content?.text) {
-          const responsePreview = entry.response.content.text.substring(0, 150);
-          prompt += `   - Response Body: \`${responsePreview}...\`\n`;
+          const responsePreview = entry.response.content.text.substring(0, 300);
+          prompt += `   Response Body: \`${responsePreview}${entry.response.content.text.length > 300 ? '...' : ''}\`\n`;
         }
       });
     }
@@ -423,24 +460,22 @@ GENERATE COMPLETE TEST CODE NOW:`;
   private getFrameworkInstructions(framework: string): string {
     const instructions: Record<string, string> = {
       jest: `Jest Testing Framework:
-- Use describe() blocks for organizing test suites
-- Use it() or test() for individual test cases
-- Implement beforeAll()/beforeEach() for setup
-- Implement afterAll()/afterEach() for cleanup
-- Use expect() with appropriate matchers
-- Handle async operations with async/await
-- Use jest.mock() for mocking dependencies
-- Set appropriate timeouts with jest.setTimeout()`,
+- Use test blocks for organizing test suites
+- Use test with appropriate assertions
+- Handle async operations with async or await`,
       
-      playwright: `Playwright Test Framework:
-- Use test.describe() for test suites
-- Use test() for individual tests
-- Use test.beforeAll()/test.beforeEach() for setup
-- Use test.afterAll()/test.afterEach() for cleanup
-- Use request context for API testing
-- Implement proper error handling
-- Use expect() with Playwright matchers
-- Add test.use() for configuration`,
+      playwright: `🚨 CRITICAL: PLAYWRIGHT SYNTAX ONLY - ZERO TOLERANCE FOR JEST SYNTAX:
+- MANDATORY: test.describe() for test suites (NEVER EVER use describe())
+- MANDATORY: test() for individual tests (NEVER EVER use it())
+- MANDATORY: test.beforeAll()/test.beforeEach() for setup (NEVER beforeAll/beforeEach)
+- MANDATORY: test.afterAll()/test.afterEach() for cleanup (NEVER afterAll/afterEach)
+- MANDATORY: import { test, expect } from '@playwright/test'
+- Use { request } fixture for all API testing
+- Use expect() with Playwright-specific matchers
+- Add test.use() for global configuration
+- ZERO mixing of Jest and Playwright syntax allowed
+❌ INSTANT REJECTION: describe(), it(), beforeAll(), beforeEach(), afterAll(), afterEach()
+✅ ONLY ALLOWED: test.describe(), test(), test.beforeAll(), test.beforeEach(), test.afterAll(), test.afterEach()`,
       
       'mocha-chai': `Mocha with Chai:
 - Use describe() for test suites
@@ -502,6 +537,19 @@ GENERATE COMPLETE TEST CODE NOW:`;
 - Include response examples
 - Document each request
 - Add proper authentication`,
+      
+      restassured: `🚨 REST ASSURED JAVA FRAMEWORK - ABSOLUTELY NO JAVASCRIPT:
+- MANDATORY: Generate complete Java test class using REST Assured library
+- MANDATORY: Use @Test annotations from TestNG or JUnit frameworks
+- MANDATORY: Import static io.restassured.RestAssured.* and static org.hamcrest.Matchers.*
+- MANDATORY: Use given().when().then() BDD pattern for ALL API calls
+- MANDATORY: Use RequestSpecification for common request configurations
+- Use statusCode(), body(), header() methods for response validations
+- Use Hamcrest matchers: equalTo(), notNullValue(), hasSize(), containsString(), etc.
+- Include @BeforeClass for test setup and @AfterClass for cleanup
+- Use Response response = given().when().get() for complex validations
+❌ STRICTLY FORBIDDEN: Any JavaScript syntax, describe(), it(), expect(), async/await, const, let
+✅ ONLY ALLOWED: Java syntax, public class, @Test, given().when().then(), import statements`,
     };
 
     return instructions[framework] || instructions.jest;
@@ -543,13 +591,13 @@ GENERATE COMPLETE TEST CODE NOW:`;
     return Math.min(10, score);
   }
 
-  private analyzeCode(code: string): string[] {
+  private analyzeCode(code: string, framework?: string): string[] {
     const warnings: string[] = [];
 
-    // Check for common issues
+    // Framework-aware checks
     const issues = [
       {
-        check: () => !(/expect|assert|should/.test(code)),
+        check: () => !this.detectAssertions(code, framework),
         message: 'No assertions found in generated tests',
       },
       {
@@ -565,11 +613,11 @@ GENERATE COMPLETE TEST CODE NOW:`;
         message: 'Generated tests seem incomplete or too short',
       },
       {
-        check: () => !(/describe|suite|test\.describe/.test(code)),
+        check: () => !this.detectTestOrganization(code, framework),
         message: 'Tests lack proper organization structure',
       },
       {
-        check: () => !(/async|await|Promise|\.then/.test(code)),
+        check: () => !this.detectAsyncHandling(code, framework),
         message: 'Tests may not handle asynchronous operations properly',
       },
     ];
@@ -581,6 +629,41 @@ GENERATE COMPLETE TEST CODE NOW:`;
     });
 
     return warnings;
+  }
+
+  private detectAssertions(code: string, framework?: string): boolean {
+    switch (framework) {
+      case 'restassured':
+        return /assertThat|statusCode|equalTo|notNullValue|containsString/.test(code);
+      case 'postman':
+        return /pm\.test|pm\.expect/.test(code);
+      default:
+        return /expect|assert|should/.test(code);
+    }
+  }
+
+  private detectTestOrganization(code: string, framework?: string): boolean {
+    switch (framework) {
+      case 'restassured':
+        return /@Test.*public.*void/.test(code) && /public class/.test(code);
+      case 'postman':
+        return /"info".*"item"/.test(code);
+      default:
+        return /describe|suite|test\.describe/.test(code);
+    }
+  }
+
+  private detectAsyncHandling(code: string, framework?: string): boolean {
+    switch (framework) {
+      case 'restassured':
+        // REST Assured handles async internally
+        return /given\(\)|when\(\)|then\(\)/.test(code);
+      case 'postman':
+        // Postman collections don't need explicit async handling
+        return true;
+      default:
+        return /async|await|Promise|\.then/.test(code);
+    }
   }
 
   private generateSuggestions(code: string, options: GenerationOptions): string[] {
@@ -629,5 +712,73 @@ GENERATE COMPLETE TEST CODE NOW:`;
     });
 
     return suggestions;
+  }
+
+  private isGraphQLEndpoint(pathname: string, request: any): boolean {
+    return pathname.includes('graphql') || pathname.includes('gql') || 
+           (request.postData?.text && this.looksLikeGraphQL(request.postData.text));
+  }
+
+  private looksLikeGraphQL(requestBody: any): boolean {
+    if (!requestBody) return false;
+    
+    try {
+      const bodyStr = typeof requestBody === 'string' ? requestBody : JSON.stringify(requestBody);
+      const body = typeof requestBody === 'object' ? requestBody : JSON.parse(bodyStr);
+      
+      // Check for GraphQL query patterns
+      return !!(body.query || body.operationName || body.variables || 
+                bodyStr.includes('query ') || bodyStr.includes('mutation ') || 
+                bodyStr.includes('subscription '));
+    } catch {
+      return false;
+    }
+  }
+
+  private extractGraphQLOperation(request: any): string | null {
+    const requestBody = request.postData?.text;
+    if (!requestBody) return null;
+    
+    try {
+      const bodyStr = typeof requestBody === 'string' ? requestBody : JSON.stringify(requestBody);
+      const body = typeof requestBody === 'object' ? requestBody : JSON.parse(bodyStr);
+      
+      // Priority 1: Use operationName if available
+      if (body.operationName && typeof body.operationName === 'string') {
+        return body.operationName;
+      }
+      
+      // Priority 2: Extract operation name from query string
+      if (body.query && typeof body.query === 'string') {
+        const queryMatch = body.query.match(/(?:query|mutation|subscription)\s+([a-zA-Z][a-zA-Z0-9_]*)/);
+        if (queryMatch && queryMatch[1]) {
+          return queryMatch[1];
+        }
+        
+        // Priority 3: Use operation type + hash for unnamed operations
+        const operationType = body.query.trim().match(/^(query|mutation|subscription)/);
+        if (operationType) {
+          const queryHash = this.simpleHash(body.query);
+          return `${operationType[1]}_${queryHash}`;
+        }
+      }
+      
+      // Priority 4: Fallback to request body hash
+      const bodyHash = this.simpleHash(bodyStr);
+      return `operation_${bodyHash}`;
+      
+    } catch (error) {
+      return null;
+    }
+  }
+
+  private simpleHash(str: string): string {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+      const char = str.charCodeAt(i);
+      hash = ((hash << 5) - hash) + char;
+      hash = hash & hash; // Convert to 32-bit integer
+    }
+    return Math.abs(hash).toString(16).substring(0, 8);
   }
 }

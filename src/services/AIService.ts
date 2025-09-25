@@ -89,12 +89,12 @@ export class AIService {
     };
   }
 
-  async generateTests(session: RecordingSession, options: GenerationOptions, excludedEndpoints?: Set<string>): Promise<GeneratedTest> {
+  async generateTests(session: RecordingSession, options: GenerationOptions, excludedEndpoints?: Set<string>, progressCallback?: (current: number, total: number, stage: string, endpoint?: string) => void): Promise<GeneratedTest> {
     // Determine generation strategy based on endpoint count and options
     const strategy = this.selectGenerationStrategy(session, options);
     
     if (strategy.mode === 'individual') {
-      return this.generateTestsIndividually(session, options, excludedEndpoints);
+      return this.generateTestsIndividually(session, options, excludedEndpoints, progressCallback);
     } else {
       return this.generateTestsBatch(session, options, excludedEndpoints);
     }
@@ -117,7 +117,7 @@ export class AIService {
     return { mode: 'batch', reason: `Small session (${endpointCount} endpoints) - using efficient batch processing` };
   }
 
-  private async generateTestsIndividually(session: RecordingSession, options: GenerationOptions, excludedEndpoints?: Set<string>): Promise<GeneratedTest> {
+  private async generateTestsIndividually(session: RecordingSession, options: GenerationOptions, excludedEndpoints?: Set<string>, progressCallback?: (current: number, total: number, stage: string, endpoint?: string) => void): Promise<GeneratedTest> {
     try {
       console.log('🔥 Using INDIVIDUAL endpoint processing for guaranteed completeness');
       
@@ -160,7 +160,7 @@ export class AIService {
         console.log(`📋 Auth Guide Preview: "${customAuthGuide.substring(0, 100)}..."`);
       }
 
-      // Group unique endpoints
+      // Group unique endpoints with GraphQL operation awareness
       const uniqueEndpoints = this.groupUniqueEndpoints(filteredSession.requests);
       console.log(`Processing ${uniqueEndpoints.length} unique endpoints individually`);
 
@@ -179,7 +179,15 @@ export class AIService {
         
         const batchPromises = batch.map(async (endpoint, index) => {
           try {
-            console.log(`Generating tests for endpoint ${i + index + 1}/${uniqueEndpoints.length}: ${endpoint.method} ${endpoint.url}`);
+            const currentIndex = i + index + 1;
+            const endpointName = `${endpoint.method} ${endpoint.url}`;
+            
+            console.log(`Generating tests for endpoint ${currentIndex}/${uniqueEndpoints.length}: ${endpointName}`);
+            
+            // Send progress update
+            if (progressCallback) {
+              progressCallback(currentIndex, uniqueEndpoints.length, 'Generating tests', endpointName);
+            }
             
             // Create single-endpoint HAR data
             const singleEndpointHAR = this.createSingleEndpointHAR(endpoint);
@@ -372,14 +380,26 @@ export class AIService {
     requests.forEach(request => {
       try {
         const url = new URL(request.url);
-        const signature = `${request.method}:${url.pathname}`;
+        let signature = `${request.method}:${url.pathname}`;
+        
+        // ENHANCED: Special handling for GraphQL endpoints
+        if (this.isGraphQLEndpoint(url.pathname, request)) {
+          const graphqlOperation = this.extractGraphQLOperation(request);
+          if (graphqlOperation) {
+            signature = `${request.method}:${url.pathname}:${graphqlOperation}`;
+            console.log(`GraphQL operation detected: ${signature}`);
+          }
+        }
+        
         if (!uniqueEndpoints.has(signature)) {
           uniqueEndpoints.set(signature, request);
+          console.log(`Unique endpoint detected: ${signature}`);
         }
       } catch (error) {
-        const signature = `${request.method}:${request.url}`;
-        if (!uniqueEndpoints.has(signature)) {
-          uniqueEndpoints.set(signature, request);
+        console.warn(`Failed to parse URL for request: ${request.url}`, error);
+        const fallbackSignature = `${request.method}:${request.url}`;
+        if (!uniqueEndpoints.has(fallbackSignature)) {
+          uniqueEndpoints.set(fallbackSignature, request);
         }
       }
     });
@@ -464,34 +484,89 @@ export class AIService {
       sharedSetup = analyzer.generateAuthSetup(authFlow, framework);
     }
 
-    // Process each individual test
+    // Process each individual test - framework-aware extraction
     individualTests.forEach((testCode, index) => {
-      // Extract the main describe block content (skip the outer wrapper)
-      const describeMatch = testCode.match(/describe\(['"`]([^'"`]+)['"`],\s*\(\)\s*=>\s*\{([\s\S]*)\}\);?\s*$/);
-      if (describeMatch) {
-        const [, testName, testContent] = describeMatch;
-        // Clean up the content and add it as a separate describe block
-        const cleanContent = testContent.trim();
-        testBlocks.push(`  describe('${testName}', () => {\n${cleanContent}\n  });`);
-      } else {
-        // Fallback: try to extract any describe block
-        const fallbackMatch = testCode.match(/describe\([^{]+\{([\s\S]*)\}/);
-        if (fallbackMatch) {
-          testBlocks.push(`  // Endpoint ${index + 1} tests\n${fallbackMatch[0]}`);
+      if (framework === 'restassured') {
+        // For REST Assured, extract Java class content (no describe blocks)
+        const classMatch = testCode.match(/public\s+class\s+\w+\s*\{([\s\S]*)\}/);
+        if (classMatch) {
+          testBlocks.push(`// Endpoint ${index + 1} tests\n${testCode}`);
         } else {
-          // Last resort: wrap the entire test
-          testBlocks.push(`  // Endpoint ${index + 1} tests\n  ${testCode.replace(/\n/g, '\n  ')}`);
+          // Just add the raw Java code
+          testBlocks.push(`// Endpoint ${index + 1} tests\n${testCode}`);
+        }
+      } else if (framework === 'postman') {
+        // For Postman, extract collection items
+        testBlocks.push(`// Endpoint ${index + 1}\n${testCode}`);
+      } else {
+        // For other frameworks, extract describe blocks
+        const describeMatch = testCode.match(/describe\(['"`]([^'"`]+)['"`],\s*\(\)\s*=>\s*\{([\s\S]*)\}\);?\s*$/);
+        if (describeMatch) {
+          const [, testName, testContent] = describeMatch;
+          const cleanContent = testContent.trim();
+          
+          if (framework === 'playwright') {
+            testBlocks.push(`  test.describe('${testName}', () => {\n${cleanContent}\n  });`);
+          } else {
+            testBlocks.push(`  describe('${testName}', () => {\n${cleanContent}\n  });`);
+          }
+        } else {
+          // Fallback: try to extract any describe block
+          const fallbackMatch = testCode.match(/describe\([^{]+\{([\s\S]*)\}/);
+          if (fallbackMatch) {
+            testBlocks.push(`  // Endpoint ${index + 1} tests\n${fallbackMatch[0]}`);
+          } else {
+            // Last resort: wrap the entire test
+            testBlocks.push(`  // Endpoint ${index + 1} tests\n  ${testCode.replace(/\n/g, '\n  ')}`);
+          }
         }
       }
     });
 
-    // Combine everything into a single test suite
-    const combinedTestSuite = `describe('API Test Suite - Complete Coverage', () => {
-${sharedSetup ? `  // Authentication setup\n${sharedSetup.split('\n').map(line => `  ${line}`).join('\n')}\n` : ''}
-${testBlocks.join('\n\n')}
-});`;
+    // Combine everything into a single test suite with framework-appropriate wrapper
+    const combinedTestSuite = this.wrapTestSuiteForFramework(
+      framework, 
+      testBlocks.join('\n\n'), 
+      sharedSetup
+    );
 
     return combinedTestSuite;
+  }
+
+  private wrapTestSuiteForFramework(framework: string, testContent: string, sharedSetup?: string): string {
+    const setupSection = sharedSetup ? `  // Authentication setup\n${sharedSetup.split('\n').map(line => `  ${line}`).join('\n')}\n` : '';
+    
+    switch (framework) {
+      case 'restassured':
+        // For REST Assured, don't wrap - the Java classes are standalone
+        return testContent;
+      
+      case 'postman':
+        // For Postman, generate collection wrapper
+        return `{
+  "info": {
+    "name": "API Test Suite - Complete Coverage",
+    "description": "Generated from XHRScribe recording",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+${testContent}
+  ]
+}`;
+      
+      case 'playwright':
+        return `import { test, expect } from '@playwright/test';
+
+test.describe('API Test Suite - Complete Coverage', () => {
+${setupSection}${testContent}
+});`;
+      
+      default:
+        // For Jest, Mocha, Cypress, etc. - use traditional describe wrapper
+        return `describe('API Test Suite - Complete Coverage', () => {
+${setupSection}${testContent}
+});`;
+    }
   }
 
   private estimateTokens(text: string): number {
@@ -1778,5 +1853,73 @@ ${fixedCode}`;
 
     console.log('🔧 Fixed specific generated code issues');
     return fixedCode;
+  }
+
+  private isGraphQLEndpoint(pathname: string, request: any): boolean {
+    return pathname.includes('graphql') || pathname.includes('gql') || 
+           (request.requestBody && this.looksLikeGraphQL(request.requestBody));
+  }
+
+  private looksLikeGraphQL(requestBody: any): boolean {
+    if (!requestBody) return false;
+    
+    try {
+      const bodyStr = typeof requestBody === 'string' ? requestBody : JSON.stringify(requestBody);
+      const body = typeof requestBody === 'object' ? requestBody : JSON.parse(bodyStr);
+      
+      // Check for GraphQL query patterns
+      return !!(body.query || body.operationName || body.variables || 
+                bodyStr.includes('query ') || bodyStr.includes('mutation ') || 
+                bodyStr.includes('subscription '));
+    } catch {
+      return false;
+    }
+  }
+
+  private extractGraphQLOperation(request: any): string | null {
+    if (!request.requestBody) return null;
+    
+    try {
+      const bodyStr = typeof request.requestBody === 'string' ? request.requestBody : JSON.stringify(request.requestBody);
+      const body = typeof request.requestBody === 'object' ? request.requestBody : JSON.parse(bodyStr);
+      
+      // Priority 1: Use operationName if available
+      if (body.operationName && typeof body.operationName === 'string') {
+        return body.operationName;
+      }
+      
+      // Priority 2: Extract operation name from query string
+      if (body.query && typeof body.query === 'string') {
+        const queryMatch = body.query.match(/(?:query|mutation|subscription)\s+([a-zA-Z][a-zA-Z0-9_]*)/);
+        if (queryMatch && queryMatch[1]) {
+          return queryMatch[1];
+        }
+        
+        // Priority 3: Use operation type + hash for unnamed operations
+        const operationType = body.query.trim().match(/^(query|mutation|subscription)/);
+        if (operationType) {
+          const queryHash = this.simpleHash(body.query);
+          return `${operationType[1]}_${queryHash}`;
+        }
+      }
+      
+      // Priority 4: Fallback to request body hash
+      const bodyHash = this.simpleHash(bodyStr);
+      return `operation_${bodyHash}`;
+      
+    } catch (error) {
+      console.warn('Failed to extract GraphQL operation:', error);
+      return null;
+    }
+  }
+
+  private simpleHash(str: string): string {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+      const char = str.charCodeAt(i);
+      hash = ((hash << 5) - hash) + char;
+      hash = hash & hash; // Convert to 32-bit integer
+    }
+    return Math.abs(hash).toString(16).substring(0, 8);
   }
 }
