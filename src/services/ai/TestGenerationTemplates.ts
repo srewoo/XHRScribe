@@ -178,7 +178,68 @@ MANDATORY JAVA STRUCTURE:
 - public class ClassName { }
 - @Test public void methodName() { }
 - given().when().then() chains
-- statusCode(), body(), header() validations`
+- statusCode(), body(), header() validations`,
+
+      k6: `
+Use k6 for load and performance testing.
+Structure:
+- Import http from 'k6/http' and check from 'k6'
+- Export options object for test configuration (vus, duration, thresholds)
+- Export default function as main test entry
+- Use http.get(), http.post() etc for requests
+- Use check() for assertions
+- Use sleep() between iterations
+- Group related requests with group()`,
+
+      artillery: `
+Generate Artillery YAML configuration.
+Structure:
+- config section with target URL and phases
+- scenarios array with test flows
+- Use capture for response data extraction
+- Define proper load phases (duration, arrivalRate)
+- Include think time between requests
+- Add assertions with expect`,
+
+      pactum: `
+Use PactumJS for API testing.
+Structure:
+- Import { spec, request } from 'pactum'
+- Use describe/it blocks from Mocha or Jest
+- Use spec() for fluent API testing
+- Chain .get(), .post(), .withHeaders(), .withJson()
+- Use .expectStatus(), .expectJson(), .expectJsonLike()
+- Use request.setBaseUrl() for configuration`,
+
+      karate: `
+Generate Karate .feature files.
+Structure:
+- Feature declaration with description
+- Background section for common setup (url, headers)
+- Scenario sections for each test case
+- Use Given/When/Then/And keywords
+- Use Karate match syntax for assertions
+- Support for JSON path expressions`,
+
+      pytest: `
+Use Pytest with requests library.
+Structure:
+- Import pytest and requests
+- Use test_ prefix for test functions
+- Use @pytest.fixture for setup/teardown
+- Use assert statements for assertions
+- Use @pytest.mark for test categorization
+- Include proper type hints`,
+
+      httpx: `
+Use HTTPX for async Python API testing.
+Structure:
+- Import pytest, httpx, asyncio
+- Use @pytest.mark.asyncio decorator
+- Use async with httpx.AsyncClient()
+- Use await for all HTTP calls
+- Use assert for validations
+- Include proper typing hints`
     };
 
     return instructions[framework] || instructions.jest;

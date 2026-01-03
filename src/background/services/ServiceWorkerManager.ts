@@ -1,14 +1,29 @@
-export type PersistenceMode = 'IDLE' | 'STANDARD' | 'INTENSIVE';
+export type PersistenceMode = 'IDLE' | 'STANDARD' | 'INTENSIVE' | 'HEARTBEAT';
+
+export interface HeartbeatStatus {
+  isAlive: boolean;
+  lastHeartbeat: number;
+  missedBeats: number;
+  mode: PersistenceMode;
+}
 
 export class ServiceWorkerManager {
   private static instance: ServiceWorkerManager;
   private mode: PersistenceMode = 'IDLE'; // Default to IDLE
   private alarmName = 'xhrscribe-keepalive';
+  private heartbeatAlarmName = 'xhrscribe-heartbeat';
   private isRecording = false;
   private lastActivity = Date.now();
+  private lastHeartbeat = Date.now();
+  private missedHeartbeats = 0;
+  private maxMissedHeartbeats = 3;
   private cleanupInterval: number | null = null;
+  private heartbeatInterval: number | null = null;
+  private heartbeatCallbacks: Set<(status: HeartbeatStatus) => void> = new Set();
 
-  private constructor() {}
+  private constructor() {
+    this.setupHeartbeatListener();
+  }
 
   static getInstance(): ServiceWorkerManager {
     if (!ServiceWorkerManager.instance) {
@@ -19,6 +34,13 @@ export class ServiceWorkerManager {
 
   async startPersistence(mode: PersistenceMode = 'IDLE'): Promise<void> {
     this.mode = mode;
+
+    // Heartbeat mode is always active regardless of recording state
+    if (mode === 'HEARTBEAT') {
+      await this.setupHeartbeatPersistence();
+      this.startCleanupInterval();
+      return;
+    }
 
     // Only start persistence if recording
     if (this.isRecording) {
@@ -42,11 +64,18 @@ export class ServiceWorkerManager {
   async stopPersistence(): Promise<void> {
     // Clear alarms
     await chrome.alarms.clear(this.alarmName);
+    await chrome.alarms.clear(this.heartbeatAlarmName);
 
     // Clear cleanup interval
     if (this.cleanupInterval) {
       clearInterval(this.cleanupInterval);
       this.cleanupInterval = null;
+    }
+
+    // Clear heartbeat interval
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+      this.heartbeatInterval = null;
     }
 
     this.isRecording = false;
@@ -154,5 +183,194 @@ export class ServiceWorkerManager {
         chrome.storage.local.remove(keysToRemove);
       }
     });
+  }
+
+  // ========== HEARTBEAT SYSTEM ==========
+
+  private setupHeartbeatListener(): void {
+    // Listen for heartbeat messages from content scripts and popup
+    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+      if (message.type === 'HEARTBEAT_PING') {
+        this.receiveHeartbeat();
+        sendResponse({
+          type: 'HEARTBEAT_PONG',
+          status: this.getHeartbeatStatus()
+        });
+        return true;
+      }
+      return false;
+    });
+  }
+
+  private async setupHeartbeatPersistence(): Promise<void> {
+    console.log('🫀 Setting up 30-second heartbeat persistence');
+
+    // Clear any existing heartbeat alarm
+    await chrome.alarms.clear(this.heartbeatAlarmName);
+
+    // Create heartbeat alarm (0.5 minutes = 30 seconds)
+    await chrome.alarms.create(this.heartbeatAlarmName, {
+      periodInMinutes: 0.5, // 30 seconds
+      delayInMinutes: 0
+    });
+
+    // Add heartbeat alarm handler
+    chrome.alarms.onAlarm.addListener(this.handleHeartbeatAlarm);
+
+    // Also use interval as backup (more reliable than alarms for short intervals)
+    this.startHeartbeatInterval();
+
+    // Store heartbeat state
+    await this.saveHeartbeatState();
+  }
+
+  private handleHeartbeatAlarm = async (alarm: chrome.alarms.Alarm): Promise<void> => {
+    if (alarm.name === this.heartbeatAlarmName) {
+      await this.performHeartbeat();
+    }
+  };
+
+  private startHeartbeatInterval(): void {
+    // Clear existing interval
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+    }
+
+    // Set up 30-second interval as backup to alarms
+    this.heartbeatInterval = setInterval(async () => {
+      await this.performHeartbeat();
+    }, 30000) as unknown as number; // 30 seconds
+
+    console.log('🫀 Heartbeat interval started (30s)');
+  }
+
+  private async performHeartbeat(): Promise<void> {
+    const now = Date.now();
+    const timeSinceLastHeartbeat = now - this.lastHeartbeat;
+
+    // Check if we missed heartbeats (> 45 seconds since last one)
+    if (timeSinceLastHeartbeat > 45000) {
+      this.missedHeartbeats++;
+      console.warn(`💔 Missed heartbeat! Count: ${this.missedHeartbeats}`);
+
+      // Try to recover if too many missed heartbeats
+      if (this.missedHeartbeats >= this.maxMissedHeartbeats) {
+        console.error('💀 Too many missed heartbeats, attempting recovery...');
+        await this.recoverFromHeartbeatFailure();
+      }
+    } else {
+      this.missedHeartbeats = 0;
+    }
+
+    this.lastHeartbeat = now;
+    this.lastActivity = now;
+
+    // Keep service worker alive by writing to storage
+    await chrome.storage.session.set({
+      heartbeat: now,
+      heartbeatStatus: this.getHeartbeatStatus()
+    });
+
+    // Notify all registered callbacks
+    this.notifyHeartbeatCallbacks();
+
+    // Log heartbeat (only every 5th beat to reduce noise)
+    if (Math.floor(now / 30000) % 5 === 0) {
+      console.log('🫀 Heartbeat:', new Date(now).toLocaleTimeString());
+    }
+  }
+
+  private async recoverFromHeartbeatFailure(): Promise<void> {
+    console.log('🔄 Attempting heartbeat recovery...');
+
+    // Reset missed heartbeats counter
+    this.missedHeartbeats = 0;
+
+    // Restart heartbeat systems
+    await this.setupHeartbeatPersistence();
+
+    // Try to ping all tabs to re-establish connection
+    try {
+      const tabs = await chrome.tabs.query({});
+      for (const tab of tabs) {
+        if (tab.id) {
+          try {
+            await chrome.tabs.sendMessage(tab.id, {
+              type: 'HEARTBEAT_RECOVERY',
+              timestamp: Date.now()
+            });
+          } catch (e) {
+            // Tab might not have content script, ignore
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Recovery ping failed:', error);
+    }
+
+    console.log('✅ Heartbeat recovery complete');
+  }
+
+  receiveHeartbeat(): void {
+    this.lastHeartbeat = Date.now();
+    this.lastActivity = Date.now();
+    this.missedHeartbeats = 0;
+  }
+
+  getHeartbeatStatus(): HeartbeatStatus {
+    const now = Date.now();
+    const timeSinceLastHeartbeat = now - this.lastHeartbeat;
+
+    return {
+      isAlive: timeSinceLastHeartbeat < 60000, // Alive if heartbeat within last minute
+      lastHeartbeat: this.lastHeartbeat,
+      missedBeats: this.missedHeartbeats,
+      mode: this.mode
+    };
+  }
+
+  onHeartbeat(callback: (status: HeartbeatStatus) => void): () => void {
+    this.heartbeatCallbacks.add(callback);
+    return () => this.heartbeatCallbacks.delete(callback);
+  }
+
+  private notifyHeartbeatCallbacks(): void {
+    const status = this.getHeartbeatStatus();
+    this.heartbeatCallbacks.forEach(callback => {
+      try {
+        callback(status);
+      } catch (error) {
+        console.error('Heartbeat callback error:', error);
+      }
+    });
+  }
+
+  private async saveHeartbeatState(): Promise<void> {
+    await chrome.storage.local.set({
+      '_heartbeat_state': {
+        mode: this.mode,
+        lastHeartbeat: this.lastHeartbeat,
+        startedAt: Date.now()
+      }
+    });
+  }
+
+  async enableHeartbeat(): Promise<void> {
+    console.log('🫀 Enabling heartbeat mode');
+    await this.setMode('HEARTBEAT');
+  }
+
+  async disableHeartbeat(): Promise<void> {
+    console.log('💤 Disabling heartbeat mode');
+    await chrome.alarms.clear(this.heartbeatAlarmName);
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+      this.heartbeatInterval = null;
+    }
+    await this.setMode('IDLE');
+  }
+
+  isHeartbeatActive(): boolean {
+    return this.mode === 'HEARTBEAT' || this.heartbeatInterval !== null;
   }
 }

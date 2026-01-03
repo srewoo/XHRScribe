@@ -76,9 +76,9 @@ export default function App() {
     
     // Listen for tab switch events
     const handleSwitchToGenerate = () => {
-      setTabValue(2); // Switch to Generate tab
+      setTabValue(3); // Switch to Generate tab
     };
-    
+
     window.addEventListener('switchToGenerate', handleSwitchToGenerate);
     return () => {
       window.removeEventListener('switchToGenerate', handleSwitchToGenerate);

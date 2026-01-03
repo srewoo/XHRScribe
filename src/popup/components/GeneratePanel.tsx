@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Box,
   Paper,
@@ -23,6 +23,13 @@ import {
   Tooltip,
   Radio,
   RadioGroup,
+  Accordion,
+  AccordionSummary,
+  AccordionDetails,
+  Switch,
+  Slider,
+  Tabs,
+  Tab,
 } from '@mui/material';
 import {
   Code,
@@ -33,10 +40,23 @@ import {
   CheckCircle,
   Error as ErrorIcon,
   Info,
+  ExpandMore,
+  RocketLaunch,
+  Security,
+  Speed,
+  Api,
+  AccountTree,
+  DataObject,
 } from '@mui/icons-material';
 import { RecordingSession, TestFramework, AIProvider, AIModel } from '@/types';
 import { useStore } from '@/store/useStore';
 import EndpointPreview from './EndpointPreview';
+import {
+  ParallelGenerationOrchestrator,
+  ParallelGenerationResult,
+  GenerationProgress,
+  GenerationOptions as ParallelOptions
+} from '@/services/ParallelGenerationOrchestrator';
 
 interface GeneratePanelProps {
   sessions: RecordingSession[];
@@ -86,6 +106,34 @@ export default function GeneratePanel({ sessions }: GeneratePanelProps) {
     estimatedTime: 0,
   });
 
+  // Parallel generation state
+  const [parallelEnabled, setParallelEnabled] = useState(false);
+  const [parallelOptions, setParallelOptions] = useState<ParallelOptions>({
+    enableAssertions: true,
+    enablePerformance: true,
+    enableOpenAPI: true,
+    enableGraphQL: true,
+    enableScenarios: true,
+    enableDataDriven: true,
+    enableSecurity: true,
+    enableAutoHealing: true,
+    enableEnvironment: true,
+    enableAITests: true, // Enable AI test generation by default
+    framework: 'jest',
+    maxConcurrency: 3,
+    // AI settings (will be set from main options)
+    aiProvider: provider,
+    aiModel: model,
+    includeAuth: options.includeAuth,
+    includeErrorScenarios: options.includeErrorScenarios,
+    includePerformanceTests: options.includePerformanceTests,
+    includeSecurityTests: options.includeSecurityTests,
+    generateMockData: options.generateMockData
+  });
+  const [parallelProgress, setParallelProgress] = useState<GenerationProgress | null>(null);
+  const [parallelResult, setParallelResult] = useState<ParallelGenerationResult | null>(null);
+  const [resultTab, setResultTab] = useState(0);
+
   // Load settings on mount
   useEffect(() => {
     loadSettings();
@@ -110,6 +158,21 @@ export default function GeneratePanel({ sessions }: GeneratePanelProps) {
     chrome.runtime.onMessage.addListener(handleProgressMessage);
     return () => chrome.runtime.onMessage.removeListener(handleProgressMessage);
   }, []);
+
+  // Sync parallel options with main generation options
+  useEffect(() => {
+    setParallelOptions(prev => ({
+      ...prev,
+      framework,
+      aiProvider: provider,
+      aiModel: model,
+      includeAuth: options.includeAuth,
+      includeErrorScenarios: options.includeErrorScenarios,
+      includePerformanceTests: options.includePerformanceTests,
+      includeSecurityTests: options.includeSecurityTests,
+      generateMockData: options.generateMockData
+    }));
+  }, [framework, provider, model, options]);
 
   // Watch for changes in generatedTests from the store
   useEffect(() => {
@@ -494,6 +557,111 @@ ${options.includeErrorScenarios ? `
     URL.revokeObjectURL(url);
   };
 
+  // Parallel generation handlers
+  const handleParallelOptionChange = (key: keyof ParallelOptions) => (
+    event: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    setParallelOptions(prev => ({ ...prev, [key]: event.target.checked }));
+  };
+
+  const handleParallelGenerate = useCallback(async () => {
+    if (!session) return;
+
+    setGenerationState(prev => ({
+      ...prev,
+      isGenerating: true,
+      progress: 0,
+      stage: 'Initializing parallel generation...'
+    }));
+    setParallelProgress(null);
+    setParallelResult(null);
+
+    try {
+      const orchestrator = ParallelGenerationOrchestrator.getInstance();
+      const result = await orchestrator.generateAll(
+        session,
+        { ...parallelOptions, framework },
+        (prog) => {
+          setParallelProgress(prog);
+          // Update main generation state progress
+          setGenerationState(prev => ({
+            ...prev,
+            progress: prog.overall,
+            stage: prog.currentTask ? `Running: ${prog.currentTask}` : 'Processing...'
+          }));
+        }
+      );
+
+      setParallelResult(result);
+
+      // Also set the generated code for the main view
+      if (result) {
+        const combinedCode = orchestrator.generateCombinedTestCode(result, framework);
+        setGeneratedCode(combinedCode);
+      }
+
+      // Mark as complete
+      setGenerationState(prev => ({
+        ...prev,
+        progress: 100,
+        stage: 'Generation complete!'
+      }));
+    } catch (error) {
+      console.error('Parallel generation failed:', error);
+      setGenerationState(prev => ({
+        ...prev,
+        stage: 'Generation failed. Please try again.'
+      }));
+    } finally {
+      setGenerationState(prev => ({ ...prev, isGenerating: false }));
+    }
+  }, [session, parallelOptions, framework]);
+
+  const handleParallelDownload = useCallback((type: 'tests' | 'openapi' | 'graphql' | 'env' | 'security') => {
+    if (!parallelResult) return;
+
+    const orchestrator = ParallelGenerationOrchestrator.getInstance();
+    let content = '';
+    let filename = '';
+
+    switch (type) {
+      case 'tests':
+        content = orchestrator.generateCombinedTestCode(parallelResult, framework);
+        filename = `tests.${framework === 'playwright' ? 'spec.ts' : 'test.js'}`;
+        break;
+      case 'openapi':
+        content = orchestrator.exportOpenAPISpec(parallelResult) || '';
+        filename = 'openapi.json';
+        break;
+      case 'graphql':
+        content = orchestrator.exportGraphQLSchema(parallelResult) || '';
+        filename = 'schema.graphql';
+        break;
+      case 'env':
+        content = orchestrator.exportEnvironmentFile(parallelResult) || '';
+        filename = '.env.example';
+        break;
+      case 'security':
+        content = orchestrator.exportSecurityReport(parallelResult);
+        filename = 'security-report.md';
+        break;
+    }
+
+    if (content) {
+      const blob = new Blob([content], { type: 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+  }, [parallelResult, framework]);
+
+  const enabledParallelCount = Object.entries(parallelOptions)
+    .filter(([key, value]) => key.startsWith('enable') && value === true)
+    .length;
+
   const estimateCost = () => {
     if (!session) return 0;
     
@@ -632,15 +800,21 @@ ${options.includeErrorScenarios ? `
               label="Test Framework"
               disabled={generationState.isGenerating}
             >
-              <MenuItem value="jest">Jest</MenuItem>
               <MenuItem value="playwright">Playwright</MenuItem>
-              <MenuItem value="mocha-chai">Mocha/Chai</MenuItem>
-              <MenuItem value="cypress">Cypress</MenuItem>
-              <MenuItem value="puppeteer">Puppeteer</MenuItem>
+              <MenuItem value="jest">Jest</MenuItem>
               <MenuItem value="vitest">Vitest</MenuItem>
+              <MenuItem value="cypress">Cypress</MenuItem>
               <MenuItem value="supertest">Supertest</MenuItem>
-              <MenuItem value="postman">Postman</MenuItem>
-              <MenuItem value="restassured">REST Assured</MenuItem>
+              <MenuItem value="mocha-chai">Mocha/Chai</MenuItem>
+              <MenuItem value="pactum">PactumJS</MenuItem>
+              <MenuItem value="k6">k6 (Load Testing)</MenuItem>
+              <MenuItem value="artillery">Artillery</MenuItem>
+              <MenuItem value="pytest">Pytest (Python)</MenuItem>
+              <MenuItem value="httpx">HTTPX (Python)</MenuItem>
+              <MenuItem value="restassured">REST Assured (Java)</MenuItem>
+              <MenuItem value="karate">Karate (Java)</MenuItem>
+              <MenuItem value="postman">Postman Collection</MenuItem>
+              <MenuItem value="puppeteer">Puppeteer</MenuItem>
             </Select>
           </FormControl>
 
@@ -917,16 +1091,177 @@ ${options.includeErrorScenarios ? `
         </Typography>
       </Paper>
 
+      {/* Advanced Parallel Generation */}
+      <Accordion
+        expanded={parallelEnabled}
+        onChange={(_, expanded) => setParallelEnabled(expanded)}
+        sx={{ mb: 2 }}
+      >
+        <AccordionSummary expandIcon={<ExpandMore />}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: '100%' }}>
+            <RocketLaunch color="primary" fontSize="small" />
+            <Typography variant="subtitle2">Advanced Parallel Generation</Typography>
+            <Chip
+              label={`${enabledParallelCount} features`}
+              size="small"
+              color="primary"
+              variant="outlined"
+              sx={{ ml: 'auto', mr: 1 }}
+            />
+          </Box>
+        </AccordionSummary>
+        <AccordionDetails>
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 2 }}>
+            Generate tests, OpenAPI specs, security reports, and more in parallel
+          </Typography>
+
+          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, mb: 2 }}>
+            <Box sx={{ width: '48%' }}>
+              <FormControlLabel
+                control={<Switch checked={parallelOptions.enableAssertions} onChange={handleParallelOptionChange('enableAssertions')} size="small" />}
+                label={<Typography variant="body2">Smart Assertions</Typography>}
+              />
+            </Box>
+            <Box sx={{ width: '48%' }}>
+              <FormControlLabel
+                control={<Switch checked={parallelOptions.enablePerformance} onChange={handleParallelOptionChange('enablePerformance')} size="small" />}
+                label={<Typography variant="body2">Performance Tests</Typography>}
+              />
+            </Box>
+            <Box sx={{ width: '48%' }}>
+              <FormControlLabel
+                control={<Switch checked={parallelOptions.enableOpenAPI} onChange={handleParallelOptionChange('enableOpenAPI')} size="small" />}
+                label={<Typography variant="body2">OpenAPI Spec</Typography>}
+              />
+            </Box>
+            <Box sx={{ width: '48%' }}>
+              <FormControlLabel
+                control={<Switch checked={parallelOptions.enableGraphQL} onChange={handleParallelOptionChange('enableGraphQL')} size="small" />}
+                label={<Typography variant="body2">GraphQL Schema</Typography>}
+              />
+            </Box>
+            <Box sx={{ width: '48%' }}>
+              <FormControlLabel
+                control={<Switch checked={parallelOptions.enableScenarios} onChange={handleParallelOptionChange('enableScenarios')} size="small" />}
+                label={<Typography variant="body2">Test Scenarios</Typography>}
+              />
+            </Box>
+            <Box sx={{ width: '48%' }}>
+              <FormControlLabel
+                control={<Switch checked={parallelOptions.enableDataDriven} onChange={handleParallelOptionChange('enableDataDriven')} size="small" />}
+                label={<Typography variant="body2">Data-Driven Tests</Typography>}
+              />
+            </Box>
+            <Box sx={{ width: '48%' }}>
+              <FormControlLabel
+                control={<Switch checked={parallelOptions.enableSecurity} onChange={handleParallelOptionChange('enableSecurity')} size="small" />}
+                label={<Typography variant="body2">Security Tests</Typography>}
+              />
+            </Box>
+            <Box sx={{ width: '48%' }}>
+              <FormControlLabel
+                control={<Switch checked={parallelOptions.enableAutoHealing} onChange={handleParallelOptionChange('enableAutoHealing')} size="small" />}
+                label={<Typography variant="body2">Auto-Healing</Typography>}
+              />
+            </Box>
+            <Box sx={{ width: '48%' }}>
+              <FormControlLabel
+                control={<Switch checked={parallelOptions.enableEnvironment} onChange={handleParallelOptionChange('enableEnvironment')} size="small" />}
+                label={<Typography variant="body2">Environment Vars</Typography>}
+              />
+            </Box>
+          </Box>
+
+          <Box sx={{ mb: 2 }}>
+            <Typography variant="body2" gutterBottom>
+              Parallel Tasks: {parallelOptions.maxConcurrency}
+            </Typography>
+            <Slider
+              value={parallelOptions.maxConcurrency}
+              onChange={(_, value) => setParallelOptions(prev => ({ ...prev, maxConcurrency: value as number }))}
+              min={1}
+              max={5}
+              marks
+              valueLabelDisplay="auto"
+              size="small"
+            />
+          </Box>
+
+          {/* Parallel Progress */}
+          {generationState.isGenerating && parallelProgress && (
+            <Paper sx={{ p: 2, mb: 2, bgcolor: 'background.default' }}>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
+                <Typography variant="body2">
+                  {parallelProgress.currentTask ? `Running: ${parallelProgress.currentTask}` : 'Starting...'}
+                </Typography>
+                <Typography variant="body2" color="primary">
+                  {parallelProgress.overall}%
+                </Typography>
+              </Box>
+              <LinearProgress variant="determinate" value={parallelProgress.overall} sx={{ mb: 1 }} />
+              <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
+                {parallelProgress.completedTasks.map(task => (
+                  <Chip key={task} label={task} size="small" color="success" variant="outlined" />
+                ))}
+                {parallelProgress.runningTasks.map(task => (
+                  <Chip key={task} label={task} size="small" color="primary" />
+                ))}
+              </Box>
+            </Paper>
+          )}
+
+          {/* Parallel Results */}
+          {parallelResult && (
+            <Box sx={{ mt: 2 }}>
+              <Alert severity="success" sx={{ mb: 2 }}>
+                Generated in {parallelResult.timing.total}ms
+                {parallelResult.errors.length > 0 && ` (${parallelResult.errors.length} errors)`}
+              </Alert>
+
+              <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                <Button size="small" variant="outlined" startIcon={<Download />} onClick={() => handleParallelDownload('tests')}>
+                  Tests
+                </Button>
+                {parallelResult.openapi && (
+                  <Button size="small" variant="outlined" startIcon={<Api />} onClick={() => handleParallelDownload('openapi')}>
+                    OpenAPI
+                  </Button>
+                )}
+                {parallelResult.graphql?.sdl && (
+                  <Button size="small" variant="outlined" startIcon={<DataObject />} onClick={() => handleParallelDownload('graphql')}>
+                    GraphQL
+                  </Button>
+                )}
+                {parallelResult.environment && (
+                  <Button size="small" variant="outlined" onClick={() => handleParallelDownload('env')}>
+                    .env
+                  </Button>
+                )}
+                {parallelResult.security && (
+                  <Button size="small" variant="outlined" startIcon={<Security />} onClick={() => handleParallelDownload('security')}>
+                    Security
+                  </Button>
+                )}
+              </Box>
+            </Box>
+          )}
+        </AccordionDetails>
+      </Accordion>
+
       {/* Generate Button */}
       <Button
         fullWidth
         variant="contained"
         startIcon={generationState.isGenerating ? <CircularProgress size={20} color="inherit" /> : <AutoAwesome />}
-        onClick={handleGenerate}
+        onClick={parallelEnabled ? handleParallelGenerate : handleGenerate}
         disabled={generationState.isGenerating || (provider !== 'local' && !settings?.apiKeys[provider as keyof typeof settings.apiKeys])}
         sx={{ mb: 2 }}
       >
-        {generationState.isGenerating ? 'Generating Tests...' : 'Generate Tests'}
+        {generationState.isGenerating
+          ? 'Generating Tests...'
+          : parallelEnabled
+            ? `Generate All (${enabledParallelCount} features)`
+            : 'Generate Tests'}
       </Button>
 
       {/* Generation Progress - Enhanced */}

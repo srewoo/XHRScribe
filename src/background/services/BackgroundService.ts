@@ -1,14 +1,20 @@
-import { 
-  RecordingSession, 
-  NetworkRequest, 
-  BackgroundMessage, 
+import {
+  RecordingSession,
+  NetworkRequest,
+  BackgroundMessage,
   Settings,
-  HARData 
+  HARData
 } from '@/types';
 import { HARProcessor } from './HARProcessor';
 import { StorageService } from '@/services/StorageService';
 import { AIService } from '@/services/AIService';
 import { ExportService } from '@/services/ExportService';
+import { ParallelGenerationOrchestrator } from '@/services/ParallelGenerationOrchestrator';
+import { SchemaExtractor } from '@/services/SchemaExtractor';
+import { GraphQLSchemaInference } from '@/services/GraphQLSchemaInference';
+import { EnvironmentExtractor } from '@/services/EnvironmentExtractor';
+import { SecurityTestGenerator } from '@/services/SecurityTestGenerator';
+import { DataMaskingService } from '@/services/DataMaskingService';
 
 export class BackgroundService {
   private static instance: BackgroundService;
@@ -17,7 +23,8 @@ export class BackgroundService {
   private storageService: StorageService = StorageService.getInstance();
   private aiService: AIService = AIService.getInstance();
   private exportService: ExportService = ExportService.getInstance();
-  // private requestIdCounter = 0;
+  private dataMaskingService: DataMaskingService = DataMaskingService.getInstance();
+  private cachedSettings: Settings | null = null;
 
   private constructor() {}
 
@@ -61,6 +68,58 @@ export class BackgroundService {
     await this.storageService.saveSettings(defaultSettings);
   }
 
+  /**
+   * Get cached settings or fetch from storage
+   */
+  private async getSettings(): Promise<Settings> {
+    if (!this.cachedSettings) {
+      this.cachedSettings = await this.storageService.getSettings();
+    }
+    return this.cachedSettings;
+  }
+
+  /**
+   * Apply data masking to a network request based on settings
+   */
+  private async applyDataMasking(request: NetworkRequest): Promise<NetworkRequest> {
+    const settings = await this.getSettings();
+
+    // Skip if masking is disabled
+    if (!settings.dataMasking.enabled) {
+      return request;
+    }
+
+    // Build masking options from settings
+    const maskingOptions = {
+      maskEmails: settings.dataMasking.maskEmails,
+      maskApiKeys: settings.dataMasking.maskTokens,
+      maskPasswords: settings.dataMasking.maskTokens,
+      maskJWT: settings.dataMasking.maskTokens,
+      maskPhones: settings.dataMasking.maskPII,
+      maskSSN: settings.dataMasking.maskPII,
+      maskCreditCards: settings.dataMasking.maskPII,
+      maskIPs: settings.dataMasking.maskPII,
+      maskUUIDs: false, // Usually needed for testing
+    };
+
+    // Apply custom patterns if any
+    if (settings.dataMasking.customPatterns.length > 0) {
+      settings.dataMasking.customPatterns.forEach(pattern => {
+        this.dataMaskingService.addCustomPattern(pattern);
+      });
+    }
+
+    // Apply masking
+    return this.dataMaskingService.maskRequest(request, maskingOptions);
+  }
+
+  /**
+   * Invalidate cached settings when they're updated
+   */
+  private invalidateSettingsCache(): void {
+    this.cachedSettings = null;
+  }
+
   async handleMessage(
     message: BackgroundMessage,
     _sender: chrome.runtime.MessageSender,
@@ -95,6 +154,7 @@ export class BackgroundService {
 
         case 'UPDATE_SETTINGS':
           await this.storageService.saveSettings(message.payload);
+          this.invalidateSettingsCache(); // Clear cache so new settings are used
           sendResponse({ success: true });
           break;
 
@@ -161,6 +221,26 @@ export class BackgroundService {
 
         case 'CHECK_READY':
           sendResponse({ success: true, ready: true, status: 'ready', timestamp: Date.now() });
+          break;
+
+        case 'GENERATE_PARALLEL':
+          await this.handleParallelGeneration(message, sendResponse);
+          break;
+
+        case 'EXPORT_OPENAPI':
+          await this.handleExportOpenAPI(message, sendResponse);
+          break;
+
+        case 'EXPORT_GRAPHQL_SCHEMA':
+          await this.handleExportGraphQL(message, sendResponse);
+          break;
+
+        case 'EXPORT_ENV_FILE':
+          await this.handleExportEnvFile(message, sendResponse);
+          break;
+
+        case 'EXPORT_SECURITY_REPORT':
+          await this.handleExportSecurityReport(message, sendResponse);
           break;
 
         default:
@@ -572,11 +652,15 @@ export class BackgroundService {
       requestBody: request.postData
     };
 
-    // Add to session
-    session.requests.push(networkRequest);
-
-    // Process in HAR processor
-    this.harProcessor.addRequest(session.id, networkRequest);
+    // Apply data masking and add to session
+    this.applyDataMasking(networkRequest).then(maskedRequest => {
+      session.requests.push(maskedRequest);
+      this.harProcessor.addRequest(session.id, maskedRequest);
+    }).catch(error => {
+      console.error('Data masking failed, using original request:', error);
+      session.requests.push(networkRequest);
+      this.harProcessor.addRequest(session.id, networkRequest);
+    });
   }
 
   private handleResponseReceived(session: RecordingSession, params: any): void {
@@ -1061,5 +1145,189 @@ export class BackgroundService {
       recording: !!session,
       session
     };
+  }
+
+  // ==================== PARALLEL GENERATION HANDLERS ====================
+
+  private async handleParallelGeneration(
+    message: BackgroundMessage,
+    sendResponse: (response?: any) => void
+  ): Promise<void> {
+    const { sessionId, options } = message.payload;
+    const sessions = await this.storageService.getSessions();
+    const session = sessions.find(s => s.id === sessionId);
+
+    if (!session) {
+      sendResponse({ success: false, error: 'Session not found' });
+      return;
+    }
+
+    try {
+      const orchestrator = ParallelGenerationOrchestrator.getInstance();
+
+      const result = await orchestrator.generateAll(
+        session,
+        options,
+        (progress) => {
+          // Send progress updates to popup
+          try {
+            chrome.runtime.sendMessage({
+              type: 'PARALLEL_GENERATION_PROGRESS',
+              payload: progress
+            }).catch(() => {});
+          } catch {
+            // Ignore messaging errors
+          }
+        }
+      );
+
+      // Generate combined test code
+      const testCode = orchestrator.generateCombinedTestCode(result, options.framework);
+
+      sendResponse({
+        success: true,
+        result: {
+          ...result,
+          testCode,
+          // Convert Map/Set to objects for messaging
+          timing: result.timing
+        }
+      });
+    } catch (error) {
+      sendResponse({
+        success: false,
+        error: error instanceof Error ? error.message : 'Parallel generation failed'
+      });
+    }
+  }
+
+  private async handleExportOpenAPI(
+    message: BackgroundMessage,
+    sendResponse: (response?: any) => void
+  ): Promise<void> {
+    const { sessionId } = message.payload;
+    const sessions = await this.storageService.getSessions();
+    const session = sessions.find(s => s.id === sessionId);
+
+    if (!session) {
+      sendResponse({ success: false, error: 'Session not found' });
+      return;
+    }
+
+    try {
+      const extractor = SchemaExtractor.getInstance();
+      const spec = extractor.extractOpenAPISpec(session);
+      const json = extractor.exportAsJSON(spec);
+
+      sendResponse({ success: true, content: json, spec });
+    } catch (error) {
+      sendResponse({
+        success: false,
+        error: error instanceof Error ? error.message : 'OpenAPI export failed'
+      });
+    }
+  }
+
+  private async handleExportGraphQL(
+    message: BackgroundMessage,
+    sendResponse: (response?: any) => void
+  ): Promise<void> {
+    const { sessionId } = message.payload;
+    const sessions = await this.storageService.getSessions();
+    const session = sessions.find(s => s.id === sessionId);
+
+    if (!session) {
+      sendResponse({ success: false, error: 'Session not found' });
+      return;
+    }
+
+    try {
+      const inferrer = GraphQLSchemaInference.getInstance();
+      const schema = inferrer.inferSchema(session);
+
+      sendResponse({
+        success: true,
+        content: schema.sdl,
+        schema
+      });
+    } catch (error) {
+      sendResponse({
+        success: false,
+        error: error instanceof Error ? error.message : 'GraphQL schema export failed'
+      });
+    }
+  }
+
+  private async handleExportEnvFile(
+    message: BackgroundMessage,
+    sendResponse: (response?: any) => void
+  ): Promise<void> {
+    const { sessionId } = message.payload;
+    const sessions = await this.storageService.getSessions();
+    const session = sessions.find(s => s.id === sessionId);
+
+    if (!session) {
+      sendResponse({ success: false, error: 'Session not found' });
+      return;
+    }
+
+    try {
+      const extractor = EnvironmentExtractor.getInstance();
+      const result = extractor.extractVariables(session);
+
+      sendResponse({
+        success: true,
+        content: result.envFile,
+        variables: result.variables,
+        environments: result.environments
+      });
+    } catch (error) {
+      sendResponse({
+        success: false,
+        error: error instanceof Error ? error.message : 'Environment extraction failed'
+      });
+    }
+  }
+
+  private async handleExportSecurityReport(
+    message: BackgroundMessage,
+    sendResponse: (response?: any) => void
+  ): Promise<void> {
+    const { sessionId, framework } = message.payload;
+    const sessions = await this.storageService.getSessions();
+    const session = sessions.find(s => s.id === sessionId);
+
+    if (!session) {
+      sendResponse({ success: false, error: 'Session not found' });
+      return;
+    }
+
+    try {
+      const generator = SecurityTestGenerator.getInstance();
+      const suites = generator.generateSecurityTests(session);
+
+      // Generate test code for each suite
+      const testCodes = suites.map(suite =>
+        generator.generateSecurityTestCode(suite, framework || 'jest')
+      );
+
+      // Calculate overall risk
+      const overallRisk = suites.length > 0
+        ? Math.round(suites.reduce((sum, s) => sum + s.riskScore, 0) / suites.length)
+        : 0;
+
+      sendResponse({
+        success: true,
+        suites,
+        testCode: testCodes.join('\n\n'),
+        overallRisk,
+        totalTests: suites.reduce((sum, s) => sum + s.tests.length, 0)
+      });
+    } catch (error) {
+      sendResponse({
+        success: false,
+        error: error instanceof Error ? error.message : 'Security report generation failed'
+      });
+    }
   }
 }

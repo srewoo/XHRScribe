@@ -343,21 +343,11 @@ export default function OptionsApp() {
               <Typography variant="h6">
                 Privacy & Security Settings
               </Typography>
-              <Chip 
-                label="Coming Soon" 
-                size="small" 
-                color="warning" 
-                variant="outlined"
-                sx={{ 
-                  fontSize: '0.7rem', 
-                  height: '20px',
-                  backgroundColor: 'rgba(237, 108, 2, 0.08)',
-                  borderColor: 'warning.main',
-                  color: 'warning.main',
-                  fontWeight: 600
-                }} 
-              />
             </Box>
+
+            <Alert severity="info" sx={{ mb: 2 }}>
+              Data masking automatically protects sensitive information in captured requests before storage and AI processing.
+            </Alert>
 
             <FormControl fullWidth sx={{ mb: 3 }}>
               <InputLabel>Privacy Mode</InputLabel>
@@ -373,145 +363,82 @@ export default function OptionsApp() {
             </FormControl>
 
             <FormGroup>
-              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
-                <FormControlLabel
-                  control={
-                    <Switch
-                      checked={settings.dataMasking.enabled}
-                      onChange={(e) => setSettings({
-                        ...settings,
-                        dataMasking: { ...settings.dataMasking, enabled: e.target.checked },
-                      })}
-                      disabled={true}
-                    />
-                  }
-                  label="Enable Data Masking Integration"
-                />
-                <Chip 
-                  label="Coming Soon" 
-                  size="small" 
-                  color="info" 
-                  variant="outlined"
-                  sx={{ 
-                    fontSize: '0.65rem', 
-                    height: '18px',
-                    backgroundColor: 'rgba(2, 136, 209, 0.08)',
-                    borderColor: 'info.main',
-                    color: 'info.main',
-                    fontWeight: 500
-                  }} 
-                />
-              </Box>
-              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
-                <FormControlLabel
-                  control={
-                    <Switch
-                      checked={settings.dataMasking.maskPII}
-                      onChange={(e) => setSettings({
-                        ...settings,
-                        dataMasking: { ...settings.dataMasking, maskPII: e.target.checked },
-                      })}
-                      disabled={true}
-                    />
-                  }
-                  label="Mask Personal Information (PII)"
-                />
-                <Chip 
-                  label="Coming Soon" 
-                  size="small" 
-                  color="info" 
-                  variant="outlined"
-                  sx={{ 
-                    fontSize: '0.65rem', 
-                    height: '18px',
-                    backgroundColor: 'rgba(2, 136, 209, 0.08)',
-                    borderColor: 'info.main',
-                    color: 'info.main',
-                    fontWeight: 500
-                  }} 
-                />
-              </Box>
-              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
-                <FormControlLabel
-                  control={
-                    <Switch
-                      checked={settings.dataMasking.maskTokens}
-                      onChange={(e) => setSettings({
-                        ...settings,
-                        dataMasking: { ...settings.dataMasking, maskTokens: e.target.checked },
-                      })}
-                      disabled={true}
-                    />
-                  }
-                  label="Mask API Tokens & Keys"
-                />
-                <Chip 
-                  label="Coming Soon" 
-                  size="small" 
-                  color="info" 
-                  variant="outlined"
-                  sx={{ 
-                    fontSize: '0.65rem', 
-                    height: '18px',
-                    backgroundColor: 'rgba(2, 136, 209, 0.08)',
-                    borderColor: 'info.main',
-                    color: 'info.main',
-                    fontWeight: 500
-                  }} 
-                />
-              </Box>
-              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
-                <FormControlLabel
-                  control={
-                    <Switch
-                      checked={settings.dataMasking.maskEmails}
-                      onChange={(e) => setSettings({
-                        ...settings,
-                        dataMasking: { ...settings.dataMasking, maskEmails: e.target.checked },
-                      })}
-                      disabled={true}
-                    />
-                  }
-                  label="Mask Email Addresses"
-                />
-                <Chip 
-                  label="Coming Soon" 
-                  size="small" 
-                  color="info" 
-                  variant="outlined"
-                  sx={{ 
-                    fontSize: '0.65rem', 
-                    height: '18px',
-                    backgroundColor: 'rgba(2, 136, 209, 0.08)',
-                    borderColor: 'info.main',
-                    color: 'info.main',
-                    fontWeight: 500
-                  }} 
-                />
-              </Box>
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={settings.dataMasking.enabled}
+                    onChange={(e) => setSettings({
+                      ...settings,
+                      dataMasking: { ...settings.dataMasking, enabled: e.target.checked },
+                    })}
+                  />
+                }
+                label="Enable Data Masking Integration"
+              />
+              <Typography variant="caption" color="text.secondary" sx={{ ml: 4, mb: 1 }}>
+                Master switch to enable/disable all data masking features
+              </Typography>
+
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={settings.dataMasking.maskPII}
+                    onChange={(e) => setSettings({
+                      ...settings,
+                      dataMasking: { ...settings.dataMasking, maskPII: e.target.checked },
+                    })}
+                    disabled={!settings.dataMasking.enabled}
+                  />
+                }
+                label="Mask Personal Information (PII)"
+              />
+              <Typography variant="caption" color="text.secondary" sx={{ ml: 4, mb: 1 }}>
+                Masks phone numbers, SSN, credit cards, and IP addresses
+              </Typography>
+
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={settings.dataMasking.maskTokens}
+                    onChange={(e) => setSettings({
+                      ...settings,
+                      dataMasking: { ...settings.dataMasking, maskTokens: e.target.checked },
+                    })}
+                    disabled={!settings.dataMasking.enabled}
+                  />
+                }
+                label="Mask API Tokens & Keys"
+              />
+              <Typography variant="caption" color="text.secondary" sx={{ ml: 4, mb: 1 }}>
+                Masks API keys, passwords, JWT tokens, and auth headers
+              </Typography>
+
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={settings.dataMasking.maskEmails}
+                    onChange={(e) => setSettings({
+                      ...settings,
+                      dataMasking: { ...settings.dataMasking, maskEmails: e.target.checked },
+                    })}
+                    disabled={!settings.dataMasking.enabled}
+                  />
+                }
+                label="Mask Email Addresses"
+              />
+              <Typography variant="caption" color="text.secondary" sx={{ ml: 4, mb: 1 }}>
+                Replaces email addresses with ***EMAIL***
+              </Typography>
             </FormGroup>
 
             <Divider sx={{ my: 3 }} />
 
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
-              <Typography variant="h6">
-                Custom Masking Patterns
-              </Typography>
-              <Chip 
-                label="Coming Soon" 
-                size="small" 
-                color="info" 
-                variant="outlined"
-                sx={{ 
-                  fontSize: '0.65rem', 
-                  height: '18px',
-                  backgroundColor: 'rgba(2, 136, 209, 0.08)',
-                  borderColor: 'info.main',
-                  color: 'info.main',
-                  fontWeight: 500
-                }} 
-              />
-            </Box>
+            <Typography variant="h6" gutterBottom>
+              Custom Masking Patterns
+            </Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+              Add custom regex patterns to mask specific data formats in your requests
+            </Typography>
 
             <Box sx={{ display: 'flex', gap: 1, mb: 2 }}>
               <TextField
@@ -520,26 +447,34 @@ export default function OptionsApp() {
                 value={customPattern}
                 onChange={(e) => setCustomPattern(e.target.value)}
                 placeholder="e.g., \d{4}-\d{4}-\d{4}-\d{4}"
-                disabled={true}
+                disabled={!settings.dataMasking.enabled}
+                helperText="Enter a valid JavaScript regex pattern"
               />
               <Button
                 variant="contained"
                 onClick={addCustomPattern}
                 startIcon={<Add />}
-                disabled={true}
+                disabled={!settings.dataMasking.enabled || !customPattern.trim()}
               >
                 Add
               </Button>
             </Box>
 
-            {settings.dataMasking.customPatterns.map((pattern, index) => (
-              <Chip
-                key={index}
-                label={pattern}
-                onDelete={() => removeCustomPattern(index)}
-                sx={{ mr: 1, mb: 1 }}
-              />
-            ))}
+            {settings.dataMasking.customPatterns.length > 0 && (
+              <Box sx={{ mb: 2 }}>
+                <Typography variant="subtitle2" gutterBottom>Active Patterns:</Typography>
+                {settings.dataMasking.customPatterns.map((pattern, index) => (
+                  <Chip
+                    key={index}
+                    label={pattern}
+                    onDelete={() => removeCustomPattern(index)}
+                    sx={{ mr: 1, mb: 1 }}
+                    color="primary"
+                    variant="outlined"
+                  />
+                ))}
+              </Box>
+            )}
           </TabPanel>
 
           {/* Filtering Tab */}

@@ -12,14 +12,18 @@ console.log('📦 Services instantiated');
 // Initialize background script
 async function initializeBackground() {
   try {
-    // Keep service worker alive
-    await serviceWorkerManager.startPersistence();
-    
+    // Enable heartbeat mode by default to prevent extension timeout
+    await serviceWorkerManager.enableHeartbeat();
+    console.log('🫀 Heartbeat mode enabled (30s interval)');
+
     // Signal that background is ready
     console.log('✅ XHRScribe background script ready');
-    
+
     // Store ready flag for popup to check
-    chrome.storage.session.set({ backgroundReady: true }).catch(() => {
+    chrome.storage.session.set({
+      backgroundReady: true,
+      heartbeatEnabled: true
+    }).catch(() => {
       // Ignore storage errors, not critical
     });
   } catch (error) {

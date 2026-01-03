@@ -95,7 +95,7 @@ export interface HARData {
   entries: HAREntry[];
 }
 
-export type TestFramework = 
+export type TestFramework =
   | 'jest'
   | 'playwright'
   | 'mocha-chai'
@@ -105,7 +105,13 @@ export type TestFramework =
   | 'vitest'
   | 'supertest'
   | 'postman'
-  | 'restassured';
+  | 'restassured'
+  | 'k6'
+  | 'artillery'
+  | 'pactum'
+  | 'karate'
+  | 'pytest'
+  | 'httpx';
 
 export type AIProvider = 
   | 'openai'
@@ -157,6 +163,22 @@ export interface GenerationOptions {
   testCoverage?: 'exhaustive' | 'standard' | 'minimal';
   complexity: 'basic' | 'intermediate' | 'advanced';
   customPrompt?: string;
+  // New parallel generation options
+  parallelGeneration?: ParallelGenerationOptions;
+}
+
+export interface ParallelGenerationOptions {
+  enabled: boolean;
+  maxConcurrency: number;
+  enableAssertions: boolean;
+  enablePerformance: boolean;
+  enableOpenAPI: boolean;
+  enableGraphQL: boolean;
+  enableScenarios: boolean;
+  enableDataDriven: boolean;
+  enableSecurity: boolean;
+  enableAutoHealing: boolean;
+  enableEnvironment: boolean;
 }
 
 export interface GenerationProgressCallback {
@@ -230,20 +252,26 @@ export interface Message {
 }
 
 export interface BackgroundMessage extends Message {
-  type: 
+  type:
     | 'START_RECORDING'
     | 'STOP_RECORDING'
     | 'GET_SESSIONS'
     | 'DELETE_SESSION'
     | 'RENAME_SESSION'
     | 'GENERATE_TESTS'
+    | 'GENERATE_PARALLEL'
     | 'UPDATE_SETTINGS'
     | 'GET_SETTINGS'
     | 'EXPORT_TESTS'
+    | 'EXPORT_OPENAPI'
+    | 'EXPORT_GRAPHQL_SCHEMA'
+    | 'EXPORT_ENV_FILE'
+    | 'EXPORT_SECURITY_REPORT'
     | 'GET_STATUS'
     | 'SAVE_SESSION'
     | 'IMPORT_SESSION'
     | 'PING'
+    | 'HEARTBEAT_PING'
     | 'CHECK_READY'
     | 'GENERATION_PROGRESS';
 }
