@@ -15,10 +15,12 @@ import { GraphQLSchemaInference } from '@/services/GraphQLSchemaInference';
 import { EnvironmentExtractor } from '@/services/EnvironmentExtractor';
 import { SecurityTestGenerator } from '@/services/SecurityTestGenerator';
 import { DataMaskingService } from '@/services/DataMaskingService';
+import { ServiceWorkerManager } from './ServiceWorkerManager';
 
 export class BackgroundService {
   private static instance: BackgroundService;
   private recordingSessions: Map<number, RecordingSession> = new Map();
+  private pendingBodies: Map<number, Set<Promise<void>>> = new Map();
   private harProcessor: HARProcessor = new HARProcessor();
   private storageService: StorageService = StorageService.getInstance();
   private aiService: AIService = AIService.getInstance();
@@ -38,7 +40,7 @@ export class BackgroundService {
   async initializeSettings(): Promise<void> {
     const defaultSettings: Settings = {
       aiProvider: 'openai',
-      aiModel: 'gpt-4o-mini',
+      aiModel: 'gpt-4.1-mini',
       apiKeys: {},
       privacyMode: 'cloud',
       authGuide: undefined, // Custom auth instructions (optional)
@@ -177,31 +179,93 @@ export class BackgroundService {
           const { sessionId, options } = message.payload;
           const allSessions = await this.storageService.getSessions();
           const targetSession = allSessions.find(s => s.id === sessionId);
-          
+
           if (!targetSession) {
             throw new Error('Session not found');
           }
-          
+
           // Convert excluded endpoints array back to Set
           const excludedEndpoints = options.excludedEndpoints ? new Set<string>(options.excludedEndpoints) : undefined;
-          
-          // Create progress callback to send updates to popup
+
+          // Keep service worker alive during long AI generation
+          const swManager = ServiceWorkerManager.getInstance();
+          swManager.startActiveOperation();
+
+          // Persist generation state so popup can reconnect after close/reopen
+          let lastStorageWrite = 0;
+          const persistState = (state: Record<string, any>) => {
+            const now = Date.now();
+            // Throttle writes to every 2 seconds
+            if (now - lastStorageWrite < 2000 && state.status === 'generating') return;
+            lastStorageWrite = now;
+            chrome.storage.session.set({ generationState: state }).catch(() => {});
+          };
+
+          persistState({
+            status: 'generating',
+            sessionId,
+            progress: 0,
+            stage: 'Starting generation...',
+            startTime: Date.now(),
+          });
+
+          // Create progress callback to send updates to popup AND persist state
           const progressCallback = (current: number, total: number, stage: string, endpoint?: string) => {
-            // Send progress update to all popup instances
+            const progress = total > 0 ? Math.round((current / total) * 100) : 0;
+
+            // Persist to storage (survives popup close)
+            persistState({
+              status: 'generating',
+              sessionId,
+              progress,
+              stage,
+              currentEndpoint: current,
+              totalEndpoints: total,
+              endpointName: endpoint,
+              startTime: Date.now(),
+            });
+
+            // Also send via message (instant update if popup is open)
             try {
               chrome.runtime.sendMessage({
                 type: 'GENERATION_PROGRESS',
                 payload: { current, total, stage, endpoint }
-              }).catch(() => {
-                // Ignore errors if popup is closed
-              });
+              }).catch(() => {});
             } catch (error) {
-              // Ignore messaging errors
+              // Ignore messaging errors — popup may be closed
             }
           };
-          
-          const generatedTest = await this.aiService.generateTests(targetSession, options, excludedEndpoints, progressCallback);
-          sendResponse({ success: true, test: generatedTest });
+
+          try {
+            const generatedTest = await this.aiService.generateTests(targetSession, options, excludedEndpoints, progressCallback);
+
+            // Persist completed result so popup can pick it up
+            chrome.storage.session.set({
+              generationState: {
+                status: 'complete',
+                sessionId,
+                progress: 100,
+                stage: 'Complete',
+                result: generatedTest,
+              }
+            }).catch(() => {});
+
+            sendResponse({ success: true, test: generatedTest });
+          } catch (genError) {
+            // Persist error state
+            chrome.storage.session.set({
+              generationState: {
+                status: 'error',
+                sessionId,
+                progress: 0,
+                stage: 'Failed',
+                error: genError instanceof Error ? genError.message : 'Generation failed',
+              }
+            }).catch(() => {});
+            throw genError;
+          } finally {
+            swManager.stopActiveOperation();
+          }
           break;
 
         case 'EXPORT_TESTS':
@@ -212,6 +276,11 @@ export class BackgroundService {
 
         case 'IMPORT_SESSION':
           await this.storageService.saveSession(message.payload);
+          sendResponse({ success: true });
+          break;
+
+        case 'CLEAR_GENERATION_STATE':
+          chrome.storage.session.remove('generationState').catch(() => {});
           sendResponse({ success: true });
           break;
 
@@ -524,6 +593,18 @@ export class BackgroundService {
     session.endTime = Date.now();
     session.status = 'stopped';
 
+    // Wait for all pending response bodies to complete (max 5s timeout)
+    const pending = this.pendingBodies.get(tabId);
+    if (pending && pending.size > 0) {
+      console.log(`Waiting for ${pending.size} pending response bodies...`);
+      const timeout = new Promise<void>(resolve => setTimeout(resolve, 5000));
+      await Promise.race([
+        Promise.all(pending),
+        timeout,
+      ]);
+    }
+    this.pendingBodies.delete(tabId);
+
     // Get HAR data
     const harData = this.harProcessor.finalize(session);
 
@@ -674,6 +755,12 @@ export class BackgroundService {
     request.responseHeaders = response.headers;
     request.duration = (timestamp * 1000) - request.timestamp;
 
+    // Detect gRPC/Protobuf from content-type
+    const contentType = (response.headers?.['content-type'] || response.headers?.['Content-Type'] || '').toLowerCase();
+    if (contentType.includes('grpc') || contentType.includes('protobuf') || contentType.includes('x-protobuf')) {
+      request.type = 'gRPC';
+    }
+
     // Update in HAR processor
     this.harProcessor.updateResponse(session.id, requestId, response);
   }
@@ -686,13 +773,27 @@ export class BackgroundService {
 
     request.responseSize = encodedDataLength;
 
-    // Get response body if needed
-    this.getResponseBody(session.tabId, requestId).then(body => {
+    // Track the pending body fetch so stopRecording can await it
+    const bodyPromise = this.getResponseBody(session.tabId, requestId).then(body => {
       if (body) {
         request.responseBody = body;
         this.harProcessor.updateResponseBody(session.id, requestId, body);
       }
-    }).catch(console.error);
+    }).catch(error => {
+      console.warn(`Failed to get response body for ${requestId}:`, error);
+    }).finally(() => {
+      // Remove from pending set once done
+      const pending = this.pendingBodies.get(session.tabId);
+      if (pending) {
+        pending.delete(bodyPromise);
+      }
+    });
+
+    // Add to pending set
+    if (!this.pendingBodies.has(session.tabId)) {
+      this.pendingBodies.set(session.tabId, new Set());
+    }
+    this.pendingBodies.get(session.tabId)!.add(bodyPromise);
   }
 
   private handleLoadingFailed(session: RecordingSession, params: any): void {
@@ -761,87 +862,78 @@ export class BackgroundService {
     // Filter out static resources
     const staticExtensions = ['.css', '.js', '.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico', '.woff', '.woff2', '.ttf', '.map', '.wasm', '.webp', '.avif'];
     const urlLower = url.toLowerCase();
-    
+
     if (staticExtensions.some(ext => urlLower.includes(ext))) {
       return false;
     }
 
-    // ENHANCED: Comprehensive API endpoint detection patterns
-    const apiPatterns = [
-      // Standard API patterns
-      '/api/', '/wapi/', '/webapi/', '/v1/', '/v2/', '/v3/', '/v4/', '/v5/', '/graphql', '.json', '.xml',
-      '/collect', '/track', '/analytics', '/metrics', '/webhook', '/beacon',
-      '.ashx', '.asmx', '.php', '/rest/', '/service/', '/data/',
-      '/ccm/', '/g/', '/ping', '/log', '/event', '/submit',
-      
-      // ADVANCED: Additional business logic endpoints
-      '/execute', '/process', '/handle', '/workflow', '/action',
-      '/command', '/query', '/search', '/filter', '/validate',
-      
-      // ENHANCED: Authentication and session endpoints
-      '/auth', '/auth/', '/login', '/logout', '/signin', '/signout',
-      '/token', '/refresh', '/session', '/user', '/profile',
-      
-      // ADVANCED: Real-time communication endpoints
-      '/sse', '/events', '/stream', '/push', '/live', '/realtime',
-      '/ws/', '/websocket', '/socket.io', '/signalr',
-      
-      // ADVANCED: File operations
-      '/upload', '/download', '/export', '/import', '/sync',
-      '/backup', '/restore', '/migrate',
-      
-      // ADVANCED: Microservice patterns
-      '/internal/', '/micro/', '/service-', '/lambda/', '/function/',
-      '/rpc/', '/grpc/', '/thrift/',
-      
-      // ADVANCED: API versioning and environments
-      '/alpha/', '/beta/', '/canary/', '/preview/', '/staging/',
-      '/dev/', '/test/', '/sandbox/',
-      
-      // ADVANCED: Integration and automation
-      '/integration/', '/automation/', '/scheduler/', '/job/',
-      '/task/', '/worker/', '/queue/'
+    // Filter out known non-API patterns (analytics, tracking, ads)
+    const excludePatterns = [
+      '/collect', '/track', '/analytics', '/metrics', '/beacon',
+      '/pixel', '/impression', '/adserver', '/ads/', '/gtag/',
+      '/ga/', '/gtm.js', 'google-analytics', 'googletagmanager',
+      'facebook.com/tr', 'doubleclick.net', '/pagead/',
+      'hotjar', 'fullstory', 'segment.io', 'mixpanel',
+      'sentry.io/api', 'bugsnag', 'newrelic', 'datadog',
+      '/favicon', '/_next/static', '/_nuxt/static'
     ];
-    
-    const isApiPattern = apiPatterns.some(pattern => url.includes(pattern));
+
+    if (excludePatterns.some(pattern => urlLower.includes(pattern))) {
+      return false;
+    }
+
+    // XHR or Fetch type is the primary signal - these are almost always API calls
     const isXhrOrFetch = type === 'XHR' || type === 'Fetch';
-    
-    // ENHANCED: Content-Type based API detection
-    const isApiContentType = this.hasApiContentType(request?.headers || {});
-    
-    // ENHANCED: Query parameters that indicate API calls
-    const hasApiQueryParams = url.includes('?') && (
-      url.includes('callback=') || url.includes('format=') || 
-      url.includes('api_key=') || url.includes('token=') ||
-      url.includes('auth=') || url.includes('key=') ||
-      url.includes('id=') || url.includes('data=') ||
-      url.includes('query=') || url.includes('filter=') ||
-      url.includes('sort=') || url.includes('limit=') ||
-      url.includes('offset=') || url.includes('page=')
-    );
 
-    // ENHANCED: API domains/subdomains detection
-    const apiDomainPatterns = [
-      'api.', 'analytics.', 'tracking.', 'metrics.', 'data.',
-      'collect.', 'beacon.', 'events.', 'telemetry.',
-      'graph.', 'gateway.', 'service.', 'micro.',
-      'backend.', 'server.', 'endpoint.', 'rest.'
+    // Strong API URL patterns (high confidence)
+    const strongApiPatterns = [
+      '/api/', '/wapi/', '/webapi/', '/v1/', '/v2/', '/v3/', '/v4/', '/v5/',
+      '/graphql', '/rest/', '/rpc/', '/grpc/',
+      '/auth/', '/login', '/logout', '/signin', '/signout',
+      '/token', '/oauth', '/sso',
     ];
-    
-    const hasApiDomain = apiDomainPatterns.some(pattern => url.includes(pattern));
 
-    // ADVANCED: Single Page Application (SPA) API detection
-    const isSpaApiCall = this.isSinglePageAppApiCall(initiator, url);
-    
-    // ADVANCED: HTTP method based detection (non-GET requests are often APIs)
+    const hasStrongApiPattern = strongApiPatterns.some(pattern => urlLower.includes(pattern));
+
+    // Content-Type based API detection (strong signal)
+    const isApiContentType = this.hasApiContentType(request?.headers || {});
+
+    // API subdomains (strong signal)
+    const strongDomainPatterns = ['api.', 'gateway.', 'backend.', 'rest.'];
+    const hasApiDomain = strongDomainPatterns.some(pattern => urlLower.includes(pattern));
+
+    // Decision logic: require at least one strong signal
+    // XHR/Fetch alone is sufficient (browser explicitly marked it as such)
+    if (isXhrOrFetch) return true;
+
+    // Strong URL pattern is sufficient
+    if (hasStrongApiPattern) return true;
+
+    // API content-type is sufficient
+    if (isApiContentType) return true;
+
+    // API domain is sufficient
+    if (hasApiDomain) return true;
+
+    // Weaker signals: require combination of two or more
     const isNonGetMethod = request?.method && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method);
-    
-    // ENHANCED: Authentication-specific detection
     const isAuthRelated = this.isAuthenticationRelated(url, request);
+    const isSpaApiCall = this.isSinglePageAppApiCall(initiator, url);
 
-    // COMPREHENSIVE: Combine all detection methods
-    return isXhrOrFetch || isApiPattern || hasApiQueryParams || hasApiDomain || 
-           isApiContentType || isSpaApiCall || isNonGetMethod || isAuthRelated;
+    // Weak URL patterns (need second signal to qualify)
+    const weakApiPatterns = [
+      '.json', '.xml', '/data/', '/service/',
+      '/search', '/filter', '/query',
+      '/upload', '/download', '/export', '/import',
+      '/webhook', '/events', '/stream',
+    ];
+    const hasWeakApiPattern = weakApiPatterns.some(pattern => urlLower.includes(pattern));
+
+    // Require at least two weak signals
+    const weakSignalCount = [isNonGetMethod, isAuthRelated, isSpaApiCall, hasWeakApiPattern]
+      .filter(Boolean).length;
+
+    return weakSignalCount >= 2;
   }
 
   // NEW: Content-Type based API detection
@@ -1147,6 +1239,20 @@ export class BackgroundService {
     };
   }
 
+  // Helper: fetch a session by ID, send error response if not found
+  private async getSessionOrFail(
+    sessionId: string,
+    sendResponse: (response?: any) => void
+  ): Promise<RecordingSession | null> {
+    const sessions = await this.storageService.getSessions();
+    const session = sessions.find(s => s.id === sessionId);
+    if (!session) {
+      sendResponse({ success: false, error: 'Session not found' });
+      return null;
+    }
+    return session;
+  }
+
   // ==================== PARALLEL GENERATION HANDLERS ====================
 
   private async handleParallelGeneration(
@@ -1154,13 +1260,25 @@ export class BackgroundService {
     sendResponse: (response?: any) => void
   ): Promise<void> {
     const { sessionId, options } = message.payload;
-    const sessions = await this.storageService.getSessions();
-    const session = sessions.find(s => s.id === sessionId);
+    const session = await this.getSessionOrFail(sessionId, sendResponse);
+    if (!session) return;
 
-    if (!session) {
-      sendResponse({ success: false, error: 'Session not found' });
-      return;
-    }
+    // Keep service worker alive during parallel generation
+    const parallelSwManager = ServiceWorkerManager.getInstance();
+    parallelSwManager.startActiveOperation();
+
+    // Persist initial parallel generation state
+    chrome.storage.session.set({
+      generationState: {
+        status: 'generating',
+        sessionId,
+        progress: 0,
+        stage: 'Starting parallel generation...',
+        startTime: Date.now(),
+      }
+    }).catch(() => {});
+
+    let lastParallelWrite = 0;
 
     try {
       const orchestrator = ParallelGenerationOrchestrator.getInstance();
@@ -1169,7 +1287,21 @@ export class BackgroundService {
         session,
         options,
         (progress) => {
-          // Send progress updates to popup
+          // Persist to storage (throttled)
+          const now = Date.now();
+          if (now - lastParallelWrite >= 2000) {
+            lastParallelWrite = now;
+            chrome.storage.session.set({
+              generationState: {
+                status: 'generating',
+                sessionId,
+                progress: Math.round(progress.overall * 100),
+                stage: progress.currentTask || 'Generating...',
+                startTime: Date.now(),
+              }
+            }).catch(() => {});
+          }
+
           try {
             chrome.runtime.sendMessage({
               type: 'PARALLEL_GENERATION_PROGRESS',
@@ -1181,23 +1313,45 @@ export class BackgroundService {
         }
       );
 
-      // Generate combined test code
       const testCode = orchestrator.generateCombinedTestCode(result, options.framework);
+
+      // Persist completed result
+      chrome.storage.session.set({
+        generationState: {
+          status: 'complete',
+          sessionId,
+          progress: 100,
+          stage: 'Complete',
+          result: { code: testCode, id: `parallel_${Date.now()}`, framework: options.framework, qualityScore: 0, estimatedTokens: 0, estimatedCost: 0 },
+        }
+      }).catch(() => {});
 
       sendResponse({
         success: true,
         result: {
           ...result,
           testCode,
-          // Convert Map/Set to objects for messaging
           timing: result.timing
         }
       });
     } catch (error) {
+      // Persist error state
+      chrome.storage.session.set({
+        generationState: {
+          status: 'error',
+          sessionId,
+          progress: 0,
+          stage: 'Failed',
+          error: error instanceof Error ? error.message : 'Parallel generation failed',
+        }
+      }).catch(() => {});
+
       sendResponse({
         success: false,
         error: error instanceof Error ? error.message : 'Parallel generation failed'
       });
+    } finally {
+      parallelSwManager.stopActiveOperation();
     }
   }
 
@@ -1206,13 +1360,8 @@ export class BackgroundService {
     sendResponse: (response?: any) => void
   ): Promise<void> {
     const { sessionId } = message.payload;
-    const sessions = await this.storageService.getSessions();
-    const session = sessions.find(s => s.id === sessionId);
-
-    if (!session) {
-      sendResponse({ success: false, error: 'Session not found' });
-      return;
-    }
+    const session = await this.getSessionOrFail(sessionId, sendResponse);
+    if (!session) return;
 
     try {
       const extractor = SchemaExtractor.getInstance();
@@ -1233,13 +1382,8 @@ export class BackgroundService {
     sendResponse: (response?: any) => void
   ): Promise<void> {
     const { sessionId } = message.payload;
-    const sessions = await this.storageService.getSessions();
-    const session = sessions.find(s => s.id === sessionId);
-
-    if (!session) {
-      sendResponse({ success: false, error: 'Session not found' });
-      return;
-    }
+    const session = await this.getSessionOrFail(sessionId, sendResponse);
+    if (!session) return;
 
     try {
       const inferrer = GraphQLSchemaInference.getInstance();
@@ -1263,13 +1407,8 @@ export class BackgroundService {
     sendResponse: (response?: any) => void
   ): Promise<void> {
     const { sessionId } = message.payload;
-    const sessions = await this.storageService.getSessions();
-    const session = sessions.find(s => s.id === sessionId);
-
-    if (!session) {
-      sendResponse({ success: false, error: 'Session not found' });
-      return;
-    }
+    const session = await this.getSessionOrFail(sessionId, sendResponse);
+    if (!session) return;
 
     try {
       const extractor = EnvironmentExtractor.getInstance();
@@ -1294,13 +1433,8 @@ export class BackgroundService {
     sendResponse: (response?: any) => void
   ): Promise<void> {
     const { sessionId, framework } = message.payload;
-    const sessions = await this.storageService.getSessions();
-    const session = sessions.find(s => s.id === sessionId);
-
-    if (!session) {
-      sendResponse({ success: false, error: 'Session not found' });
-      return;
-    }
+    const session = await this.getSessionOrFail(sessionId, sendResponse);
+    if (!session) return;
 
     try {
       const generator = SecurityTestGenerator.getInstance();

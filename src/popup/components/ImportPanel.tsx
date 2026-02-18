@@ -4,17 +4,11 @@ import {
   Paper,
   Typography,
   Button,
-  Alert,
-  CircularProgress,
-  Fade,
-  Divider,
   List,
   ListItem,
   ListItemIcon,
   ListItemText,
-  IconButton,
   Chip,
-  LinearProgress,
   Card,
   CardContent,
   Tooltip,
@@ -22,30 +16,23 @@ import {
   Avatar,
   Stack,
   Zoom,
+  IconButton,
 } from '@mui/material';
 import {
-  Upload,
   CloudUpload,
   InsertDriveFile,
-  CheckCircle,
-  Error as ErrorIcon,
   Description,
   Code,
   Api,
-  Delete,
   Visibility,
-  DragIndicator,
   FileUpload,
-  Preview,
   GetApp,
-  Speed,
-  Security,
-  BugReport,
-  Animation,
   AutoAwesome,
-  Rocket,
 } from '@mui/icons-material';
 import { useStore } from '@/store/useStore';
+import ImportProgressComponent from './ImportProgress';
+import FilePreviewCard from './FilePreviewCard';
+import ImportHistory from './ImportHistory';
 
 interface ImportState {
   isImporting: boolean;
@@ -681,25 +668,6 @@ export default function ImportPanel() {
     setImportedFiles(prev => prev.filter(f => f.name !== fileName));
   };
 
-  const getFileIcon = (type: string) => {
-    switch (type) {
-      case 'har': return <InsertDriveFile />;
-      case 'postman': return <Api />;
-      case 'openapi': return <Description />;
-      case 'insomnia': return <Code />;
-      default: return <InsertDriveFile />;
-    }
-  };
-
-  const getStatusIcon = (status: string) => {
-    switch (status) {
-      case 'success': return <CheckCircle color="success" />;
-      case 'error': return <ErrorIcon color="error" />;
-      case 'processing': return <CircularProgress size={20} />;
-      default: return null;
-    }
-  };
-
   return (
     <Box>
       {/* Enhanced Drag & Drop Zone */}
@@ -883,216 +851,18 @@ export default function ImportPanel() {
 
       {/* File Preview Dialog */}
       {filePreview && (
-        <Fade in={true}>
-          <Card sx={{ mb: 3, border: '2px solid', borderColor: 'primary.main' }}>
-            <CardContent>
-              <Typography variant="h6" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                <Preview color="primary" />
-                Import Preview - {filePreview.file.name}
-                <Chip
-                  label={filePreview.type.toUpperCase()}
-                  size="small"
-                  color="primary"
-                  variant="outlined"
-                />
-              </Typography>
-
-              <Box sx={{ display: 'flex', gap: 2, mb: 3 }}>
-                <Box sx={{ flex: 1, textAlign: 'center' }}>
-                  <Typography variant="h4" color="primary.main" sx={{ fontWeight: 'bold' }}>
-                    {filePreview.preview.endpoints}
-                  </Typography>
-                  <Typography variant="caption" color="text.secondary">
-                    Endpoints
-                  </Typography>
-                </Box>
-                <Box sx={{ flex: 1, textAlign: 'center' }}>
-                  <Typography variant="h4" color="success.main" sx={{ fontWeight: 'bold' }}>
-                    {filePreview.preview.methods.length}
-                  </Typography>
-                  <Typography variant="caption" color="text.secondary">
-                    HTTP Methods
-                  </Typography>
-                </Box>
-                <Box sx={{ flex: 1, textAlign: 'center' }}>
-                  <Typography variant="h4" color="warning.main" sx={{ fontWeight: 'bold' }}>
-                    {filePreview.preview.domains.length}
-                  </Typography>
-                  <Typography variant="caption" color="text.secondary">
-                    Domains
-                  </Typography>
-                </Box>
-              </Box>
-
-              <Box sx={{ mb: 2 }}>
-                <Typography variant="subtitle2" gutterBottom>Methods:</Typography>
-                <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                  {filePreview.preview.methods.map((method) => (
-                    <Chip key={method} label={method} size="small" variant="outlined" />
-                  ))}
-                </Stack>
-              </Box>
-
-              <Box sx={{ mb: 3 }}>
-                <Typography variant="subtitle2" gutterBottom>Domains:</Typography>
-                <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                  {filePreview.preview.domains.map((domain) => (
-                    <Chip key={domain} label={domain} size="small" variant="outlined" />
-                  ))}
-                </Stack>
-              </Box>
-
-              <Stack direction="row" spacing={2} justifyContent="flex-end">
-                <Button
-                  variant="outlined"
-                  onClick={cancelPreview}
-                  startIcon={<Delete />}
-                >
-                  Cancel
-                </Button>
-                <Button
-                  variant="contained"
-                  onClick={confirmImport}
-                  startIcon={<Rocket />}
-                  sx={{ minWidth: 120 }}
-                >
-                  Import Now
-                </Button>
-              </Stack>
-            </CardContent>
-          </Card>
-        </Fade>
+        <FilePreviewCard
+          filePreview={filePreview}
+          onConfirm={confirmImport}
+          onCancel={cancelPreview}
+        />
       )}
 
       {/* Enhanced Import Progress */}
-      {importState.isImporting && (
-        <Fade in={true}>
-          <Card
-            sx={{
-              mb: 3,
-              overflow: 'hidden',
-              background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-              color: 'white',
-              position: 'relative',
-            }}
-          >
-            {/* Animated background shimmer */}
-            <Box
-              sx={{
-                position: 'absolute',
-                top: 0,
-                left: '-100%',
-                width: '200%',
-                height: '100%',
-                background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.15), transparent)',
-                animation: 'shimmer 3s infinite linear',
-                '@keyframes shimmer': {
-                  '0%': { transform: 'translateX(0)' },
-                  '100%': { transform: 'translateX(50%)' },
-                },
-              }}
-            />
-
-            <CardContent sx={{ position: 'relative', zIndex: 1 }}>
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 3 }}>
-                <Avatar sx={{ bgcolor: 'rgba(255,255,255,0.2)' }}>
-                  <Animation sx={{ color: 'white' }} />
-                </Avatar>
-                <Box sx={{ flex: 1 }}>
-                  <Typography variant="h6" sx={{ fontWeight: 'bold' }}>
-                    Processing Import
-                  </Typography>
-                  <Typography variant="body2" sx={{ opacity: 0.9 }}>
-                    {importState.stage}
-                  </Typography>
-                </Box>
-                <Box sx={{ textAlign: 'right' }}>
-                  <Typography variant="h5" sx={{ fontWeight: 'bold' }}>
-                    {importState.progress}%
-                  </Typography>
-                  <Typography variant="caption" sx={{ opacity: 0.8 }}>
-                    Complete
-                  </Typography>
-                </Box>
-              </Box>
-
-              <LinearProgress
-                variant="determinate"
-                value={importState.progress}
-                sx={{
-                  height: 12,
-                  borderRadius: 6,
-                  mb: 3,
-                  bgcolor: 'rgba(255,255,255,0.2)',
-                  '& .MuiLinearProgress-bar': {
-                    bgcolor: 'white',
-                    borderRadius: 6,
-                    boxShadow: '0 0 10px rgba(255,255,255,0.5)',
-                  }
-                }}
-              />
-
-              <Box sx={{ display: 'flex', gap: 2, textAlign: 'center' }}>
-                {[
-                  { icon: <Speed />, label: 'Fast Processing', desc: 'Optimized parsing' },
-                  { icon: <Security />, label: 'Secure Import', desc: 'Local processing' },
-                  { icon: <BugReport />, label: 'Error Detection', desc: 'Smart validation' },
-                ].map((feature, index) => (
-                  <Box key={index} sx={{ flex: 1, opacity: importState.progress > (index + 1) * 30 ? 1 : 0.5 }}>
-                    {feature.icon}
-                    <Typography variant="caption" display="block" sx={{ fontWeight: 'bold' }}>
-                      {feature.label}
-                    </Typography>
-                    <Typography variant="caption" sx={{ opacity: 0.8 }}>
-                      {feature.desc}
-                    </Typography>
-                  </Box>
-                ))}
-              </Box>
-            </CardContent>
-          </Card>
-        </Fade>
-      )}
+      <ImportProgressComponent importState={importState} />
 
       {/* Imported Files List */}
-      {importedFiles.length > 0 && (
-        <Paper elevation={1} sx={{ mb: 2 }}>
-          <Typography variant="subtitle2" sx={{ p: 2, pb: 0 }}>
-            Import History
-          </Typography>
-          <List dense>
-            {importedFiles.map((file, index) => (
-              <ListItem key={index}>
-                <ListItemIcon>
-                  {getFileIcon(file.type)}
-                </ListItemIcon>
-                <ListItemText
-                  primary={file.name}
-                  secondary={
-                    <Box>
-                      <Typography variant="caption" color="text.secondary">
-                        {file.type.toUpperCase()} • {(file.size / 1024).toFixed(1)} KB
-                        {file.endpointCount && ` • ${file.endpointCount} endpoints`}
-                      </Typography>
-                      {file.error && (
-                        <Typography variant="caption" color="error" sx={{ display: 'block' }}>
-                          Error: {file.error}
-                        </Typography>
-                      )}
-                    </Box>
-                  }
-                />
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                  {getStatusIcon(file.status)}
-                  <IconButton size="small" onClick={() => removeImportedFile(file.name)}>
-                    <Delete fontSize="small" />
-                  </IconButton>
-                </Box>
-              </ListItem>
-            ))}
-          </List>
-        </Paper>
-      )}
+      <ImportHistory importedFiles={importedFiles} onRemoveFile={removeImportedFile} />
 
       {/* Help Section */}
       <Paper elevation={1} sx={{ p: 2 }}>

@@ -373,4 +373,26 @@ export class ServiceWorkerManager {
   isHeartbeatActive(): boolean {
     return this.mode === 'HEARTBEAT' || this.heartbeatInterval !== null;
   }
+
+  // Keep alive during long-running operations (AI generation, parallel tasks)
+  private activeOperationInterval: number | null = null;
+
+  startActiveOperation(): void {
+    // More aggressive keepalive during generation (every 10s)
+    if (this.activeOperationInterval) {
+      clearInterval(this.activeOperationInterval);
+    }
+    this.activeOperationInterval = setInterval(() => {
+      this.lastActivity = Date.now();
+      this.lastHeartbeat = Date.now();
+      chrome.storage.session.set({ activeOperation: Date.now() }).catch(() => {});
+    }, 10000) as unknown as number;
+  }
+
+  stopActiveOperation(): void {
+    if (this.activeOperationInterval) {
+      clearInterval(this.activeOperationInterval);
+      this.activeOperationInterval = null;
+    }
+  }
 }

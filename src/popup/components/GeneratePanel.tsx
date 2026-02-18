@@ -16,10 +16,7 @@ import {
   Chip,
   LinearProgress,
   IconButton,
-  Skeleton,
-  Fade,
   CircularProgress,
-  Backdrop,
   Tooltip,
   Radio,
   RadioGroup,
@@ -35,8 +32,6 @@ import {
   Code,
   AutoAwesome,
   Download,
-  ContentCopy,
-  AttachMoney,
   CheckCircle,
   Error as ErrorIcon,
   Info,
@@ -51,10 +46,14 @@ import {
 import { RecordingSession, TestFramework, AIProvider, AIModel } from '@/types';
 import { useStore } from '@/store/useStore';
 import EndpointPreview from './EndpointPreview';
+import GenerationProgress from './GenerationProgress';
+import GeneratedResults from './GeneratedResults';
+import ReplayPanel from './ReplayPanel';
+import CostEstimator from './CostEstimator';
 import {
   ParallelGenerationOrchestrator,
   ParallelGenerationResult,
-  GenerationProgress,
+  GenerationProgress as GenerationProgressType,
   GenerationOptions as ParallelOptions
 } from '@/services/ParallelGenerationOrchestrator';
 
@@ -76,7 +75,7 @@ export default function GeneratePanel({ sessions }: GeneratePanelProps) {
   const { selectedSession, generateTests, settings, loading, loadSettings, generatedTests } = useStore();
   const [framework, setFramework] = useState<TestFramework>('jest');
   const [provider, setProvider] = useState<AIProvider>('openai');
-  const [model, setModel] = useState<AIModel>('gpt-4o-mini');
+  const [model, setModel] = useState<AIModel>('gpt-4.1-mini');
   const [hasUserChangedModel, setHasUserChangedModel] = useState(false);
   const isInitialLoadRef = useRef(true);
   const [options, setOptions] = useState({
@@ -96,8 +95,6 @@ export default function GeneratePanel({ sessions }: GeneratePanelProps) {
     testCoverage: 'exhaustive' as 'exhaustive' | 'standard' | 'minimal',
   });
   const [generatedCode, setGeneratedCode] = useState<string>('');
-  const [costEstimate, setCostEstimate] = useState<number>(0);
-  const [copySuccess, setCopySuccess] = useState(false);
   const [excludedEndpoints, setExcludedEndpoints] = useState<Set<string>>(new Set());
   const [generationState, setGenerationState] = useState<GenerationState>({
     isGenerating: false,
@@ -130,7 +127,7 @@ export default function GeneratePanel({ sessions }: GeneratePanelProps) {
     includeSecurityTests: options.includeSecurityTests,
     generateMockData: options.generateMockData
   });
-  const [parallelProgress, setParallelProgress] = useState<GenerationProgress | null>(null);
+  const [parallelProgress, setParallelProgress] = useState<GenerationProgressType | null>(null);
   const [parallelResult, setParallelResult] = useState<ParallelGenerationResult | null>(null);
   const [resultTab, setResultTab] = useState(0);
 
@@ -139,7 +136,64 @@ export default function GeneratePanel({ sessions }: GeneratePanelProps) {
     loadSettings();
   }, []);
 
-  // Listen for generation progress updates
+  // Restore persisted generation state on mount (survives popup close/reopen)
+  useEffect(() => {
+    chrome.storage.session.get('generationState').then((data) => {
+      const state = data.generationState;
+      if (!state) return;
+
+      if (state.status === 'generating') {
+        setGenerationState({
+          isGenerating: true,
+          progress: state.progress || 0,
+          stage: state.stage || 'Generating...',
+          estimatedTime: 0,
+          currentEndpoint: state.currentEndpoint,
+          totalEndpoints: state.totalEndpoints,
+          endpointName: state.endpointName,
+        });
+      } else if (state.status === 'complete' && state.result) {
+        setGeneratedCode(state.result.code || '');
+        setGenerationState(prev => ({ ...prev, isGenerating: false, progress: 100, stage: 'Complete' }));
+        // Clear stored state after consuming
+        chrome.runtime.sendMessage({ type: 'CLEAR_GENERATION_STATE' }).catch(() => {});
+      } else if (state.status === 'error') {
+        setGenerationState(prev => ({ ...prev, isGenerating: false, progress: 0, stage: state.error || 'Failed' }));
+        chrome.runtime.sendMessage({ type: 'CLEAR_GENERATION_STATE' }).catch(() => {});
+      }
+    }).catch(() => {});
+
+    // Listen for storage changes (real-time updates from background)
+    const handleStorageChange = (changes: { [key: string]: chrome.storage.StorageChange }, area: string) => {
+      if (area !== 'session' || !changes.generationState) return;
+      const state = changes.generationState.newValue;
+      if (!state) return;
+
+      if (state.status === 'generating') {
+        setGenerationState(prev => ({
+          ...prev,
+          isGenerating: true,
+          progress: state.progress || prev.progress,
+          stage: state.stage || prev.stage,
+          currentEndpoint: state.currentEndpoint,
+          totalEndpoints: state.totalEndpoints,
+          endpointName: state.endpointName,
+        }));
+      } else if (state.status === 'complete' && state.result) {
+        setGeneratedCode(state.result.code || '');
+        setGenerationState(prev => ({ ...prev, isGenerating: false, progress: 100, stage: 'Complete' }));
+        chrome.runtime.sendMessage({ type: 'CLEAR_GENERATION_STATE' }).catch(() => {});
+      } else if (state.status === 'error') {
+        setGenerationState(prev => ({ ...prev, isGenerating: false, progress: 0, stage: state.error || 'Failed' }));
+        chrome.runtime.sendMessage({ type: 'CLEAR_GENERATION_STATE' }).catch(() => {});
+      }
+    };
+
+    chrome.storage.onChanged.addListener(handleStorageChange);
+    return () => chrome.storage.onChanged.removeListener(handleStorageChange);
+  }, []);
+
+  // Listen for generation progress updates (direct messages, faster when popup is open)
   useEffect(() => {
     const handleProgressMessage = (message: any) => {
       if (message.type === 'GENERATION_PROGRESS') {
@@ -188,8 +242,8 @@ export default function GeneratePanel({ sessions }: GeneratePanelProps) {
   const getAllAvailableModels = (): { value: AIModel; label: string }[] => {
     return [
       // OpenAI Models
-      { value: 'gpt-4o', label: 'GPT-4o (Most Capable, Multimodal)' },
-      { value: 'gpt-4o-mini', label: 'GPT-4o Mini (Fast & Cheap)' },
+      { value: 'gpt-4.1', label: 'gpt-4.1 (Most Capable, Multimodal)' },
+      { value: 'gpt-4.1-mini', label: 'gpt-4.1 Mini (Fast & Cheap)' },
       { value: 'gpt-4-turbo', label: 'GPT-4 Turbo' },
       { value: 'gpt-3.5-turbo', label: 'GPT-3.5 Turbo' },
       
@@ -216,17 +270,13 @@ export default function GeneratePanel({ sessions }: GeneratePanelProps) {
     ];
   };
 
-  // Debug: Track model state changes
-  useEffect(() => {
-    console.log('📊 Model state changed to:', model, 'hasUserChangedModel:', hasUserChangedModel);
-  }, [model, hasUserChangedModel]);
-
-  // Update provider and model from settings when loaded (only on initial load)
+  // Update provider and model from settings only on initial mount
   useEffect(() => {
     if (settings && isInitialLoadRef.current) {
-      console.log('🔧 Initial settings load - setting provider and model from settings:', settings);
       setProvider(settings.aiProvider || 'openai');
-      setModel(settings.aiModel || 'gpt-4o-mini');
+      if (!hasUserChangedModel) {
+        setModel(settings.aiModel || 'gpt-4.1-mini');
+      }
       isInitialLoadRef.current = false;
     }
   }, [settings]);
@@ -541,22 +591,6 @@ ${options.includeErrorScenarios ? `
     return '// Test generation for ' + framework + ' coming soon';
   };
 
-  const handleCopyToClipboard = async () => {
-    await navigator.clipboard.writeText(generatedCode);
-    setCopySuccess(true);
-    setTimeout(() => setCopySuccess(false), 2000);
-  };
-
-  const handleDownload = () => {
-    const blob = new Blob([generatedCode], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `test-${session?.id}-${framework}.js`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
   // Parallel generation handlers
   const handleParallelOptionChange = (key: keyof ParallelOptions) => (
     event: React.ChangeEvent<HTMLInputElement>
@@ -661,67 +695,6 @@ ${options.includeErrorScenarios ? `
   const enabledParallelCount = Object.entries(parallelOptions)
     .filter(([key, value]) => key.startsWith('enable') && value === true)
     .length;
-
-  const estimateCost = () => {
-    if (!session) return 0;
-    
-    // Calculate unique endpoints (more accurate than all requests)
-    const uniqueEndpoints = new Set<string>();
-    session.requests.forEach(request => {
-      try {
-        const url = new URL(request.url);
-        const signature = `${request.method}:${url.pathname}`;
-        if (!excludedEndpoints.has(signature)) {
-          uniqueEndpoints.add(signature);
-        }
-      } catch (error) {
-        const signature = `${request.method}:${request.url}`;
-        if (!excludedEndpoints.has(signature)) {
-          uniqueEndpoints.add(signature);
-        }
-      }
-    });
-
-    const endpointCount = uniqueEndpoints.size;
-    if (endpointCount === 0) return 0;
-
-    // More accurate token estimation
-    const baseTokensPerEndpoint = 800; // Base tokens for analysis + test generation
-    
-    // Feature complexity multipliers
-    let complexityMultiplier = 1.0;
-    if (options.includeAuth) complexityMultiplier += 0.25;
-    if (options.includeErrorScenarios) complexityMultiplier += 0.35;
-    if (options.includePerformanceTests) complexityMultiplier += 0.2;
-    if (options.includeSecurityTests) complexityMultiplier += 0.3;
-    if (options.generateMockData) complexityMultiplier += 0.15;
-    
-    // Test coverage multiplier
-    const coverageMultiplier = {
-      'exhaustive': 1.8,
-      'standard': 1.2,
-      'minimal': 0.7
-    }[options.testCoverage] || 1.2;
-
-    const totalTokens = endpointCount * baseTokensPerEndpoint * complexityMultiplier * coverageMultiplier;
-
-    // Realistic 2024 pricing per 1K tokens
-    const providerCosts = {
-      'openai': 0.00015,     // GPT-4o mini - very affordable
-      'anthropic': 0.00025,  // Claude 3 Haiku 
-      'gemini': 0.000075,    // Gemini Flash - cheapest
-      'local': 0,            // Free
-    };
-
-    const costPer1K = providerCosts[provider as keyof typeof providerCosts] || 0.00015;
-    return (totalTokens / 1000) * costPer1K;
-  };
-
-  React.useEffect(() => {
-    if (session) {
-      setCostEstimate(estimateCost());
-    }
-  }, [session, options, excludedEndpoints]);
 
   if (!session) {
     return (
@@ -841,9 +814,8 @@ ${options.includeErrorScenarios ? `
               value={model}
               onChange={(e) => {
                 const newModel = e.target.value as AIModel;
-                console.log('🎯 User selected model:', newModel);
                 setModel(newModel);
-                setHasUserChangedModel(true); // Track that user has manually changed the model
+                setHasUserChangedModel(true);
               }}
               label="Model"
               disabled={generationState.isGenerating}
@@ -1049,47 +1021,12 @@ ${options.includeErrorScenarios ? `
         </Alert>
       )}
 
-      <Paper elevation={1} sx={{ p: 2, mb: 2 }}>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
-          <AttachMoney fontSize="small" />
-          <Typography variant="subtitle2">Estimated Cost</Typography>
-        </Box>
-        <Typography variant="h6">${costEstimate.toFixed(4)}</Typography>
-        <Typography variant="caption" color="text.secondary">
-          {(() => {
-            // Calculate unique endpoints for display
-            const uniqueEndpoints = new Set<string>();
-            session.requests.forEach(request => {
-              try {
-                const url = new URL(request.url);
-                const signature = `${request.method}:${url.pathname}`;
-                if (!excludedEndpoints.has(signature)) {
-                  uniqueEndpoints.add(signature);
-                }
-              } catch (error) {
-                const signature = `${request.method}:${request.url}`;
-                if (!excludedEndpoints.has(signature)) {
-                  uniqueEndpoints.add(signature);
-                }
-              }
-            });
-
-            const endpointCount = uniqueEndpoints.size;
-            const baseTokens = endpointCount * 800;
-            const featureMultiplier = 1 + 
-              (options.includeAuth ? 0.25 : 0) +
-              (options.includeErrorScenarios ? 0.35 : 0) +
-              (options.includePerformanceTests ? 0.2 : 0) +
-              (options.includeSecurityTests ? 0.3 : 0) +
-              (options.generateMockData ? 0.15 : 0);
-            const estimatedTokens = Math.round(baseTokens * featureMultiplier);
-            
-            return excludedEndpoints.size > 0 
-              ? `Based on ${endpointCount} included endpoints (~${estimatedTokens.toLocaleString()} tokens)`
-              : `Based on ${endpointCount} unique endpoints (~${estimatedTokens.toLocaleString()} tokens)`;
-          })()}
-        </Typography>
-      </Paper>
+      <CostEstimator
+        session={session}
+        provider={provider}
+        options={options}
+        excludedEndpoints={excludedEndpoints}
+      />
 
       {/* Advanced Parallel Generation */}
       <Accordion
@@ -1264,293 +1201,34 @@ ${options.includeErrorScenarios ? `
             : 'Generate Tests'}
       </Button>
 
-      {/* Generation Progress - Enhanced */}
-      {generationState.isGenerating && (
-        <Fade in={true}>
-          <Paper elevation={3} sx={{ 
-            p: 3, 
-            mb: 2, 
-            background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-            color: 'white',
-            position: 'relative',
-            overflow: 'hidden'
-          }}>
-            {/* Animated background effect */}
-            <Box sx={{
-              position: 'absolute',
-              top: 0,
-              left: '-100%',
-              width: '200%',
-              height: '100%',
-              background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent)',
-              animation: 'shimmer 2s infinite',
-              '@keyframes shimmer': {
-                '0%': { transform: 'translateX(0)' },
-                '100%': { transform: 'translateX(50%)' },
-              },
-            }} />
-            
-            <Box sx={{ position: 'relative', zIndex: 1 }}>
-              {/* Loading icon and title */}
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 2 }}>
-                <CircularProgress size={32} sx={{ color: 'white' }} />
-                <Box sx={{ flex: 1 }}>
-                  <Typography variant="h6" sx={{ fontWeight: 'bold' }}>
-                    Generating Test Suite
-                  </Typography>
-                  <Typography variant="body2" sx={{ opacity: 0.9 }}>
-                    {generationState.currentEndpoint && generationState.totalEndpoints ? 
-                      `Generating tests for endpoint ${generationState.currentEndpoint}/${generationState.totalEndpoints}` :
-                      generationState.stage
-                    }
-                  </Typography>
-                  {generationState.endpointName && (
-                    <Typography variant="caption" sx={{ opacity: 0.7, display: 'block', mt: 0.5 }}>
-                      {generationState.endpointName.length > 60 ? 
-                        `${generationState.endpointName.substring(0, 60)}...` : 
-                        generationState.endpointName
-                      }
-                    </Typography>
-                  )}
-                </Box>
-                <Typography variant="h5" sx={{ fontWeight: 'bold' }}>
-                  {generationState.progress}%
-                </Typography>
-              </Box>
-              
-              {/* Progress bar */}
-              <LinearProgress 
-                variant="determinate" 
-                value={generationState.progress}
-                sx={{ 
-                  height: 10, 
-                  borderRadius: 5,
-                  bgcolor: 'rgba(255,255,255,0.3)',
-                  '& .MuiLinearProgress-bar': {
-                    bgcolor: 'white',
-                    borderRadius: 5,
-                  }
-                }}
-              />
-              
-              {/* Estimated time */}
-              <Box sx={{ 
-                display: 'flex', 
-                alignItems: 'center', 
-                gap: 1, 
-                mt: 2,
-                p: 1.5,
-                bgcolor: 'rgba(255,255,255,0.1)',
-                borderRadius: 2
-              }}>
-                <Info fontSize="small" />
-                <Typography variant="body2">
-                  Estimated time remaining: {Math.max(1, Math.ceil(generationState.estimatedTime * (100 - generationState.progress) / 100))} seconds
-                </Typography>
-              </Box>
-              
-              {/* Progress steps */}
-              <Box sx={{ mt: 2 }}>
-                <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 'bold' }}>
-                  Progress Steps:
-                </Typography>
-                {[
-                  { step: 'Analyzing API patterns', threshold: 0 },
-                  { step: 'Connecting to AI provider', threshold: 20 },
-                  { step: 'Generating test code', threshold: 40 },
-                  { step: 'Optimizing and validating', threshold: 60 },
-                  { step: 'Finalizing test suite', threshold: 80 },
-                ].map(({ step, threshold }, index) => (
-                  <Box key={step} sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
-                    {generationState.progress > threshold + 20 ? (
-                      <CheckCircle fontSize="small" sx={{ color: 'white' }} />
-                    ) : generationState.progress > threshold ? (
-                      <CircularProgress size={16} sx={{ color: 'white' }} />
-                    ) : (
-                      <Box sx={{ 
-                        width: 16, 
-                        height: 16, 
-                        borderRadius: '50%', 
-                        bgcolor: 'rgba(255,255,255,0.3)',
-                        border: '2px solid rgba(255,255,255,0.5)' 
-                      }} />
-                    )}
-                    <Typography 
-                      variant="body2" 
-                      sx={{ 
-                        opacity: generationState.progress > threshold ? 1 : 0.6,
-                        fontWeight: generationState.progress > threshold && generationState.progress <= threshold + 20 ? 'bold' : 'normal'
-                      }}
-                    >
-                      {step}
-                    </Typography>
-                  </Box>
-                ))}
-              </Box>
-            </Box>
-          </Paper>
-        </Fade>
-      )}
+      {/* Generation Progress */}
+      <GenerationProgress generationState={generationState} />
 
       {/* Generated Code */}
       {generatedCode && !generationState.isGenerating && (
-        <Fade in={true}>
-          <Paper elevation={1} sx={{ p: 2 }}>
-            <Box
-              sx={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                mb: 1,
-              }}
-            >
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                <CheckCircle color="success" />
-                <Typography variant="subtitle2">Generated Tests</Typography>
-              </Box>
-              <Box>
-                <Tooltip title={copySuccess ? 'Copied!' : 'Copy to clipboard'}>
-                  <IconButton size="small" onClick={handleCopyToClipboard}>
-                    <ContentCopy fontSize="small" color={copySuccess ? 'success' : 'inherit'} />
-                  </IconButton>
-                </Tooltip>
-                <Tooltip title="Download file">
-                  <IconButton size="small" onClick={handleDownload}>
-                    <Download fontSize="small" />
-                  </IconButton>
-                </Tooltip>
-              </Box>
+        <GeneratedResults
+          generatedCode={generatedCode}
+          session={session}
+          excludedEndpoints={excludedEndpoints}
+          generatedTests={generatedTests}
+          framework={framework}
+        />
+      )}
+
+      {/* Traffic Replay */}
+      {session && (
+        <Accordion sx={{ mt: 2 }}>
+          <AccordionSummary expandIcon={<ExpandMore />}>
+            <Box display="flex" alignItems="center" gap={1}>
+              <Speed sx={{ fontSize: 18 }} />
+              <Typography variant="subtitle2">Traffic Replay</Typography>
+              <Chip label={`${session.requests.length} requests`} size="small" variant="outlined" sx={{ height: 20, fontSize: 11 }} />
             </Box>
-            <Paper
-              variant="outlined"
-              sx={{
-                p: 1,
-                bgcolor: 'grey.50',
-                maxHeight: 300,
-                overflow: 'auto',
-              }}
-            >
-              <pre
-                style={{
-                  margin: 0,
-                  fontSize: 11,
-                  fontFamily: 'monospace',
-                }}
-              >
-                {generatedCode}
-              </pre>
-            </Paper>
-            
-            {/* Quality Score and Warnings */}
-            <Box sx={{ mt: 2 }}>
-              {/* Generation Strategy Info */}
-              {(() => {
-                const latestTest = generatedTests[generatedTests.length - 1];
-                const generationMode = latestTest?.metadata?.generationMode;
-                
-                if (generationMode) {
-                  return (
-                    <Typography variant="caption" sx={{ display: 'block', mb: 1, color: 'text.secondary' }}>
-                      {generationMode === 'individual' 
-                        ? '🔥 Individual endpoint processing used for guaranteed completeness' 
-                        : '📦 Batch processing used for efficiency'}
-                    </Typography>
-                  );
-                }
-                return null;
-              })()}
-              
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
-                {(() => {
-                  const latestTest = generatedTests[generatedTests.length - 1];
-                  const hasWarnings = latestTest?.warnings && latestTest.warnings.length > 0;
-                  const hasPlaceholderWarnings = latestTest?.warnings?.some(w => w.includes('placeholder'));
-                  
-                  return (
-                    <>
-                      <Chip 
-                        label={`Quality Score: ${latestTest?.qualityScore || 8}/10`} 
-                        color={hasWarnings ? "warning" : "success"} 
-                        size="small"
-                      />
-                      <Chip 
-                        label={`${(() => {
-                          const includedCount = session.requests.filter(request => {
-                            try {
-                              const url = new URL(request.url);
-                              const signature = `${request.method}:${url.pathname}`;
-                              return !excludedEndpoints.has(signature);
-                            } catch (error) {
-                              const signature = `${request.method}:${request.url}`;
-                              return !excludedEndpoints.has(signature);
-                            }
-                          }).length;
-                          return includedCount;
-                        })()} endpoints processed`}
-                        size="small"
-                        variant="outlined"
-                      />
-                      {/* Show generation strategy */}
-                      {latestTest?.metadata?.generationMode && (
-                        <Chip 
-                          label={`${latestTest.metadata.generationMode === 'individual' ? '🔥 Individual' : '📦 Batch'} Generation`}
-                          size="small"
-                          variant="outlined"
-                          color={latestTest.metadata.generationMode === 'individual' ? 'primary' : 'default'}
-                        />
-                      )}
-                      {!hasWarnings ? (
-                        <Chip 
-                          label="Complete & Ready to run"
-                          size="small"
-                          variant="outlined"
-                          color="success"
-                        />
-                      ) : hasPlaceholderWarnings ? (
-                        <Chip 
-                          label="⚠️ Incomplete Generation"
-                          size="small"
-                          color="error"
-                          variant="outlined"
-                        />
-                      ) : (
-                        <Chip 
-                          label="⚠️ Has Warnings"
-                          size="small"
-                          color="warning"
-                          variant="outlined"
-                        />
-                      )}
-                    </>
-                  );
-                })()}
-              </Box>
-              
-              {/* Show warnings if any */}
-              {(() => {
-                const latestTest = generatedTests[generatedTests.length - 1];
-                const warnings = latestTest?.warnings || [];
-                
-                if (warnings.length > 0) {
-                  return (
-                    <Box sx={{ mt: 1 }}>
-                      {warnings.map((warning, index) => (
-                        <Alert 
-                          key={index} 
-                          severity={warning.includes('placeholder') ? "error" : "warning"} 
-                          sx={{ mt: 0.5, fontSize: '0.8rem' }}
-                        >
-                          {warning}
-                        </Alert>
-                      ))}
-                    </Box>
-                  );
-                }
-                return null;
-              })()}
-            </Box>
-          </Paper>
-        </Fade>
+          </AccordionSummary>
+          <AccordionDetails>
+            <ReplayPanel session={session} />
+          </AccordionDetails>
+        </Accordion>
       )}
 
     </Box>

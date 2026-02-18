@@ -1,6 +1,6 @@
 {
   "name": "xhrscribe",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "description": "Turn Traffic into Tests ",
   "main": "dist/background.js",
   "directories": {

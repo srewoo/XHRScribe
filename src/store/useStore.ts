@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { RecordingSession, Settings, GeneratedTest, NetworkRequest } from '@/types';
+import { RecordingSession, Settings, GeneratedTest, GenerationOptions, NetworkRequest } from '@/types';
 
 interface AppStore {
   // State
@@ -19,11 +19,11 @@ interface AppStore {
   deleteSession: (sessionId: string) => Promise<void>;
   renameSession: (sessionId: string, newName: string) => Promise<void>;
   selectSession: (session: RecordingSession) => void;
-  generateTests: (sessionId: string, options: any) => Promise<any>;
+  generateTests: (sessionId: string, options: GenerationOptions) => Promise<GeneratedTest>;
   loadSettings: () => Promise<void>;
   updateSettings: (settings: Settings) => Promise<void>;
   exportTests: (testId: string, format: string) => Promise<void>;
-  importSession: (sessionData: any) => Promise<string>;
+  importSession: (sessionData: { name?: string; url?: string; requests: NetworkRequest[]; metadata?: Record<string, unknown> }) => Promise<string>;
   clearError: () => void;
   setLoading: (loading: boolean) => void;
 }
@@ -212,7 +212,7 @@ export const useStore = create<AppStore>((set, get) => ({
   },
 
   // Generate tests
-  generateTests: async (sessionId: string, options: any) => {
+  generateTests: async (sessionId: string, options: GenerationOptions) => {
     set({ loading: true, error: undefined });
     try {
       const response = await chrome.runtime.sendMessage({
@@ -256,7 +256,7 @@ export const useStore = create<AppStore>((set, get) => ({
         set({ 
           settings: {
             aiProvider: 'openai',
-            aiModel: 'gpt-4o-mini',
+            aiModel: 'gpt-4.1-mini',
             apiKeys: {},
             privacyMode: 'cloud',
             dataMasking: {
@@ -350,11 +350,11 @@ export const useStore = create<AppStore>((set, get) => ({
   },
 
   // Import session from external files
-  importSession: async (sessionData: any): Promise<string> => {
+  importSession: async (sessionData: { name?: string; url?: string; requests: NetworkRequest[]; metadata?: Record<string, unknown> }): Promise<string> => {
     set({ loading: true, error: undefined });
     try {
       // Create a unique session ID
-      const sessionId = `imported_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      const sessionId = `imported_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`;
 
       // Create the session object
       const newSession: RecordingSession = {
@@ -368,6 +368,7 @@ export const useStore = create<AppStore>((set, get) => ({
           id: req.id || `imported_${index}`,
           method: req.method,
           url: req.url,
+          type: req.type || 'XHR',
           status: req.status || 200,
           requestHeaders: req.requestHeaders || [],
           responseHeaders: req.responseHeaders || [],

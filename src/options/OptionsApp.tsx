@@ -104,7 +104,7 @@ export default function OptionsApp() {
 
   const getDefaultSettings = (): Settings => ({
     aiProvider: 'openai',
-    aiModel: 'gpt-4o-mini',
+    aiModel: 'gpt-4.1-mini',
     apiKeys: {},
     privacyMode: 'cloud',
     dataMasking: {
@@ -233,10 +233,81 @@ export default function OptionsApp() {
           {/* AI Provider Tab */}
           <TabPanel value={tabValue} index={0}>
             <Typography variant="h6" gutterBottom>
-              API Keys & Authentication
+              AI Provider & Model
             </Typography>
-            
 
+            <Box sx={{ display: 'flex', gap: 2, mb: 3 }}>
+              <FormControl fullWidth>
+                <InputLabel>AI Provider</InputLabel>
+                <Select
+                  value={settings.aiProvider}
+                  onChange={(e) => {
+                    const newProvider = e.target.value as AIProvider;
+                    const providerModels: Record<AIProvider, AIModel> = {
+                      openai: 'gpt-4.1-mini',
+                      anthropic: 'claude-4-sonnet',
+                      gemini: 'gemini-2-5-flash',
+                      local: 'llama-3.2',
+                    };
+                    setSettings({
+                      ...settings,
+                      aiProvider: newProvider,
+                      aiModel: providerModels[newProvider],
+                    });
+                  }}
+                  label="AI Provider"
+                >
+                  <MenuItem value="openai">OpenAI</MenuItem>
+                  <MenuItem value="anthropic">Anthropic (Claude)</MenuItem>
+                  <MenuItem value="gemini">Google Gemini</MenuItem>
+                  <MenuItem value="local">Local Models</MenuItem>
+                </Select>
+              </FormControl>
+
+              <FormControl fullWidth>
+                <InputLabel>AI Model</InputLabel>
+                <Select
+                  value={settings.aiModel}
+                  onChange={(e) => setSettings({ ...settings, aiModel: e.target.value as AIModel })}
+                  label="AI Model"
+                >
+                  {settings.aiProvider === 'openai' && [
+                    <MenuItem key="gpt-4.1" value="gpt-4.1">gpt-4.1 (Most Capable)</MenuItem>,
+                    <MenuItem key="gpt-4.1-mini" value="gpt-4.1-mini">gpt-4.1 Mini (Fast & Cheap)</MenuItem>,
+                    <MenuItem key="gpt-4-turbo" value="gpt-4-turbo">GPT-4 Turbo</MenuItem>,
+                    <MenuItem key="gpt-3.5-turbo" value="gpt-3.5-turbo">GPT-3.5 Turbo</MenuItem>,
+                  ]}
+                  {settings.aiProvider === 'anthropic' && [
+                    <MenuItem key="claude-4-sonnet" value="claude-4-sonnet">Claude 4 Sonnet (Latest)</MenuItem>,
+                    <MenuItem key="claude-3-7-sonnet" value="claude-3-7-sonnet">Claude 3.7 Sonnet</MenuItem>,
+                    <MenuItem key="claude-3-5-sonnet-20241022" value="claude-3-5-sonnet-20241022">Claude 3.5 Sonnet</MenuItem>,
+                    <MenuItem key="claude-3-opus-20240229" value="claude-3-opus-20240229">Claude 3 Opus (Legacy)</MenuItem>,
+                  ]}
+                  {settings.aiProvider === 'gemini' && [
+                    <MenuItem key="gemini-2-5-pro" value="gemini-2-5-pro">Gemini 2.5 Pro (Latest)</MenuItem>,
+                    <MenuItem key="gemini-2-5-flash" value="gemini-2-5-flash">Gemini 2.5 Flash (Fast)</MenuItem>,
+                    <MenuItem key="gemini-1.5-pro-latest" value="gemini-1.5-pro-latest">Gemini 1.5 Pro (Legacy)</MenuItem>,
+                    <MenuItem key="gemini-1.5-flash" value="gemini-1.5-flash">Gemini 1.5 Flash (Legacy)</MenuItem>,
+                  ]}
+                  {settings.aiProvider === 'local' && [
+                    <MenuItem key="llama-3.2" value="llama-3.2">Llama 3.2</MenuItem>,
+                    <MenuItem key="codellama-70b" value="codellama-70b">CodeLlama 70B</MenuItem>,
+                    <MenuItem key="mixtral-8x7b" value="mixtral-8x7b">Mixtral 8x7B</MenuItem>,
+                    <MenuItem key="deepseek-coder" value="deepseek-coder">DeepSeek Coder</MenuItem>,
+                  ]}
+                </Select>
+              </FormControl>
+            </Box>
+
+            <Alert severity="info" sx={{ mb: 3 }}>
+              This sets the default AI provider and model. You can override per-generation in the Generate tab.
+            </Alert>
+
+            <Divider sx={{ my: 3 }} />
+
+            <Typography variant="h6" gutterBottom>
+              Authentication Guide
+            </Typography>
 
 
             <FormControl fullWidth sx={{ mb: 3 }}>

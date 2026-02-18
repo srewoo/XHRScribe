@@ -16,7 +16,7 @@ XHRScribe is an intelligent Chrome extension that automatically captures network
 - Background processing with progress tracking
 
 ### 🤖 **Multi-Provider AI Integration**
-- **OpenAI**: GPT-4o, GPT-4o-mini, GPT-4-turbo, GPT-4, GPT-3.5-turbo
+- **OpenAI**: gpt-4.1, gpt-4.1-mini, GPT-4-turbo, GPT-4, GPT-3.5-turbo
 - **Anthropic Claude**: Claude-3.5-sonnet, Claude-3-haiku, Claude-3-opus
 - **Google Gemini**: Gemini-1.5-pro, Gemini-1.5-flash, Gemini-pro
 - **Local Models**: Llama-3.1, CodeLlama, and custom models
@@ -166,7 +166,7 @@ src/
 ## 🔧 Enhanced Configuration
 
 ### Environment Variables
-- `OPENAI_API_KEY`: OpenAI API key (GPT-4o, GPT-4-turbo, GPT-3.5-turbo)
+- `OPENAI_API_KEY`: OpenAI API key (gpt-4.1, GPT-4-turbo, GPT-3.5-turbo)
 - `ANTHROPIC_API_KEY`: Claude API key (Claude-3.5-sonnet, Claude-3-haiku, Claude-3-opus)
 - `GOOGLE_API_KEY`: Gemini API key (Gemini-1.5-pro, Gemini-1.5-flash, Gemini-pro)
 

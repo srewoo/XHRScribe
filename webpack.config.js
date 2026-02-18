@@ -75,8 +75,10 @@ module.exports = (env, argv) => {
               }
               // Remove dist/ prefix from manifest paths since we're copying to dist
               manifest.background.service_worker = 'background.js';
-              manifest.action.default_popup = 'popup.html';
               manifest.options_page = 'options.html';
+              if (manifest.side_panel) {
+                manifest.side_panel.default_path = 'popup.html';
+              }
               manifest.content_scripts[0].js = ['content.js'];
               manifest.web_accessible_resources[0].resources = ['*.js', '*.css', '*.map'];
               return JSON.stringify(manifest, null, 2);

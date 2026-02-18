@@ -39,11 +39,14 @@ interface SessionListProps {
   sessions: RecordingSession[];
 }
 
+const SESSIONS_PER_PAGE = 10;
+
 export default function SessionList({ sessions }: SessionListProps) {
   const { deleteSession, renameSession, selectSession, setLoading } = useStore();
   const [renameDialogOpen, setRenameDialogOpen] = useState(false);
   const [sessionToRename, setSessionToRename] = useState<RecordingSession | null>(null);
   const [newSessionName, setNewSessionName] = useState('');
+  const [visibleCount, setVisibleCount] = useState(SESSIONS_PER_PAGE);
 
   const formatDate = (timestamp: number) => {
     const date = new Date(timestamp);
@@ -61,18 +64,18 @@ export default function SessionList({ sessions }: SessionListProps) {
     if (isImportedSession(session)) {
       switch (session.metadata?.source) {
         case 'har_import':
-          return <InsertDriveFile sx={{ color: '#4caf50' }} />;
+          return <InsertDriveFile sx={{ color: 'success.main' }} />;
         case 'postman_import':
-          return <Api sx={{ color: '#ff9800' }} />;
+          return <Api sx={{ color: 'warning.main' }} />;
         case 'openapi_import':
-          return <Description sx={{ color: '#2196f3' }} />;
+          return <Description sx={{ color: 'primary.main' }} />;
         case 'insomnia_import':
-          return <Language sx={{ color: '#673ab7' }} />;
+          return <Language sx={{ color: 'secondary.main' }} />;
         default:
-          return <ImportExport sx={{ color: '#9e9e9e' }} />;
+          return <ImportExport sx={{ color: 'text.secondary' }} />;
       }
     }
-    return <RadioButtonChecked sx={{ color: '#f44336' }} />;
+    return <RadioButtonChecked sx={{ color: 'error.main' }} />;
   };
 
   const getImportTypeLabel = (session: RecordingSession): string => {
@@ -178,7 +181,7 @@ export default function SessionList({ sessions }: SessionListProps) {
 
       {/* Sessions List */}
       <List sx={{ maxHeight: 300, overflow: 'auto' }}>
-        {sessions.map((session) => (
+        {sessions.slice(0, visibleCount).map((session) => (
           <Paper key={session.id} elevation={1} sx={{ mb: 1 }}>
             <ListItem
               component="div"
@@ -316,6 +319,18 @@ export default function SessionList({ sessions }: SessionListProps) {
           </Paper>
         ))}
       </List>
+
+      {/* Show More */}
+      {sessions.length > visibleCount && (
+        <Box sx={{ textAlign: 'center', mt: 1 }}>
+          <Button
+            size="small"
+            onClick={() => setVisibleCount(prev => prev + SESSIONS_PER_PAGE)}
+          >
+            Show More ({sessions.length - visibleCount} remaining)
+          </Button>
+        </Box>
+      )}
 
       {/* Rename Dialog */}
       <Dialog open={renameDialogOpen} onClose={() => setRenameDialogOpen(false)} maxWidth="sm" fullWidth>

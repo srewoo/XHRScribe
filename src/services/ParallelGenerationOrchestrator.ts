@@ -259,7 +259,7 @@ export class ParallelGenerationOrchestrator {
     const aiOptions: AIGenerationOptions = {
       framework: options.framework,
       provider: options.aiProvider || 'openai',
-      model: options.aiModel as any || 'gpt-4o-mini',
+      model: options.aiModel as any || 'gpt-4.1-mini',
       includeAuth: options.includeAuth ?? true,
       includeErrorScenarios: options.includeErrorScenarios ?? true,
       includePerformanceTests: options.includePerformanceTests ?? true,

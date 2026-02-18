@@ -649,8 +649,8 @@ public class APITests {
     quality: 'high' | 'medium' | 'low';
   } {
     const capabilities: Record<string, any> = {
-      'gpt-4o': { maxTokens: 128000, costPer1kTokens: 0.01, quality: 'high' },
-      'gpt-4o-mini': { maxTokens: 128000, costPer1kTokens: 0.0003, quality: 'medium' },
+      'gpt-4.1': { maxTokens: 128000, costPer1kTokens: 0.01, quality: 'high' },
+      'gpt-4.1-mini': { maxTokens: 128000, costPer1kTokens: 0.0003, quality: 'medium' },
       'gpt-4-turbo': { maxTokens: 128000, costPer1kTokens: 0.01, quality: 'high' },
       'gpt-4': { maxTokens: 8192, costPer1kTokens: 0.03, quality: 'high' },
       'gpt-3.5-turbo': { maxTokens: 16384, costPer1kTokens: 0.0015, quality: 'medium' },

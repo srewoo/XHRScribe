@@ -34,6 +34,9 @@ async function initializeBackground() {
 // Start initialization
 initializeBackground();
 
+// Auto-open side panel when extension icon is clicked
+chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
+
 // Handle extension installation
 chrome.runtime.onInstalled.addListener((details) => {
   console.log('XHRScribe installed:', details);

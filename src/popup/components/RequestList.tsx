@@ -19,6 +19,8 @@ import {
   FilterList,
 } from '@mui/icons-material';
 import { NetworkRequest } from '@/types';
+import WebSocketDetail from './WebSocketDetail';
+import ProtobufDetail from './ProtobufDetail';
 
 interface RequestListProps {
   requests: NetworkRequest[];
@@ -214,7 +216,28 @@ export default function RequestList({ requests }: RequestListProps) {
                   </>
                 )}
 
-                {request.responseBody && (
+                {request.type === 'gRPC' && request.responseBody ? (
+                  <>
+                    <Typography variant="caption" color="text.secondary">
+                      Protobuf Response
+                    </Typography>
+                    <Paper variant="outlined" sx={{ p: 1 }}>
+                      <ProtobufDetail
+                        data={typeof request.responseBody === 'string' ? request.responseBody : JSON.stringify(request.responseBody)}
+                        contentType={request.responseHeaders?.['content-type'] || request.responseHeaders?.['Content-Type']}
+                      />
+                    </Paper>
+                  </>
+                ) : request.type === 'WebSocket' && Array.isArray(request.responseBody) ? (
+                  <>
+                    <Typography variant="caption" color="text.secondary">
+                      WebSocket Frames
+                    </Typography>
+                    <Paper variant="outlined" sx={{ p: 1 }}>
+                      <WebSocketDetail frames={request.responseBody} />
+                    </Paper>
+                  </>
+                ) : request.responseBody && (
                   <>
                     <Typography variant="caption" color="text.secondary">
                       Response Body

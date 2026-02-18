@@ -19,9 +19,12 @@ import {
   CheckCircle,
   Warning,
   Info,
-  Close
+  Close,
+  ViewList,
+  AccountTree,
 } from '@mui/icons-material';
-import { RecordingSession, NetworkRequest } from '@/types';
+import { RecordingSession, NetworkRequest, EndpointGroup } from '@/types';
+import { EndpointGrouper } from '@/services/EndpointGrouper';
 
 // GraphQL detection and operation extraction helpers
 const isGraphQLEndpoint = (pathname: string, request: NetworkRequest): boolean => {
@@ -109,12 +112,23 @@ interface EndpointPreviewProps {
   onEndpointToggle?: (signature: string, excluded: boolean) => void;
 }
 
-const EndpointPreview: React.FC<EndpointPreviewProps> = ({ 
-  session, 
+const categoryIcons: Record<string, string> = {
+  Auth: '🔐', CRUD: '📦', Search: '🔍', Upload: '📤', Webhook: '🔔',
+  Admin: '⚙️', Health: '💚', Streaming: '📡', GraphQL: '◈', Other: '📋',
+};
+
+const EndpointPreview: React.FC<EndpointPreviewProps> = ({
+  session,
   showDetails = false,
   excludedEndpoints = new Set(),
   onEndpointToggle
 }) => {
+  const [viewMode, setViewMode] = useState<'flat' | 'grouped'>('flat');
+
+  const groupedEndpoints = useMemo(() => {
+    if (viewMode !== 'grouped') return [];
+    return EndpointGrouper.getInstance().groupEndpoints(session.requests);
+  }, [session.requests, viewMode]);
   const endpointAnalysis = useMemo(() => {
     const endpointMap = new Map<string, EndpointInfo>();
     
@@ -238,28 +252,80 @@ const EndpointPreview: React.FC<EndpointPreviewProps> = ({
 
   return (
     <Box sx={{ mt: 2 }}>
-      <Box display="flex" alignItems="center" gap={1} mb={2}>
+      <Box display="flex" alignItems="center" gap={1} mb={2} flexWrap="wrap">
         <CheckCircle color="success" fontSize="small" />
         <Typography variant="h6" gutterBottom sx={{ m: 0 }}>
           Detected API Endpoints
         </Typography>
-        <Chip 
-          label={`${activeEndpoints.length} included`} 
-          size="small" 
-          color="primary" 
-          variant="outlined" 
+        <Chip
+          label={`${activeEndpoints.length} included`}
+          size="small"
+          color="primary"
+          variant="outlined"
         />
         {excludedCount > 0 && (
-          <Chip 
-            label={`${excludedCount} excluded`} 
-            size="small" 
-            color="warning" 
-            variant="outlined" 
+          <Chip
+            label={`${excludedCount} excluded`}
+            size="small"
+            color="warning"
+            variant="outlined"
           />
         )}
+        <Box sx={{ ml: 'auto' }}>
+          <Chip
+            icon={viewMode === 'flat' ? <ViewList sx={{ fontSize: 16 }} /> : <AccountTree sx={{ fontSize: 16 }} />}
+            label={viewMode === 'flat' ? 'Flat' : 'Grouped'}
+            size="small"
+            variant="outlined"
+            onClick={() => setViewMode(viewMode === 'flat' ? 'grouped' : 'flat')}
+            sx={{ cursor: 'pointer' }}
+          />
+        </Box>
       </Box>
 
-      {showDetails ? (
+      {viewMode === 'grouped' && groupedEndpoints.length > 0 && (
+        <Box sx={{ mb: 2 }}>
+          {groupedEndpoints.map((group, idx) => (
+            <Accordion key={idx} defaultExpanded={groupedEndpoints.length <= 5}>
+              <AccordionSummary expandIcon={<ExpandMore />}>
+                <Box display="flex" alignItems="center" gap={1} flexWrap="wrap">
+                  <Typography sx={{ fontSize: 16 }}>{categoryIcons[group.category] || '📋'}</Typography>
+                  <Typography variant="subtitle2">{group.resource}</Typography>
+                  <Chip label={group.category} size="small" color="primary" variant="outlined" sx={{ height: 20, fontSize: 11 }} />
+                  {group.isCrud && (
+                    <Chip label="CRUD" size="small" color="success" sx={{ height: 20, fontSize: 11 }} />
+                  )}
+                  <Chip label={`${group.requestCount} req`} size="small" variant="outlined" sx={{ height: 20, fontSize: 11 }} />
+                </Box>
+              </AccordionSummary>
+              <AccordionDetails sx={{ pt: 0 }}>
+                <List dense sx={{ py: 0 }}>
+                  {group.endpoints.map((ep, epIdx) => (
+                    <ListItem key={epIdx} sx={{ px: 0, py: 0.25 }}>
+                      <ListItemText
+                        primary={
+                          <Box display="flex" alignItems="center" gap={0.5}>
+                            <Chip label={ep.method} size="small" color={getMethodColor(ep.method) as any} sx={{ minWidth: 55, height: 22 }} />
+                            <Typography variant="body2" component="code" sx={{ fontFamily: 'monospace', fontSize: 11 }}>
+                              {ep.path}
+                            </Typography>
+                            {ep.count > 1 && <Chip label={`${ep.count}x`} size="small" variant="outlined" sx={{ height: 18, fontSize: 10 }} />}
+                            {ep.statuses.map(s => (
+                              <Chip key={s} label={s} size="small" color={getStatusColor(s) as any} variant="outlined" sx={{ height: 18, fontSize: 10 }} />
+                            ))}
+                          </Box>
+                        }
+                      />
+                    </ListItem>
+                  ))}
+                </List>
+              </AccordionDetails>
+            </Accordion>
+          ))}
+        </Box>
+      )}
+
+      {viewMode === 'flat' && showDetails ? (
         // Detailed view with domains grouped
         <Box>
           {groupedByDomain.map(([domain, endpoints]) => (
@@ -343,7 +409,7 @@ const EndpointPreview: React.FC<EndpointPreviewProps> = ({
             </Accordion>
           ))}
         </Box>
-      ) : (
+      ) : viewMode === 'flat' ? (
         // Compact view
         <Box>
           {/* Active Endpoints */}
@@ -452,12 +518,12 @@ const EndpointPreview: React.FC<EndpointPreviewProps> = ({
             </Box>
           )}
         </Box>
-      )}
+      ) : null}
 
       <Box mt={2} p={1} bgcolor="grey.50" borderRadius={1}>
         <Typography variant="caption" color="text.secondary" display="flex" alignItems="center" gap={0.5}>
           <Info fontSize="small" />
-          {activeEndpoints.length === endpointAnalysis.length 
+          {activeEndpoints.length === endpointAnalysis.length
             ? `All ${activeEndpoints.length} endpoints will be included in the generated test suite`
             : `${activeEndpoints.length} of ${endpointAnalysis.length} endpoints will be included in the generated test suite`
           }

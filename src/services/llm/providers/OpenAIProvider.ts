@@ -142,8 +142,8 @@ export class OpenAIProvider implements LLMProvider {
 
   estimateCost(tokenCount: number, model?: string): number {
     const modelPricing: Record<string, { input: number; output: number }> = {
-      'gpt-4o': { input: 0.005, output: 0.015 },
-      'gpt-4o-mini': { input: 0.00015, output: 0.0006 },
+      'gpt-4.1': { input: 0.005, output: 0.015 },
+      'gpt-4.1-mini': { input: 0.00015, output: 0.0006 },
       'gpt-4-turbo': { input: 0.01, output: 0.03 },
       'gpt-4': { input: 0.03, output: 0.06 },
       'gpt-3.5-turbo': { input: 0.0005, output: 0.0015 },
@@ -656,8 +656,8 @@ Use the framework's proper test organization, imports, and assertion methods.
 
   private getMaxTokens(model: string): number {
     const limits: Record<string, number> = {
-      'gpt-4o': 128000,
-      'gpt-4o-mini': 128000,
+      'gpt-4.1': 128000,
+      'gpt-4.1-mini': 128000,
       'gpt-4-turbo': 128000,
       'gpt-4': 8192,
       'gpt-3.5-turbo': 16384,

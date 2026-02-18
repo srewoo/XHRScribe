@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { keyframes } from '@mui/system';
 import {
   Box,
   Paper,
@@ -8,7 +9,6 @@ import {
   Tabs,
   Tab,
   Alert,
-  CircularProgress,
   Chip,
   Tooltip,
   Divider,
@@ -16,19 +16,14 @@ import {
   MenuItem,
   ListItemIcon,
   ListItemText,
+  LinearProgress,
 } from '@mui/material';
 import {
   PlayArrow,
   Stop,
   Settings,
-  Download,
-  Delete,
-  ContentCopy,
   Code,
-  Refresh,
-  FilterList,
   Help,
-  MoreVert,
 } from '@mui/icons-material';
 import { RecordingSession, NetworkRequest } from '@/types';
 import RecordingPanel from './components/RecordingPanel';
@@ -36,8 +31,15 @@ import SessionList from './components/SessionList';
 import RequestList from './components/RequestList';
 import GeneratePanel from './components/GeneratePanel';
 import ImportPanel from './components/ImportPanel';
+import SessionDiffPanel from './components/SessionDiffPanel';
 import { useStore } from '@/store/useStore';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
+
+const pulseAnimation = keyframes`
+  0% { opacity: 1; }
+  50% { opacity: 0.5; }
+  100% { opacity: 1; }
+`;
 
 interface TabPanelProps {
   children?: React.ReactNode;
@@ -173,26 +175,26 @@ export default function App() {
   };
 
   return (
-    <Box sx={{ width: 480, minHeight: 500, bgcolor: 'background.default' }}>
+    <Box sx={{ width: '100%', minHeight: 500, bgcolor: 'background.default' }}>
       {/* Header */}
-      <Paper elevation={0} sx={{ p: 2, borderRadius: 0 }}>
+      <Paper elevation={0} sx={{ p: 2, borderRadius: 0, bgcolor: 'primary.main', color: 'white' }}>
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <Code color="primary" />
+            <Code sx={{ color: 'white' }} />
             <Box sx={{ display: 'flex', flexDirection: 'column', lineHeight: 1 }}>
-              <Typography variant="h6" fontWeight="bold" sx={{ lineHeight: 1.2 }}>
+              <Typography variant="h6" fontWeight="bold" sx={{ lineHeight: 1.2, color: 'white' }}>
                 XHRScribe
               </Typography>
-              <Typography 
-                variant="caption" 
-                color="text.secondary" 
-                sx={{ 
+              <Typography
+                variant="caption"
+                sx={{
                   fontSize: '0.7rem',
                   fontStyle: 'italic',
                   fontWeight: 500,
                   letterSpacing: '0.02em',
                   lineHeight: 1,
-                  mt: -0.3
+                  mt: -0.3,
+                  color: 'rgba(255,255,255,0.7)'
                 }}
               >
                 Turn traffic into tests
@@ -203,18 +205,18 @@ export default function App() {
                 label="Recording"
                 color="error"
                 size="small"
-                sx={{ animation: 'pulse 1.5s infinite' }}
+                sx={{ animation: `${pulseAnimation} 1.5s infinite` }}
               />
             )}
           </Box>
           <Box sx={{ display: 'flex', gap: 1 }}>
             <Tooltip title="Help & Support">
-              <IconButton size="small" onClick={handleHelpMenuOpen}>
+              <IconButton size="small" onClick={handleHelpMenuOpen} sx={{ color: 'white' }}>
                 <Help />
               </IconButton>
             </Tooltip>
             <Tooltip title="Settings">
-              <IconButton size="small" onClick={handleOpenOptions}>
+              <IconButton size="small" onClick={handleOpenOptions} sx={{ color: 'white' }}>
                 <Settings />
               </IconButton>
             </Tooltip>
@@ -249,6 +251,7 @@ export default function App() {
             <Tab label={`Sessions (${sessions.length})`} />
             <Tab label="Import" />
             <Tab label="Generate" disabled={sessions.length === 0} />
+            <Tab label="Diff" disabled={sessions.length < 2} />
           </Tabs>
         </Box>
 
@@ -276,26 +279,24 @@ export default function App() {
         <TabPanel value={tabValue} index={3}>
           <GeneratePanel sessions={sessions} />
         </TabPanel>
+
+        <TabPanel value={tabValue} index={4}>
+          <SessionDiffPanel sessions={sessions} />
+        </TabPanel>
       </Box>
 
-      {/* Loading Overlay */}
+      {/* Subtle loading indicator - non-blocking */}
       {loading && (
-        <Box
+        <LinearProgress
           sx={{
             position: 'absolute',
             top: 0,
             left: 0,
             right: 0,
-            bottom: 0,
-            bgcolor: 'rgba(0, 0, 0, 0.5)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
             zIndex: 9999,
+            height: 2,
           }}
-        >
-          <CircularProgress color="primary" />
-        </Box>
+        />
       )}
 
       {/* Help Menu */}
@@ -328,14 +329,6 @@ export default function App() {
         </MenuItem>
       </Menu>
 
-      {/* Pulse Animation */}
-      <style>{`
-        @keyframes pulse {
-          0% { opacity: 1; }
-          50% { opacity: 0.5; }
-          100% { opacity: 1; }
-        }
-      `}</style>
     </Box>
   );
 }

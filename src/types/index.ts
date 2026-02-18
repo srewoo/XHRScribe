@@ -3,7 +3,7 @@ export interface NetworkRequest {
   url: string;
   method: string;
   status?: number;
-  type: 'XHR' | 'Fetch' | 'WebSocket' | 'GraphQL';
+  type: 'XHR' | 'Fetch' | 'WebSocket' | 'GraphQL' | 'gRPC';
   timestamp: number;
   duration?: number;
   requestHeaders?: Record<string, string>;
@@ -121,8 +121,8 @@ export type AIProvider =
 
 export type AIModel = 
   // OpenAI Models (Latest)
-  | 'gpt-4o'           // Most capable, multimodal
-  | 'gpt-4o-mini'      // Smaller, faster, cheaper
+  | 'gpt-4.1'           // Most capable, multimodal
+  | 'gpt-4.1-mini'      // Smaller, faster, cheaper
   | 'gpt-4-turbo'      // Latest GPT-4 Turbo
   | 'gpt-3.5-turbo'    // Fast and cheap
   // Anthropic Claude Models (Latest)
@@ -273,7 +273,115 @@ export interface BackgroundMessage extends Message {
     | 'PING'
     | 'HEARTBEAT_PING'
     | 'CHECK_READY'
-    | 'GENERATION_PROGRESS';
+    | 'GENERATION_PROGRESS'
+    | 'DIFF_SESSIONS'
+    | 'CLEAR_GENERATION_STATE';
+}
+
+// WebSocket Frame Types
+export interface ParsedWebSocketFrame {
+  direction: 'sent' | 'received';
+  data: string;
+  timestamp: number;
+  parsedData?: any;
+  dataType: 'json' | 'text' | 'binary';
+  size: number;
+  eventType?: string;
+  channel?: string;
+}
+
+export interface WebSocketFrameStats {
+  totalFrames: number;
+  sentFrames: number;
+  receivedFrames: number;
+  jsonFrames: number;
+  totalBytes: number;
+  eventTypes: string[];
+  channels: string[];
+  durationMs: number;
+}
+
+// Endpoint Grouping Types
+export type EndpointCategory =
+  | 'Auth' | 'CRUD' | 'Search' | 'Upload' | 'Webhook'
+  | 'Admin' | 'Health' | 'Streaming' | 'GraphQL' | 'Other';
+
+export interface EndpointGroup {
+  resource: string;
+  category: EndpointCategory;
+  normalizedPath: string;
+  methods: string[];
+  isCrud: boolean;
+  requestCount: number;
+  endpoints: Array<{ method: string; path: string; count: number; statuses: number[] }>;
+}
+
+// Protobuf/gRPC Types
+export interface ProtobufField {
+  fieldNumber: number;
+  wireType: number;
+  wireTypeName: string;
+  value: string | number | Uint8Array;
+}
+
+export interface ProtobufDecodeResult {
+  success: boolean;
+  fields: ProtobufField[];
+  error?: string;
+  rawHex?: string;
+}
+
+// Session Diff Types
+export interface EndpointDiff {
+  signature: string;
+  method: string;
+  path: string;
+  status: 'added' | 'removed' | 'modified' | 'unchanged';
+  changes?: {
+    statusCodeChanged?: { from: number[]; to: number[] };
+    durationChanged?: { from: number; to: number };
+    responseSchemaChanged?: { addedKeys: string[]; removedKeys: string[] };
+  };
+  countA?: number;
+  countB?: number;
+}
+
+export interface SessionDiffResult {
+  sessionA: { id: string; name: string };
+  sessionB: { id: string; name: string };
+  added: EndpointDiff[];
+  removed: EndpointDiff[];
+  modified: EndpointDiff[];
+  unchanged: EndpointDiff[];
+  summary: { total: number; added: number; removed: number; modified: number; unchanged: number };
+}
+
+// Traffic Replay Types
+export interface ReplayConfig {
+  baseUrl?: string;
+  delayMs: number;
+  includeHeaders: boolean;
+  skipPatterns: string[];
+}
+
+export interface ReplayResult {
+  requestUrl: string;
+  method: string;
+  originalStatus: number;
+  replayStatus: number;
+  originalDuration: number;
+  replayDuration: number;
+  matched: boolean;
+  error?: string;
+}
+
+export interface ReplaySessionResult {
+  results: ReplayResult[];
+  passed: number;
+  failed: number;
+  errors: number;
+  avgOriginalDuration: number;
+  avgReplayDuration: number;
 }
 
 export interface ContentMessage extends Message {

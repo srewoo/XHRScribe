@@ -80,8 +80,35 @@ export class StorageService {
     }
   }
 
-  // Save recording session
+  // Storage quota threshold (warn at 80%, fail at 95%)
+  private static readonly QUOTA_WARN_THRESHOLD = 0.8;
+  private static readonly QUOTA_FAIL_THRESHOLD = 0.95;
+  private static readonly STORAGE_QUOTA_BYTES = 10 * 1024 * 1024; // 10MB
+
+  // Save recording session with quota check
   async saveSession(session: RecordingSession): Promise<void> {
+    // Check storage quota before saving
+    const usage = await this.getStorageUsage();
+    const usageRatio = usage.used / usage.total;
+
+    if (usageRatio >= StorageService.QUOTA_FAIL_THRESHOLD) {
+      // Auto-prune oldest sessions to make room
+      const sessions = await this.getSessions();
+      if (sessions.length > 5) {
+        const pruned = sessions.slice(Math.floor(sessions.length / 2));
+        pruned.push(session);
+        const encrypted = this.encrypt(pruned);
+        await chrome.storage.local.set({ sessions: encrypted });
+        console.warn(`Storage at ${Math.round(usageRatio * 100)}% - auto-pruned ${sessions.length - pruned.length + 1} oldest sessions`);
+        return;
+      }
+      throw new Error(`Storage is ${Math.round(usageRatio * 100)}% full. Please delete old sessions to free space.`);
+    }
+
+    if (usageRatio >= StorageService.QUOTA_WARN_THRESHOLD) {
+      console.warn(`Storage usage at ${Math.round(usageRatio * 100)}% (${(usage.used / 1024 / 1024).toFixed(1)}MB / ${(usage.total / 1024 / 1024).toFixed(0)}MB)`);
+    }
+
     const sessions = await this.getSessions();
     sessions.push(session);
 
@@ -90,7 +117,18 @@ export class StorageService {
       sessions.shift();
     }
 
-    const encrypted = this.encrypt(sessions);
+    // Truncate large response bodies to prevent storage bloat
+    const trimmedSessions = sessions.map(s => ({
+      ...s,
+      requests: s.requests.map(r => ({
+        ...r,
+        responseBody: typeof r.responseBody === 'string' && r.responseBody.length > 50000
+          ? r.responseBody.substring(0, 50000) + '\n... [truncated - response too large]'
+          : r.responseBody,
+      })),
+    }));
+
+    const encrypted = this.encrypt(trimmedSessions);
     await chrome.storage.local.set({ sessions: encrypted });
   }
 
@@ -178,7 +216,7 @@ export class StorageService {
   private getDefaultSettings(): Settings {
     return {
       aiProvider: 'openai',
-      aiModel: 'gpt-4o-mini',
+      aiModel: 'gpt-4.1-mini',
       apiKeys: {},
       privacyMode: 'cloud',
       authGuide: undefined, // Custom auth instructions (optional)
