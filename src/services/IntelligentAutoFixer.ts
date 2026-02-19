@@ -226,10 +226,55 @@ CRITICAL: Return ONLY the corrected code, no explanations or markdown formatting
   }
 
   private async callAIForFix(prompt: string, provider: AIProvider, model: AIModel): Promise<string> {
-    // This would integrate with the existing LLM providers
-    // For now, returning the original code as a placeholder
-    // In production, this would call the configured AI provider
-    throw new Error('AI fix integration not yet implemented');
+    const settings = await StorageService.getInstance().getSettings();
+    const apiKey = settings?.apiKeys?.[provider];
+    if (!apiKey) {
+      throw new Error(`No API key configured for ${provider}`);
+    }
+
+    const axios = (await import('axios')).default;
+
+    if (provider === 'openai') {
+      const response = await axios.post(
+        'https://api.openai.com/v1/chat/completions',
+        {
+          model: model || 'gpt-4.1-mini',
+          messages: [
+            { role: 'system', content: 'You are an expert test code fixer. Return ONLY corrected code, no markdown formatting.' },
+            { role: 'user', content: prompt }
+          ],
+          temperature: 0.2,
+          max_tokens: 8000,
+        },
+        { headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` }, timeout: 60000 }
+      );
+      return response.data.choices[0]?.message?.content || '';
+    }
+
+    if (provider === 'anthropic') {
+      const response = await axios.post(
+        'https://api.anthropic.com/v1/messages',
+        {
+          model: model || 'claude-3-7-sonnet',
+          max_tokens: 8000,
+          messages: [{ role: 'user', content: prompt }],
+          system: 'You are an expert test code fixer. Return ONLY corrected code, no markdown formatting.',
+        },
+        { headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' }, timeout: 60000 }
+      );
+      return response.data.content?.[0]?.text || '';
+    }
+
+    if (provider === 'gemini') {
+      const response = await axios.post(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model || 'gemini-2-5-flash'}:generateContent?key=${apiKey}`,
+        { contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.2, maxOutputTokens: 8000 } },
+        { headers: { 'Content-Type': 'application/json' }, timeout: 60000 }
+      );
+      return response.data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    }
+
+    throw new Error(`Provider ${provider} does not support AI-powered fixes`);
   }
 
   private initializeFixStrategies(): FixStrategy[] {

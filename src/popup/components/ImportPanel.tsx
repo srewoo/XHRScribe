@@ -43,7 +43,7 @@ interface ImportState {
 
 interface ImportedFile {
   name: string;
-  type: 'har' | 'postman' | 'openapi' | 'insomnia';
+  type: 'har' | 'postman' | 'openapi' | 'insomnia' | 'xhrscribe';
   size: number;
   endpointCount?: number;
   status: 'processing' | 'success' | 'error';
@@ -282,6 +282,19 @@ export default function ImportPanel() {
         case 'insomnia':
           sessionData = await parseInsomniaExport(content);
           break;
+        case 'xhrscribe': {
+          const bundle = JSON.parse(content);
+          if (!bundle.session || !bundle.session.requests) {
+            throw new Error('Invalid XHRScribe bundle: missing session data');
+          }
+          sessionData = {
+            name: bundle.session.name || `Shared Bundle ${new Date().toLocaleDateString()}`,
+            url: bundle.session.url,
+            requests: bundle.session.requests,
+            metadata: { ...bundle.session.metadata, source: 'xhrscribe_import', type: 'imported', bundleVersion: bundle.version },
+          };
+          break;
+        }
         default:
           throw new Error(`Unsupported file type: ${fileType}`);
       }
@@ -343,9 +356,10 @@ export default function ImportPanel() {
     }
   };
 
-  const detectFileType = (file: File): 'har' | 'postman' | 'openapi' | 'insomnia' => {
+  const detectFileType = (file: File): 'har' | 'postman' | 'openapi' | 'insomnia' | 'xhrscribe' => {
     const name = file.name.toLowerCase();
 
+    if (name.endsWith('.xhrscribe')) return 'xhrscribe';
     if (name.endsWith('.har')) return 'har';
     if (name.includes('postman') || name.endsWith('.postman_collection.json')) return 'postman';
     if (name.includes('insomnia') || name.endsWith('.insomnia.json')) return 'insomnia';
@@ -699,7 +713,7 @@ export default function ImportPanel() {
           ref={fileInputRef}
           onChange={handleFileChange}
           multiple
-          accept=".har,.json,.yaml,.yml"
+          accept=".har,.json,.yaml,.yml,.xhrscribe"
           style={{ display: 'none' }}
         />
 

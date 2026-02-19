@@ -8,6 +8,9 @@ import {
   Chip,
   Alert,
   Fade,
+  Button,
+  TextField,
+  Collapse,
 } from '@mui/material';
 import {
   CheckCircle,
@@ -32,6 +35,9 @@ export default function GeneratedResults({
   framework,
 }: GeneratedResultsProps) {
   const [copySuccess, setCopySuccess] = useState(false);
+  const [correctionOpen, setCorrectionOpen] = useState(false);
+  const [correctedCode, setCorrectedCode] = useState('');
+  const [correctionSaved, setCorrectionSaved] = useState(false);
 
   const handleCopyToClipboard = async () => {
     await navigator.clipboard.writeText(generatedCode);
@@ -131,6 +137,29 @@ export default function GeneratedResults({
             ) : (
               <Chip label="Has Warnings" size="small" color="warning" variant="outlined" />
             )}
+            {latestTest?.validation && (
+              <>
+                <Chip
+                  label={`Validation: ${latestTest.validation.overallScore}/100`}
+                  size="small"
+                  color={latestTest.validation.overallScore >= 70 ? 'success' : latestTest.validation.overallScore >= 40 ? 'warning' : 'error'}
+                />
+                <Chip
+                  label={latestTest.validation.readinessLevel}
+                  size="small"
+                  variant="outlined"
+                  color={latestTest.validation.readinessLevel === 'production' ? 'success' : latestTest.validation.readinessLevel === 'staging' ? 'info' : 'warning'}
+                />
+                {latestTest.validation.criticalIssues > 0 && (
+                  <Chip
+                    label={`${latestTest.validation.criticalIssues} critical`}
+                    size="small"
+                    color="error"
+                    variant="outlined"
+                  />
+                )}
+              </>
+            )}
           </Box>
 
           {/* Warnings */}
@@ -147,6 +176,51 @@ export default function GeneratedResults({
               ))}
             </Box>
           )}
+
+          {/* Submit Correction */}
+          <Box sx={{ mt: 1 }}>
+            <Button
+              size="small"
+              variant="text"
+              onClick={() => {
+                setCorrectionOpen(!correctionOpen);
+                if (!correctionOpen) setCorrectedCode(generatedCode);
+              }}
+            >
+              {correctionOpen ? 'Cancel' : 'Submit Correction'}
+            </Button>
+            <Collapse in={correctionOpen}>
+              <TextField
+                multiline
+                minRows={4}
+                maxRows={10}
+                fullWidth
+                size="small"
+                value={correctedCode}
+                onChange={(e) => setCorrectedCode(e.target.value)}
+                sx={{ mt: 1, fontFamily: 'monospace', fontSize: '0.75rem' }}
+              />
+              <Button
+                size="small"
+                variant="contained"
+                sx={{ mt: 0.5 }}
+                disabled={correctionSaved || correctedCode === generatedCode}
+                onClick={async () => {
+                  try {
+                    const { CorrectionTracker } = await import('@/services/CorrectionTracker');
+                    const tracker = CorrectionTracker.getInstance();
+                    await tracker.recordCorrection(generatedCode, correctedCode, framework);
+                    setCorrectionSaved(true);
+                    setTimeout(() => setCorrectionSaved(false), 3000);
+                  } catch {
+                    // silent
+                  }
+                }}
+              >
+                {correctionSaved ? 'Saved!' : 'Save Correction'}
+              </Button>
+            </Collapse>
+          </Box>
         </Box>
       </Paper>
     </Fade>

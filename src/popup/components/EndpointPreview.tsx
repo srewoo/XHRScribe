@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from 'react';
+import { normalizePath } from '@/services/EndpointGrouper';
 import {
   Box,
   Typography,
@@ -135,8 +136,8 @@ const EndpointPreview: React.FC<EndpointPreviewProps> = ({
     session.requests.forEach(req => {
       try {
         const url = new URL(req.url);
-        let signature = `${req.method}:${url.pathname}`;
-        let displayPath = url.pathname;
+        let signature = `${req.method}:${normalizePath(url.pathname)}`;
+        let displayPath = normalizePath(url.pathname);
         
         // ENHANCED: Special handling for GraphQL endpoints
         if (isGraphQLEndpoint(url.pathname, req)) {
@@ -415,24 +416,24 @@ const EndpointPreview: React.FC<EndpointPreviewProps> = ({
           {/* Active Endpoints */}
           <Box display="flex" flexWrap="wrap" gap={1} mb={excludedCount > 0 ? 2 : 0}>
             {activeEndpoints.map((endpoint, index) => (
-              <Tooltip 
+              <Tooltip
                 key={index}
                 title={
-                  <Box>
-                    <Typography variant="body2" sx={{ fontWeight: 'bold' }}>
+                  <Box sx={{ color: '#fff' }}>
+                    <Typography variant="body2" sx={{ fontWeight: 'bold', color: 'inherit' }}>
                       {endpoint.method} {endpoint.path}
                     </Typography>
-                    <Typography variant="caption" display="block">
+                    <Typography variant="caption" display="block" sx={{ color: 'inherit' }}>
                       Domain: {endpoint.domain}
                     </Typography>
-                    <Typography variant="caption" display="block">
+                    <Typography variant="caption" display="block" sx={{ color: 'inherit' }}>
                       Requests: {endpoint.count}
                     </Typography>
-                    <Typography variant="caption" display="block">
+                    <Typography variant="caption" display="block" sx={{ color: 'inherit' }}>
                       Status codes: {endpoint.statusCodes.join(', ')}
                     </Typography>
                     {onEndpointToggle && (
-                      <Typography variant="caption" display="block" sx={{ mt: 0.5, fontStyle: 'italic' }}>
+                      <Typography variant="caption" display="block" sx={{ mt: 0.5, fontStyle: 'italic', color: 'rgba(255,255,255,0.7)' }}>
                         Click × to exclude from test generation
                       </Typography>
                     )}
@@ -479,14 +480,14 @@ const EndpointPreview: React.FC<EndpointPreviewProps> = ({
                 {endpointAnalysis
                   .filter(endpoint => excludedEndpoints.has(endpoint.signature))
                   .map((endpoint, index) => (
-                    <Tooltip 
+                    <Tooltip
                       key={index}
                       title={
-                        <Box>
-                          <Typography variant="body2" sx={{ fontWeight: 'bold' }}>
+                        <Box sx={{ color: '#fff' }}>
+                          <Typography variant="body2" sx={{ fontWeight: 'bold', color: 'inherit' }}>
                             {endpoint.method} {endpoint.path}
                           </Typography>
-                          <Typography variant="caption" display="block">
+                          <Typography variant="caption" display="block" sx={{ color: 'rgba(255,255,255,0.7)' }}>
                             Click to include in test generation
                           </Typography>
                         </Box>

@@ -16,6 +16,7 @@ import { EnvironmentExtractor } from '@/services/EnvironmentExtractor';
 import { SecurityTestGenerator } from '@/services/SecurityTestGenerator';
 import { DataMaskingService } from '@/services/DataMaskingService';
 import { ServiceWorkerManager } from './ServiceWorkerManager';
+import { Logger } from '@/services/logging/Logger';
 
 export class BackgroundService {
   private static instance: BackgroundService;
@@ -59,7 +60,6 @@ export class BackgroundService {
         maxRequestSize: 10485760 // 10MB
       },
       advanced: {
-        maxTokens: 4000,
         temperature: 0.7,
         retryAttempts: 3,
         timeout: 30000,
@@ -149,6 +149,14 @@ export class BackgroundService {
           sendResponse({ success: true });
           break;
 
+        case 'DELETE_REQUESTS':
+          await this.storageService.deleteRequestsFromSession(
+            message.payload.sessionId,
+            message.payload.requestIds
+          );
+          sendResponse({ success: true });
+          break;
+
         case 'RENAME_SESSION':
           await this.storageService.renameSession(message.payload.sessionId, message.payload.newName);
           sendResponse({ success: true });
@@ -214,7 +222,7 @@ export class BackgroundService {
             // Throttle writes to every 2 seconds
             if (now - lastStorageWrite < 2000 && state.status === 'generating') return;
             lastStorageWrite = now;
-            chrome.storage.session.set({ generationState: state }).catch(() => {});
+            chrome.storage.session.set({ generationState: state }).catch((e: unknown) => Logger.getInstance().warn('Failed to persist generation state', { error: e }, 'BackgroundService'));
           };
 
           persistState({
@@ -246,7 +254,7 @@ export class BackgroundService {
               chrome.runtime.sendMessage({
                 type: 'GENERATION_PROGRESS',
                 payload: { current, total, stage, endpoint }
-              }).catch(() => {});
+              }).catch((e: unknown) => Logger.getInstance().debug('Popup not open for progress update', { error: e }, 'BackgroundService'));
             } catch (error) {
               // Ignore messaging errors — popup may be closed
             }
@@ -264,24 +272,40 @@ export class BackgroundService {
                 stage: 'Complete',
                 result: generatedTest,
               }
-            }).catch(() => {});
+            }).catch((e: unknown) => Logger.getInstance().warn('Failed to persist completed generation', { error: e }, 'BackgroundService'));
 
             sendResponse({ success: true, test: generatedTest });
           } catch (genError) {
-            // Persist error state
-            chrome.storage.session.set({
-              generationState: {
-                status: 'error',
-                sessionId,
-                progress: 0,
-                stage: 'Failed',
-                error: genError instanceof Error ? genError.message : 'Generation failed',
-              }
-            }).catch(() => {});
-            throw genError;
+            const isCancelled = genError instanceof DOMException && genError.name === 'AbortError';
+            if (isCancelled) {
+              chrome.storage.session.set({
+                generationState: { status: 'cancelled', sessionId, progress: 0, stage: 'Generation cancelled' }
+              }).catch(() => {});
+              sendResponse({ success: false, cancelled: true });
+            } else {
+              // Persist error state
+              chrome.storage.session.set({
+                generationState: {
+                  status: 'error',
+                  sessionId,
+                  progress: 0,
+                  stage: 'Failed',
+                  error: genError instanceof Error ? genError.message : 'Generation failed',
+                }
+              }).catch((e: unknown) => Logger.getInstance().warn('Failed to persist generation error', { error: e }, 'BackgroundService'));
+              throw genError;
+            }
           } finally {
             swManager.stopActiveOperation();
           }
+          break;
+
+        case 'CANCEL_GENERATION':
+          this.aiService.cancel();
+          chrome.storage.session.set({
+            generationState: { status: 'cancelled', progress: 0, stage: 'Generation cancelled' }
+          }).catch(() => {});
+          sendResponse({ success: true });
           break;
 
         case 'EXPORT_TESTS':
@@ -296,11 +320,12 @@ export class BackgroundService {
           break;
 
         case 'CLEAR_GENERATION_STATE':
-          chrome.storage.session.remove('generationState').catch(() => {});
+          chrome.storage.session.remove('generationState').catch((e: unknown) => Logger.getInstance().warn('Failed to clear generation state', { error: e }, 'BackgroundService'));
           sendResponse({ success: true });
           break;
 
         case 'PING':
+        case 'HEARTBEAT_PING':
           sendResponse({ success: true, status: 'alive', timestamp: Date.now() });
           break;
 
@@ -548,7 +573,7 @@ export class BackgroundService {
     } catch (error) {
       console.error('❌ Failed to enable network monitoring:', error);
       // Detach debugger if network monitoring fails
-      await chrome.debugger.detach({ tabId }).catch(() => {});
+      await chrome.debugger.detach({ tabId }).catch((e: unknown) => Logger.getInstance().warn('Failed to detach debugger', { error: e, tabId }, 'BackgroundService'));
       throw new Error('Failed to enable network monitoring. Please try again.');
     }
     
@@ -626,6 +651,15 @@ export class BackgroundService {
 
     // Save session
     await this.storageService.saveSession(session);
+
+    // Save contract snapshots for API contract testing
+    try {
+      const { ContractSnapshotService } = await import('@/services/ContractSnapshotService');
+      const contractService = ContractSnapshotService.getInstance();
+      await contractService.saveSnapshots(session);
+    } catch (error) {
+      Logger.getInstance().warn('Failed to save contract snapshots', { error }, 'BackgroundService');
+    }
 
     // Clean up
     this.recordingSessions.delete(tabId);
@@ -1292,7 +1326,7 @@ export class BackgroundService {
         stage: 'Starting parallel generation...',
         startTime: Date.now(),
       }
-    }).catch(() => {});
+    }).catch((e: unknown) => Logger.getInstance().warn('Failed to persist parallel generation start', { error: e }, 'BackgroundService'));
 
     let lastParallelWrite = 0;
 
@@ -1315,14 +1349,14 @@ export class BackgroundService {
                 stage: progress.currentTask || 'Generating...',
                 startTime: Date.now(),
               }
-            }).catch(() => {});
+            }).catch((e: unknown) => Logger.getInstance().warn('Failed to persist parallel progress', { error: e }, 'BackgroundService'));
           }
 
           try {
             chrome.runtime.sendMessage({
               type: 'PARALLEL_GENERATION_PROGRESS',
               payload: progress
-            }).catch(() => {});
+            }).catch((e: unknown) => Logger.getInstance().debug('Popup not open for parallel progress', { error: e }, 'BackgroundService'));
           } catch {
             // Ignore messaging errors
           }
@@ -1340,7 +1374,7 @@ export class BackgroundService {
           stage: 'Complete',
           result: { code: testCode, id: `parallel_${Date.now()}`, framework: options.framework, qualityScore: 0, estimatedTokens: 0, estimatedCost: 0 },
         }
-      }).catch(() => {});
+      }).catch((e: unknown) => Logger.getInstance().warn('Failed to persist parallel completion', { error: e }, 'BackgroundService'));
 
       sendResponse({
         success: true,
@@ -1360,7 +1394,7 @@ export class BackgroundService {
           stage: 'Failed',
           error: error instanceof Error ? error.message : 'Parallel generation failed',
         }
-      }).catch(() => {});
+      }).catch((e: unknown) => Logger.getInstance().warn('Failed to persist parallel generation error', { error: e }, 'BackgroundService'));
 
       sendResponse({
         success: false,

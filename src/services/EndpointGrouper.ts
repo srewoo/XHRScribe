@@ -1,5 +1,15 @@
 import { NetworkRequest, EndpointGroup, EndpointCategory } from '@/types';
 
+/** Normalize a URL path by replacing UUIDs, ObjectIds, and numeric IDs with {id} */
+export function normalizePath(pathname: string): string {
+  return pathname
+    .replace(/\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, '/{id}') // UUID
+    .replace(/\/[0-9a-f]{24}/g, '/{id}') // ObjectId
+    .replace(/\/\d+/g, '/{id}') // Numeric IDs
+    .replace(/\/{id}\/{id}/g, '/{id}') // Collapse double IDs
+    .replace(/\/+$/, ''); // Trailing slashes
+}
+
 export class EndpointGrouper {
   private static instance: EndpointGrouper;
 

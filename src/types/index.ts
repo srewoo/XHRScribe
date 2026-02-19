@@ -124,7 +124,9 @@ export type AIModel =
   | 'gpt-4.1'           // Most capable, multimodal
   | 'gpt-4.1-mini'      // Smaller, faster, cheaper
   // Anthropic Claude Models
-  | 'claude-4-sonnet'   // Latest Claude 4 model
+  | 'claude-4-5-opus'   // Claude 4.5 Opus (Most capable)
+  | 'claude-4-5-sonnet' // Claude 4.5 Sonnet
+  | 'claude-4-sonnet'   // Claude 4 Sonnet
   | 'claude-3-7-sonnet' // Claude 3.7 Sonnet
   // Google Gemini Models
   | 'gemini-2-5-pro'    // Gemini 2.5 Pro
@@ -190,6 +192,13 @@ export interface GeneratedTest {
     authFlow?: any;
     [key: string]: any;
   };
+  validation?: {
+    overallScore: number;
+    readinessLevel: string;
+    issueCount: number;
+    criticalIssues: number;
+    suggestions: string[];
+  };
 }
 
 export interface Settings {
@@ -217,7 +226,6 @@ export interface Settings {
     maxRequestSize: number;
   };
   advanced: {
-    maxTokens: number;
     temperature: number;
     retryAttempts: number;
     timeout: number;
@@ -266,7 +274,9 @@ export interface BackgroundMessage extends Message {
     | 'GENERATION_PROGRESS'
     | 'DIFF_SESSIONS'
     | 'CLEAR_GENERATION_STATE'
-    | 'CONTENT_SCRIPT_READY';
+    | 'CANCEL_GENERATION'
+    | 'CONTENT_SCRIPT_READY'
+    | 'DELETE_REQUESTS';
 }
 
 // WebSocket Frame Types
@@ -364,6 +374,12 @@ export interface ReplayResult {
   replayDuration: number;
   matched: boolean;
   error?: string;
+  bodyDiff?: {
+    matched: boolean;
+    addedKeys: string[];
+    removedKeys: string[];
+    changedKeys: string[];
+  };
 }
 
 export interface ReplaySessionResult {

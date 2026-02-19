@@ -3,6 +3,9 @@ import { encode } from 'gpt-tokenizer';
 import { HARData, GenerationOptions, GeneratedTest } from '@/types';
 import { LLMProvider } from '../LLMService';
 import { AuthFlow } from '../../AuthFlowAnalyzer';
+import { normalizePath } from '../../EndpointGrouper';
+import { PromptBuilder } from '../PromptBuilder';
+import { Logger } from '../../logging/Logger';
 
 interface ClaudeErrorResponse {
   error?: {
@@ -14,7 +17,7 @@ interface ClaudeErrorResponse {
 export class ClaudeProvider implements LLMProvider {
   private apiKey: string = '';
   private baseUrl = 'https://api.anthropic.com/v1';
-  private maxRetries = 3;
+  private maxRetries = 2;
   private retryDelay = 1000;
 
   setApiKey(key: string): void {
@@ -25,7 +28,8 @@ export class ClaudeProvider implements LLMProvider {
     harData: HARData,
     options: GenerationOptions,
     authFlow?: AuthFlow,
-    customAuthGuide?: string
+    customAuthGuide?: string,
+    signal?: AbortSignal
   ): Promise<GeneratedTest> {
     if (!this.apiKey) {
       throw new Error('Claude API key not configured');
@@ -67,10 +71,12 @@ export class ClaudeProvider implements LLMProvider {
               'anthropic-version': '2023-06-01',
             },
             timeout: 120000,
+            signal
           }
         );
 
-        const generatedCode = response.data.content[0].text;
+        const rawCode = response.data.content[0].text;
+        const generatedCode = PromptBuilder.getInstance().sanitizeGeneratedCode(rawCode, options.framework);
         const completionTokens = this.countTokens(generatedCode);
         const totalTokens = totalInputTokens + completionTokens;
         const qualityScore = this.calculateQualityScore(generatedCode, harData);
@@ -87,10 +93,14 @@ export class ClaudeProvider implements LLMProvider {
         };
       } catch (error) {
         lastError = error as Error;
-        
+
+        if (axios.isAxiosError(error) && error.code === 'ERR_CANCELED') {
+          throw new DOMException('Generation cancelled', 'AbortError');
+        }
+
         if (axios.isAxiosError(error)) {
           const axiosError = error as AxiosError<ClaudeErrorResponse>;
-          
+
           // Handle specific Claude error codes
           if (axiosError.response?.status === 401) {
             throw new Error('Invalid Claude API key. Please check your settings.');
@@ -129,7 +139,7 @@ export class ClaudeProvider implements LLMProvider {
     }
 
     // If all retries failed
-    console.error('Claude API error after retries:', lastError);
+    Logger.getInstance().error('Claude API error after retries', { error: lastError }, 'ClaudeProvider');
     throw new Error(`Failed to generate tests with Claude: ${lastError?.message || 'Unknown error'}`);
   }
 
@@ -140,11 +150,13 @@ export class ClaudeProvider implements LLMProvider {
   estimateCost(tokenCount: number, model: string): number {
     // Claude pricing as of 2024
     const pricing: Record<string, { input: number; output: number }> = {
+      'claude-4-5-opus': { input: 0.015, output: 0.075 },
+      'claude-4-5-sonnet': { input: 0.003, output: 0.015 },
       'claude-4-sonnet': { input: 0.003, output: 0.015 },
       'claude-3-7-sonnet': { input: 0.003, output: 0.015 },
     };
 
-    const modelPricing = pricing[model] || pricing['claude-4-sonnet'];
+    const modelPricing = pricing[model] || pricing['claude-4-5-sonnet'];
     // Rough estimate: 60% input, 40% output
     const inputTokens = tokenCount * 0.6;
     const outputTokens = tokenCount * 0.4;
@@ -165,6 +177,8 @@ export class ClaudeProvider implements LLMProvider {
 
   private getMaxTokens(model: string): number {
     const limits: Record<string, number> = {
+      'claude-4-5-opus': 200000,
+      'claude-4-5-sonnet': 200000,
       'claude-4-sonnet': 200000,
       'claude-3-7-sonnet': 200000,
     };
@@ -250,7 +264,7 @@ YOU MUST GENERATE COMPLETE, FULLY-IMPLEMENTED ${framework} TEST CODE FOR ALL ${e
     entries.forEach(entry => {
       try {
         const url = new URL(entry.request.url);
-        let signature = `${entry.request.method}:${url.pathname}`;
+        let signature = `${entry.request.method}:${normalizePath(url.pathname)}`;
         
         // ENHANCED: Special handling for GraphQL endpoints
         if (this.isGraphQLEndpoint(url.pathname, entry.request)) {
@@ -301,7 +315,7 @@ ${entry.request.cookies && entry.request.cookies.length > 0
   : 'No cookies'}
 
 📦 REQUEST BODY:
-${requestBody ? requestBody.substring(0, 400) : 'No request body'}
+${requestBody ? requestBody.substring(0, 1500) : 'No request body'}
 
 📥 RESPONSE DETAILS:
 Expected Status: ${statusCode}
@@ -315,7 +329,7 @@ ${entry.response.cookies && entry.response.cookies.length > 0
   : 'No response cookies'}
 
 📦 RESPONSE BODY:
-${responseBody ? responseBody.substring(0, 400) : 'No response'}
+${responseBody ? responseBody.substring(0, 1500) : 'No response'}
 
 🚨 MANDATORY: Generate ALL these test types:
 - 1 Happy path test (valid request → ${statusCode})
@@ -325,6 +339,14 @@ ${responseBody ? responseBody.substring(0, 400) : 'No response'}
 
 `;
     });
+
+    // Inject syspro-inspired quality enhancement sections
+    const pb = PromptBuilder.getInstance();
+    prompt += pb.getCodeStructureTemplate(framework);
+    prompt += pb.getSyntaxEnforcementSection(framework);
+    prompt += pb.getInputValidationMatrix();
+    prompt += pb.getSchemaValidationRequirement(framework);
+    prompt += pb.getNamingAndAntiPatterns(framework);
 
     prompt += `
 
@@ -336,13 +358,7 @@ ${responseBody ? responseBody.substring(0, 400) : 'No response'}
 ✅ CODE QUALITY: Production-ready, runnable without modifications
 ✅ COVERAGE: Positive, negative, edge case, and security tests for every endpoint
 
-📋 FINAL CHECKLIST:
-- [ ] ${uniqueEndpoints.size}/${uniqueEndpoints.size} endpoints have complete test suites
-- [ ] No placeholder or template comments
-- [ ] Each endpoint has proper test organization
-- [ ] Includes setup/teardown (beforeAll, beforeEach, afterEach)
-- [ ] Uses environment variables for configuration
-- [ ] Ready to run immediately
+${pb.getQualityGateSection()}
 
 🚀 GENERATE COMPLETE ${framework} TEST CODE NOW:`;
 

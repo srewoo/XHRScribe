@@ -42,14 +42,19 @@ import {
   Api,
   AccountTree,
   DataObject,
+  Delete,
+  SelectAll,
+  Stop,
 } from '@mui/icons-material';
 import { RecordingSession, TestFramework, AIProvider, AIModel } from '@/types';
 import { useStore } from '@/store/useStore';
 import EndpointPreview from './EndpointPreview';
+import RequestList from './RequestList';
 import GenerationProgress from './GenerationProgress';
 import GeneratedResults from './GeneratedResults';
 import ReplayPanel from './ReplayPanel';
 import CostEstimator from './CostEstimator';
+import { Logger } from '@/services/logging/Logger';
 import {
   ParallelGenerationOrchestrator,
   ParallelGenerationResult,
@@ -72,7 +77,7 @@ interface GenerationState {
 }
 
 export default function GeneratePanel({ sessions }: GeneratePanelProps) {
-  const { selectedSession, generateTests, settings, loading, loadSettings, generatedTests } = useStore();
+  const { selectedSession, generateTests, cancelGeneration, deleteRequests, settings, loading, loadSettings, generatedTests } = useStore();
   const [framework, setFramework] = useState<TestFramework>('jest');
   const [provider, setProvider] = useState<AIProvider>('openai');
   const [model, setModel] = useState<AIModel>('gpt-4.1-mini');
@@ -96,6 +101,8 @@ export default function GeneratePanel({ sessions }: GeneratePanelProps) {
   });
   const [generatedCode, setGeneratedCode] = useState<string>('');
   const [excludedEndpoints, setExcludedEndpoints] = useState<Set<string>>(new Set());
+  const [requestSelectionMode, setRequestSelectionMode] = useState(false);
+  const [selectedRequestIds, setSelectedRequestIds] = useState<Set<string>>(new Set());
   const [generationState, setGenerationState] = useState<GenerationState>({
     isGenerating: false,
     progress: 0,
@@ -130,6 +137,9 @@ export default function GeneratePanel({ sessions }: GeneratePanelProps) {
   const [parallelProgress, setParallelProgress] = useState<GenerationProgressType | null>(null);
   const [parallelResult, setParallelResult] = useState<ParallelGenerationResult | null>(null);
   const [resultTab, setResultTab] = useState(0);
+  const [securityScanning, setSecurityScanning] = useState(false);
+  const [securityResults, setSecurityResults] = useState<Array<{ testName: string; status: string; details: string; responseStatus: number }>>([]);
+  const [maintenanceHints, setMaintenanceHints] = useState<{ newEndpoints: string[]; changedSchemas: string[]; removedEndpoints: string[] } | null>(null);
 
   // Load settings on mount
   useEffect(() => {
@@ -156,12 +166,15 @@ export default function GeneratePanel({ sessions }: GeneratePanelProps) {
         setGeneratedCode(state.result.code || '');
         setGenerationState(prev => ({ ...prev, isGenerating: false, progress: 100, stage: 'Complete' }));
         // Clear stored state after consuming
+        chrome.runtime.sendMessage({ type: 'CLEAR_GENERATION_STATE' }).catch((e: unknown) => Logger.getInstance().warn('Failed to clear generation state', { error: e }, 'GeneratePanel'));
+      } else if (state.status === 'cancelled') {
+        setGenerationState(prev => ({ ...prev, isGenerating: false, progress: 0, stage: 'Generation cancelled' }));
         chrome.runtime.sendMessage({ type: 'CLEAR_GENERATION_STATE' }).catch(() => {});
       } else if (state.status === 'error') {
         setGenerationState(prev => ({ ...prev, isGenerating: false, progress: 0, stage: state.error || 'Failed' }));
-        chrome.runtime.sendMessage({ type: 'CLEAR_GENERATION_STATE' }).catch(() => {});
+        chrome.runtime.sendMessage({ type: 'CLEAR_GENERATION_STATE' }).catch((e: unknown) => Logger.getInstance().warn('Failed to clear generation state', { error: e }, 'GeneratePanel'));
       }
-    }).catch(() => {});
+    }).catch((e: unknown) => Logger.getInstance().warn('Failed to restore generation state', { error: e }, 'GeneratePanel'));
 
     // Listen for storage changes (real-time updates from background)
     const handleStorageChange = (changes: { [key: string]: chrome.storage.StorageChange }, area: string) => {
@@ -182,10 +195,13 @@ export default function GeneratePanel({ sessions }: GeneratePanelProps) {
       } else if (state.status === 'complete' && state.result) {
         setGeneratedCode(state.result.code || '');
         setGenerationState(prev => ({ ...prev, isGenerating: false, progress: 100, stage: 'Complete' }));
+        chrome.runtime.sendMessage({ type: 'CLEAR_GENERATION_STATE' }).catch((e: unknown) => Logger.getInstance().warn('Failed to clear generation state', { error: e }, 'GeneratePanel'));
+      } else if (state.status === 'cancelled') {
+        setGenerationState(prev => ({ ...prev, isGenerating: false, progress: 0, stage: 'Generation cancelled' }));
         chrome.runtime.sendMessage({ type: 'CLEAR_GENERATION_STATE' }).catch(() => {});
       } else if (state.status === 'error') {
         setGenerationState(prev => ({ ...prev, isGenerating: false, progress: 0, stage: state.error || 'Failed' }));
-        chrome.runtime.sendMessage({ type: 'CLEAR_GENERATION_STATE' }).catch(() => {});
+        chrome.runtime.sendMessage({ type: 'CLEAR_GENERATION_STATE' }).catch((e: unknown) => Logger.getInstance().warn('Failed to clear generation state', { error: e }, 'GeneratePanel'));
       }
     };
 
@@ -246,7 +262,9 @@ export default function GeneratePanel({ sessions }: GeneratePanelProps) {
       { value: 'gpt-4.1-mini', label: 'GPT-4.1 Mini (Fast & Cheap)' },
 
       // Anthropic Claude Models
-      { value: 'claude-4-sonnet', label: 'Claude 4 Sonnet (Latest)' },
+      { value: 'claude-4-5-opus', label: 'Claude 4.5 Opus (Most Capable)' },
+      { value: 'claude-4-5-sonnet', label: 'Claude 4.5 Sonnet (Latest)' },
+      { value: 'claude-4-sonnet', label: 'Claude 4 Sonnet' },
       { value: 'claude-3-7-sonnet', label: 'Claude 3.7 Sonnet' },
 
       // Google Gemini Models
@@ -272,6 +290,24 @@ export default function GeneratePanel({ sessions }: GeneratePanelProps) {
 
   // Use selectedSession (which includes uploaded HAR sessions) or fallback to first session
   const session = selectedSession || sessions[0];
+
+  // Load maintenance hints when session changes
+  useEffect(() => {
+    if (!session) return;
+    (async () => {
+      try {
+        const { ContractSnapshotService } = await import('@/services/ContractSnapshotService');
+        const hints = await ContractSnapshotService.getInstance().getMaintenanceHints(session);
+        if (hints.newEndpoints.length > 0 || hints.changedSchemas.length > 0 || hints.removedEndpoints.length > 0) {
+          setMaintenanceHints(hints);
+        } else {
+          setMaintenanceHints(null);
+        }
+      } catch {
+        setMaintenanceHints(null);
+      }
+    })();
+  }, [session?.id]);
 
   // Handle endpoint inclusion/exclusion
   const handleEndpointToggle = (signature: string, excluded: boolean) => {
@@ -438,8 +474,11 @@ export default function GeneratePanel({ sessions }: GeneratePanelProps) {
       
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      const isCancelled = errorMessage.includes('cancelled') || errorMessage.includes('aborted');
+      if (isCancelled) return; // handleCancel already set state
+
       const elapsedTime = Math.floor((Date.now() - startTime) / 1000);
-      
+
       setGenerationState({
         isGenerating: false,
         progress: 0,
@@ -458,6 +497,23 @@ export default function GeneratePanel({ sessions }: GeneratePanelProps) {
         }));
       }, 4000);
     }
+  };
+
+  const handleCancel = async () => {
+    await cancelGeneration();
+    // Also cancel parallel generation if running
+    if (parallelEnabled) {
+      ParallelGenerationOrchestrator.getInstance().abort();
+    }
+    setGenerationState({
+      isGenerating: false,
+      progress: 0,
+      stage: 'Generation cancelled',
+      estimatedTime: 0,
+      currentEndpoint: undefined,
+      totalEndpoints: undefined,
+      endpointName: undefined,
+    });
   };
 
   // Mock function removed - now using real AI generation
@@ -763,13 +819,169 @@ ${options.includeErrorScenarios ? `
           )}
         </Box>
 
+        {/* Maintenance Hints */}
+        {maintenanceHints && (
+          <Alert severity="info" sx={{ mb: 1, fontSize: '0.75rem' }}>
+            <Typography variant="caption" fontWeight={600}>Test Maintenance Hints:</Typography>
+            {maintenanceHints.newEndpoints.length > 0 && (
+              <Typography variant="caption" display="block">{maintenanceHints.newEndpoints.length} new endpoint{maintenanceHints.newEndpoints.length > 1 ? 's' : ''} detected</Typography>
+            )}
+            {maintenanceHints.changedSchemas.length > 0 && (
+              <Typography variant="caption" display="block">Schema changes in: {maintenanceHints.changedSchemas.join(', ')}</Typography>
+            )}
+            {maintenanceHints.removedEndpoints.length > 0 && (
+              <Typography variant="caption" display="block">{maintenanceHints.removedEndpoints.length} endpoint{maintenanceHints.removedEndpoints.length > 1 ? 's' : ''} no longer present</Typography>
+            )}
+          </Alert>
+        )}
+
         {/* Endpoint Preview */}
-        <EndpointPreview 
-          session={session} 
-          showDetails={false} 
+        <EndpointPreview
+          session={session}
+          showDetails={false}
           excludedEndpoints={excludedEndpoints}
           onEndpointToggle={handleEndpointToggle}
         />
+
+        {/* Security Scan */}
+        <Accordion sx={{ mt: 1 }}>
+          <AccordionSummary expandIcon={<ExpandMore />}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+              <Security fontSize="small" color="warning" />
+              <Typography variant="subtitle2">Security Scan</Typography>
+              {securityResults.length > 0 && (
+                <Chip
+                  label={`${securityResults.filter(r => r.status === 'vulnerable').length} issues`}
+                  size="small"
+                  color={securityResults.some(r => r.status === 'vulnerable') ? 'error' : 'success'}
+                  sx={{ height: 18, fontSize: '0.65rem' }}
+                />
+              )}
+            </Box>
+          </AccordionSummary>
+          <AccordionDetails>
+            <Button
+              variant="outlined"
+              size="small"
+              startIcon={<Security />}
+              disabled={securityScanning}
+              onClick={async () => {
+                setSecurityScanning(true);
+                setSecurityResults([]);
+                try {
+                  const { SecurityTestGenerator } = await import('@/services/SecurityTestGenerator');
+                  const { SecurityTestRunner } = await import('@/services/SecurityTestRunner');
+                  const generator = SecurityTestGenerator.getInstance();
+                  const runner = SecurityTestRunner.getInstance();
+                  const baseUrl = session.url || session.requests[0]?.url?.replace(/\/[^/]*$/, '') || '';
+                  const suites = generator.generateSecurityTests(session);
+                  const allResults: typeof securityResults = [];
+                  for (const suite of suites) {
+                    const scanResult = await runner.runSuite(suite, baseUrl, (_c, _t, result) => {
+                      allResults.push({ testName: result.testName, status: result.status, details: result.details, responseStatus: result.responseStatus });
+                      setSecurityResults([...allResults]);
+                    });
+                  }
+                } catch (error) {
+                  Logger.getInstance().error('Security scan failed', error, 'GeneratePanel');
+                } finally {
+                  setSecurityScanning(false);
+                }
+              }}
+              fullWidth
+              sx={{ mb: 1 }}
+            >
+              {securityScanning ? 'Scanning...' : 'Run Security Scan'}
+            </Button>
+            {securityScanning && <LinearProgress sx={{ mb: 1 }} />}
+            {securityResults.length > 0 && (
+              <Box sx={{ maxHeight: 200, overflow: 'auto' }}>
+                {securityResults.map((r, i) => (
+                  <Box key={i} sx={{ display: 'flex', alignItems: 'center', gap: 0.5, py: 0.25, borderBottom: '1px solid', borderColor: 'divider' }}>
+                    <Chip
+                      label={r.status}
+                      size="small"
+                      color={r.status === 'vulnerable' ? 'error' : r.status === 'safe' ? 'success' : 'default'}
+                      sx={{ height: 18, fontSize: '0.6rem', minWidth: 70 }}
+                    />
+                    <Typography variant="caption" sx={{ flex: 1 }} noWrap>{r.testName}</Typography>
+                    <Typography variant="caption" color="text.secondary">{r.responseStatus || '-'}</Typography>
+                  </Box>
+                ))}
+              </Box>
+            )}
+          </AccordionDetails>
+        </Accordion>
+
+        {/* Manage Requests */}
+        <Accordion sx={{ mt: 1 }}>
+          <AccordionSummary expandIcon={<ExpandMore />}>
+            <Typography variant="subtitle2">
+              Manage Requests ({session.requests.length})
+            </Typography>
+          </AccordionSummary>
+          <AccordionDetails>
+            <Box sx={{ display: 'flex', gap: 1, mb: 1, flexWrap: 'wrap' }}>
+              <Button
+                size="small"
+                variant={requestSelectionMode ? 'contained' : 'outlined'}
+                onClick={() => {
+                  setRequestSelectionMode(!requestSelectionMode);
+                  if (requestSelectionMode) setSelectedRequestIds(new Set());
+                }}
+              >
+                {requestSelectionMode ? 'Cancel' : 'Select'}
+              </Button>
+              {requestSelectionMode && (
+                <>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    startIcon={<SelectAll />}
+                    onClick={() => setSelectedRequestIds(new Set(session.requests.map(r => r.id)))}
+                  >
+                    All
+                  </Button>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    onClick={() => setSelectedRequestIds(new Set())}
+                  >
+                    None
+                  </Button>
+                  <Button
+                    size="small"
+                    variant="contained"
+                    color="error"
+                    startIcon={<Delete />}
+                    disabled={selectedRequestIds.size === 0}
+                    onClick={async () => {
+                      if (selectedRequestIds.size > 0) {
+                        await deleteRequests(session.id, Array.from(selectedRequestIds));
+                        setSelectedRequestIds(new Set());
+                        setRequestSelectionMode(false);
+                      }
+                    }}
+                  >
+                    Delete ({selectedRequestIds.size})
+                  </Button>
+                </>
+              )}
+            </Box>
+            <RequestList
+              requests={session.requests}
+              selectionMode={requestSelectionMode}
+              selectedIds={selectedRequestIds}
+              onToggleSelect={(id) => {
+                setSelectedRequestIds(prev => {
+                  const next = new Set(prev);
+                  if (next.has(id)) next.delete(id); else next.add(id);
+                  return next;
+                });
+              }}
+            />
+          </AccordionDetails>
+        </Accordion>
       </Paper>
 
       {/* Generation Options */}
@@ -1038,6 +1250,7 @@ ${options.includeErrorScenarios ? `
       <CostEstimator
         session={session}
         provider={provider}
+        model={model}
         options={options}
         excludedEndpoints={excludedEndpoints}
       />
@@ -1199,21 +1412,32 @@ ${options.includeErrorScenarios ? `
         </AccordionDetails>
       </Accordion>
 
-      {/* Generate Button */}
-      <Button
-        fullWidth
-        variant="contained"
-        startIcon={generationState.isGenerating ? <CircularProgress size={20} color="inherit" /> : <AutoAwesome />}
-        onClick={parallelEnabled ? handleParallelGenerate : handleGenerate}
-        disabled={generationState.isGenerating || (provider !== 'local' && !settings?.apiKeys[provider as keyof typeof settings.apiKeys])}
-        sx={{ mb: 2 }}
-      >
-        {generationState.isGenerating
-          ? 'Generating Tests...'
-          : parallelEnabled
+      {/* Generate / Stop Button */}
+      {generationState.isGenerating ? (
+        <Button
+          fullWidth
+          variant="contained"
+          color="error"
+          startIcon={<Stop />}
+          onClick={handleCancel}
+          sx={{ mb: 2 }}
+        >
+          Stop Generation
+        </Button>
+      ) : (
+        <Button
+          fullWidth
+          variant="contained"
+          startIcon={<AutoAwesome />}
+          onClick={parallelEnabled ? handleParallelGenerate : handleGenerate}
+          disabled={provider !== 'local' && !settings?.apiKeys[provider as keyof typeof settings.apiKeys]}
+          sx={{ mb: 2 }}
+        >
+          {parallelEnabled
             ? `Generate All (${enabledParallelCount} features)`
             : `Generate Tests (${activeEndpointCount} endpoint${activeEndpointCount !== 1 ? 's' : ''})`}
-      </Button>
+        </Button>
+      )}
 
       {/* Generation Progress */}
       <GenerationProgress generationState={generationState} />

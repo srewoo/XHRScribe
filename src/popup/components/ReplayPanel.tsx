@@ -218,6 +218,23 @@ export default function ReplayPanel({ session }: ReplayPanelProps) {
                     <Typography variant="caption" color="text.secondary" sx={{ fontSize: 9 }}>
                       {formatDuration(result.replayDuration)}
                     </Typography>
+                    {result.bodyDiff && (
+                      result.bodyDiff.matched ? (
+                        <Chip label="Body Match" size="small" color="success" variant="outlined" sx={{ height: 16, fontSize: 9 }} />
+                      ) : (
+                        <Chip
+                          label={`Body Diff: ${[
+                            result.bodyDiff.addedKeys.length ? `+${result.bodyDiff.addedKeys.length}` : '',
+                            result.bodyDiff.removedKeys.length ? `-${result.bodyDiff.removedKeys.length}` : '',
+                            result.bodyDiff.changedKeys.length ? `~${result.bodyDiff.changedKeys.length}` : '',
+                          ].filter(Boolean).join(' ')}`}
+                          size="small"
+                          color="warning"
+                          variant="outlined"
+                          sx={{ height: 16, fontSize: 9 }}
+                        />
+                      )
+                    )}
                   </Box>
                 }
               />

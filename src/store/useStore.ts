@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { RecordingSession, Settings, GeneratedTest, GenerationOptions, NetworkRequest } from '@/types';
+import { Logger } from '@/services/logging/Logger';
 
 interface AppStore {
   // State
@@ -17,9 +18,11 @@ interface AppStore {
   stopRecording: (tabId: number) => Promise<void>;
   loadSessions: () => Promise<void>;
   deleteSession: (sessionId: string) => Promise<void>;
+  deleteRequests: (sessionId: string, requestIds: string[]) => Promise<void>;
   renameSession: (sessionId: string, newName: string) => Promise<void>;
   selectSession: (session: RecordingSession) => void;
   generateTests: (sessionId: string, options: GenerationOptions) => Promise<GeneratedTest>;
+  cancelGeneration: () => Promise<void>;
   loadSettings: () => Promise<void>;
   updateSettings: (settings: Settings) => Promise<void>;
   exportTests: (testId: string, format: string) => Promise<void>;
@@ -40,7 +43,7 @@ export const useStore = create<AppStore>((set, get) => ({
     set({ loading: true, error: undefined });
     try {
       // First, ensure background script is ready
-      console.log('Checking background script readiness...');
+      Logger.getInstance().debug('Checking background script readiness', null, 'Store');
       
       let backgroundReady = false;
       for (let attempt = 1; attempt <= 3; attempt++) {
@@ -48,12 +51,12 @@ export const useStore = create<AppStore>((set, get) => ({
           const pingResponse = await chrome.runtime.sendMessage({ type: 'PING' });
           if (pingResponse?.success) {
             backgroundReady = true;
-            console.log('Background script is ready');
+            Logger.getInstance().debug('Background script is ready', null, 'Store');
             break;
           }
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-          console.log(`Background readiness check failed (attempt ${attempt}/3):`, errorMessage);
+          Logger.getInstance().warn(`Background readiness check failed (attempt ${attempt}/3)`, { error: errorMessage }, 'Store');
           if (attempt < 3) {
             await new Promise(resolve => setTimeout(resolve, 500));
           }
@@ -65,14 +68,14 @@ export const useStore = create<AppStore>((set, get) => ({
       }
 
       // Now try to start recording
-      console.log('Starting recording...');
+      Logger.getInstance().info('Starting recording', null, 'Store');
       const response = await chrome.runtime.sendMessage({
         type: 'START_RECORDING',
         tabId,
       });
 
       if (response && response.success) {
-        console.log('Recording started successfully');
+        Logger.getInstance().info('Recording started successfully', null, 'Store');
         set({
           recording: true,
           currentSession: response.session,
@@ -82,7 +85,7 @@ export const useStore = create<AppStore>((set, get) => ({
         throw new Error(response?.error || 'Failed to start recording');
       }
     } catch (error) {
-      console.error('Start recording failed:', error);
+      Logger.getInstance().error('Start recording failed', error, 'Store');
       set({
         loading: false,
         error: error instanceof Error ? error.message : 'Failed to start recording',
@@ -98,7 +101,7 @@ export const useStore = create<AppStore>((set, get) => ({
         type: 'STOP_RECORDING',
         tabId,
       }).catch((error) => {
-        console.log('Message error:', error);
+        Logger.getInstance().warn('Stop recording message error', { error }, 'Store');
         return { success: false, error: 'Extension not ready. Please refresh and try again.' };
       });
 
@@ -128,7 +131,7 @@ export const useStore = create<AppStore>((set, get) => ({
       const response = await chrome.runtime.sendMessage({
         type: 'GET_SESSIONS',
       }).catch((error) => {
-        console.log('Message error:', error);
+        Logger.getInstance().warn('Load sessions message error', { error }, 'Store');
         return { success: true, sessions: [] }; // Return empty sessions on error
       });
 
@@ -206,6 +209,39 @@ export const useStore = create<AppStore>((set, get) => ({
     }
   },
 
+  // Delete individual requests from a session
+  deleteRequests: async (sessionId: string, requestIds: string[]) => {
+    set({ loading: true, error: undefined });
+    try {
+      const response = await chrome.runtime.sendMessage({
+        type: 'DELETE_REQUESTS',
+        payload: { sessionId, requestIds },
+      });
+      if (response.success) {
+        const idsToRemove = new Set(requestIds);
+        set((state) => ({
+          sessions: state.sessions.map(s =>
+            s.id === sessionId
+              ? { ...s, requests: s.requests.filter(r => !idsToRemove.has(r.id)) }
+              : s
+          ),
+          selectedSession:
+            state.selectedSession?.id === sessionId
+              ? { ...state.selectedSession, requests: state.selectedSession.requests.filter(r => !idsToRemove.has(r.id)) }
+              : state.selectedSession,
+          loading: false,
+        }));
+      } else {
+        throw new Error(response.error || 'Failed to delete requests');
+      }
+    } catch (error) {
+      set({
+        loading: false,
+        error: error instanceof Error ? error.message : 'Failed to delete requests',
+      });
+    }
+  },
+
   // Select session
   selectSession: (session: RecordingSession) => {
     set({ selectedSession: session });
@@ -239,13 +275,22 @@ export const useStore = create<AppStore>((set, get) => ({
     }
   },
 
+  // Cancel generation
+  cancelGeneration: async () => {
+    try {
+      await chrome.runtime.sendMessage({ type: 'CANCEL_GENERATION' });
+    } catch (error) {
+      Logger.getInstance().warn('Failed to cancel generation', { error }, 'Store');
+    }
+  },
+
   // Load settings
   loadSettings: async () => {
     try {
       const response = await chrome.runtime.sendMessage({
         type: 'GET_SETTINGS',
       }).catch((error) => {
-        console.log('Failed to get settings:', error);
+        Logger.getInstance().warn('Failed to get settings', { error }, 'Store');
         return { success: false };
       });
 
@@ -274,7 +319,6 @@ export const useStore = create<AppStore>((set, get) => ({
               maxRequestSize: 10485760,
             },
             advanced: {
-              maxTokens: 4000,
               temperature: 0.7,
               retryAttempts: 3,
               timeout: 30000,
@@ -284,7 +328,7 @@ export const useStore = create<AppStore>((set, get) => ({
         });
       }
     } catch (error) {
-      console.error('Failed to load settings:', error);
+      Logger.getInstance().error('Failed to load settings', error, 'Store');
     }
   },
 

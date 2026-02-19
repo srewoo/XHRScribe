@@ -3,6 +3,8 @@ import { encode } from 'gpt-tokenizer';
 import { HARData, GenerationOptions, GeneratedTest } from '@/types';
 import { LLMProvider } from '../LLMService';
 import { AuthFlow, AuthFlowAnalyzer } from '../../AuthFlowAnalyzer';
+import { normalizePath } from '../../EndpointGrouper';
+import { PromptBuilder } from '../PromptBuilder';
 
 interface OpenAIErrorResponse {
   error?: {
@@ -15,7 +17,7 @@ interface OpenAIErrorResponse {
 export class OpenAIProvider implements LLMProvider {
   private apiKey: string = '';
   private baseUrl = 'https://api.openai.com/v1';
-  private maxRetries = 3;
+  private maxRetries = 2;
   private retryDelay = 1000;
 
   setApiKey(key: string): void {
@@ -26,7 +28,8 @@ export class OpenAIProvider implements LLMProvider {
     harData: HARData,
     options: GenerationOptions,
     authFlow?: AuthFlow,
-    customAuthGuide?: string
+    customAuthGuide?: string,
+    signal?: AbortSignal
   ): Promise<GeneratedTest> {
     if (!this.apiKey) {
       throw new Error('OpenAI API key not configured');
@@ -72,11 +75,13 @@ export class OpenAIProvider implements LLMProvider {
               'Content-Type': 'application/json',
               'Authorization': `Bearer ${this.apiKey}`
             },
-            timeout: 120000 // 120 second timeout for complex test generation
+            timeout: 120000,
+            signal
           }
         );
 
-        const generatedCode = response.data.choices[0]?.message?.content || '';
+        const rawCode = response.data.choices[0]?.message?.content || '';
+        const generatedCode = PromptBuilder.getInstance().sanitizeGeneratedCode(rawCode, options.framework);
         const totalTokens = response.data.usage?.total_tokens || totalInputTokens;
         const qualityScore = this.calculateQualityScore(generatedCode, harData);
 
@@ -92,10 +97,14 @@ export class OpenAIProvider implements LLMProvider {
         };
       } catch (error) {
         lastError = error as Error;
-        
+
+        if (axios.isAxiosError(error) && error.code === 'ERR_CANCELED') {
+          throw new DOMException('Generation cancelled', 'AbortError');
+        }
+
         if (axios.isAxiosError(error)) {
           const axiosError = error as AxiosError<OpenAIErrorResponse>;
-          
+
           // Handle specific OpenAI error codes
           if (axiosError.response?.status === 401) {
             throw new Error('Invalid OpenAI API key. Please check your settings.');
@@ -194,7 +203,7 @@ IMPORTANT: Generate actual runnable code, not pseudocode or examples.`;
     entries.forEach(entry => {
       try {
         const url = new URL(entry.request.url);
-        let signature = `${entry.request.method}:${url.pathname}`;
+        let signature = `${entry.request.method}:${normalizePath(url.pathname)}`;
         
         // ENHANCED: Special handling for GraphQL endpoints
         if (this.isGraphQLEndpoint(url.pathname, entry.request)) {
@@ -293,15 +302,20 @@ ${this.getFrameworkInstructions(framework)}
 ❌ Unclosed test suite blocks
 ❌ Missing authToken setup
 
-MANDATORY TEST CATEGORIES TO INCLUDE:
+TEST CATEGORIES TO INCLUDE:
 
-1. ✅ POSITIVE/HAPPY PATH TESTS (20% of tests):
+1. ✅ POSITIVE/HAPPY PATH TESTS:
    - Successful requests with valid data
    - All successful response codes (200, 201, 204, etc.)
    - Verify response structure and data types
    - Validate business logic and data relationships
 
-2. ❌ NEGATIVE/ERROR TESTS (30% of tests):
+`;
+
+    let categoryNum = 2;
+
+    if (options.includeErrorScenarios) {
+      prompt += `${categoryNum}. ❌ NEGATIVE/ERROR TESTS:
    - 400 Bad Request - Invalid/malformed input
    - 401 Unauthorized - Missing/invalid auth
    - 403 Forbidden - Insufficient permissions
@@ -312,14 +326,17 @@ MANDATORY TEST CATEGORIES TO INCLUDE:
    - 500 Internal Server Error - Server failures
    - 503 Service Unavailable - Downtime simulation
 
-3. 🔧 EDGE CASES & BOUNDARY TESTS (25% of tests):
+`;
+      categoryNum++;
+    }
+
+    if (options.includeEdgeCases) {
+      prompt += `${categoryNum}. 🔧 EDGE CASES & BOUNDARY TESTS:
    - Empty strings, null, undefined values
    - Maximum length strings (10000+ chars)
    - Minimum/maximum numeric values (0, -1, MAX_INT)
    - Special characters: !@#$%^&*()<>?:"{}[]|\\
-   - Unicode and emoji: 你好世界 😀🎉
-   - HTML/Script injection: <script>alert('xss')</script>
-   - SQL injection attempts: ' OR '1'='1
+   - Unicode and emoji
    - Decimal precision boundaries
    - Date/time edge cases (leap years, timezone boundaries)
    - Array boundaries (empty, 1 item, 1000+ items)
@@ -327,36 +344,62 @@ MANDATORY TEST CATEGORIES TO INCLUDE:
    - Concurrent request handling
    - Idempotency for PUT/DELETE
 
-4. 📊 DATA VALIDATION TESTS (15% of tests):
-   - Required field validation
-   - Data type validation (string, number, boolean, array, object)
-   - Format validation (email, phone, UUID, date formats)
-   - Enum/allowable values validation
-   - Regex pattern matching
-   - Nested object validation
-   - Array element validation
-   - Cross-field validation rules
+`;
+      categoryNum++;
+    }
 
-5. 🔒 SECURITY TESTS (10% of tests):
+    if (options.includeAuth) {
+      prompt += `${categoryNum}. 📊 AUTHENTICATION TESTS:
+   - Proper token handling and chaining
+   - Token expiration and refresh
+   - Missing/invalid authentication headers
+   - Role-based access control scenarios
+
+`;
+      categoryNum++;
+    }
+
+    if (options.includeSecurityTests) {
+      prompt += `${categoryNum}. 🔒 SECURITY TESTS:
    - Authentication bypass attempts
    - Authorization/permission tests
    - CORS validation
+   - XSS injection attempts
+   - SQL injection attempts
    - Input sanitization verification
    - Sensitive data exposure checks
    - Rate limiting validation
-   - Token expiration handling
 
 `;
+      categoryNum++;
+    }
 
-    // Add performance requirements if requested
     if (options.includePerformanceTests) {
-      prompt += `
-6. ⚡ PERFORMANCE TESTS:
+      prompt += `${categoryNum}. ⚡ PERFORMANCE TESTS:
    - Response time < 1000ms for GET
    - Response time < 2000ms for POST/PUT
    - Payload size validation
    - Timeout handling (30s)
    - Load testing preparations
+
+`;
+      categoryNum++;
+    }
+
+    if (options.generateMockData) {
+      prompt += `${categoryNum}. 🧪 MOCK DATA:
+   - Generate realistic mock data using faker or similar libraries
+   - Use data-driven tests for multiple input combinations
+
+`;
+      categoryNum++;
+    }
+
+    if (options.includeIntegrationTests) {
+      prompt += `${categoryNum}. 🔗 INTEGRATION TESTS:
+   - Test multiple endpoints together in workflows
+   - Verify data consistency across related endpoints
+
 `;
     }
 
@@ -397,7 +440,7 @@ ${entry.request.cookies && entry.request.cookies.length > 0
   : 'No cookies'}
 
 📦 REQUEST BODY:
-${requestBody ? requestBody.substring(0, 500) : 'No request body'}
+${requestBody ? requestBody.substring(0, 1500) : 'No request body'}
 
 📥 RESPONSE DETAILS:
 Status: ${statusCode}
@@ -411,39 +454,46 @@ ${entry.response.cookies && entry.response.cookies.length > 0
   : 'No response cookies'}
 
 📦 RESPONSE BODY:
-${responseBody ? responseBody.substring(0, 500) : 'No response body'}
+${responseBody ? responseBody.substring(0, 1500) : 'No response body'}
 
-🚨 MANDATORY TESTS FOR THIS ENDPOINT (Generate ALL of these):
+🚨 TESTS FOR THIS ENDPOINT:
 
 1. ✅ HAPPY PATH TEST:
    - Valid request exactly as captured
    - Verify ${statusCode} status code
    - Validate response structure and content
-
-2. ❌ ERROR TESTS (Generate 5-8 error scenarios):
+${options.includeErrorScenarios ? `
+2. ❌ ERROR TESTS:
    - 400: Invalid/malformed request data
    - 401: Missing/invalid authentication
-   - 403: Insufficient permissions (if applicable)
    - 404: Invalid endpoint or resource not found
    - 422: Invalid request format or validation errors
    - 500: Server error simulation
-   ${method !== 'GET' ? '- Test with invalid content-type headers' : ''}
-
-3. 🔧 EDGE CASE TESTS (Generate 3-5 edge cases):
+   ${method !== 'GET' ? '- Test with invalid content-type headers' : ''}` : ''}
+${options.includeEdgeCases ? `
+3. 🔧 EDGE CASE TESTS:
    - Empty/null values in request
    - Maximum/minimum boundary values
    - Special characters and Unicode
    - Large payload testing (if POST/PUT)
-   ${isGraphQL ? '- GraphQL-specific edge cases (query depth, invalid syntax)' : ''}
-
+   ${isGraphQL ? '- GraphQL-specific edge cases (query depth, invalid syntax)' : ''}` : ''}
+${options.includeSecurityTests ? `
 4. 🛡️ SECURITY TESTS:
    - XSS injection attempts
    - SQL injection attempts (if applicable)
-   - Authentication bypass attempts
+   - Authentication bypass attempts` : ''}
    
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 `;
     });
+
+    // Inject syspro-inspired quality enhancement sections
+    const pb = PromptBuilder.getInstance();
+    prompt += pb.getCodeStructureTemplate(framework);
+    prompt += pb.getSyntaxEnforcementSection(framework);
+    prompt += pb.getInputValidationMatrix();
+    prompt += pb.getSchemaValidationRequirement(framework);
+    prompt += pb.getNamingAndAntiPatterns(framework);
 
     prompt += `
 
@@ -466,11 +516,7 @@ Generate ${framework.toUpperCase()} test code following the framework's specific
 Each endpoint must have a complete test suite with 10-15 individual test cases.
 Use the framework's proper test organization, imports, and assertion methods.
 
-🚨 BEFORE YOU RESPOND, VERIFY:
-✅ ${uniqueEndpoints.size} test suites (one per endpoint)
-✅ No "continue" or "add more" comments anywhere
-✅ Every endpoint has complete test implementation
-✅ Production-ready code that runs immediately
+${pb.getQualityGateSection()}
 
 ⚡ GENERATE COMPLETE TESTS FOR ALL ${uniqueEndpoints.size} ENDPOINTS NOW - NO EXCEPTIONS:`;
 

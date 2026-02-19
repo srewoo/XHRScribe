@@ -22,7 +22,7 @@ import {
 
 interface ImportedFile {
   name: string;
-  type: 'har' | 'postman' | 'openapi' | 'insomnia';
+  type: 'har' | 'postman' | 'openapi' | 'insomnia' | 'xhrscribe';
   size: number;
   endpointCount?: number;
   status: 'processing' | 'success' | 'error';

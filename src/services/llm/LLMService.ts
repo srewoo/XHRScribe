@@ -1,4 +1,5 @@
 import { HARData, GenerationOptions, GeneratedTest, AIProvider, AIModel } from '@/types';
+import { normalizePath } from '../EndpointGrouper';
 import { AuthFlow } from '../AuthFlowAnalyzer';
 import { OpenAIProvider } from './providers/OpenAIProvider';
 import { AnthropicProvider } from './providers/AnthropicProvider';
@@ -10,7 +11,8 @@ export interface LLMProvider {
     harData: HARData,
     options: GenerationOptions,
     authFlow?: AuthFlow,
-    customAuthGuide?: string
+    customAuthGuide?: string,
+    signal?: AbortSignal
   ): Promise<GeneratedTest>;
   estimateCost(tokenCount: number, model?: string): number;
   countTokens(text: string): number;
@@ -612,7 +614,7 @@ public class APITests {
     
     harData.entries.forEach(entry => {
       const url = new URL(entry.request.url);
-      const signature = `${entry.request.method}:${url.pathname}`;
+      const signature = `${entry.request.method}:${normalizePath(url.pathname)}`;
       
       if (endpoints.has(signature)) {
         endpoints.get(signature)!.count++;
@@ -651,6 +653,8 @@ public class APITests {
     const capabilities: Record<string, any> = {
       'gpt-4.1': { maxTokens: 128000, costPer1kTokens: 0.01, quality: 'high' },
       'gpt-4.1-mini': { maxTokens: 128000, costPer1kTokens: 0.0003, quality: 'medium' },
+      'claude-4-5-opus': { maxTokens: 200000, costPer1kTokens: 0.015, quality: 'high' },
+      'claude-4-5-sonnet': { maxTokens: 200000, costPer1kTokens: 0.003, quality: 'high' },
       'claude-4-sonnet': { maxTokens: 200000, costPer1kTokens: 0.003, quality: 'high' },
       'claude-3-7-sonnet': { maxTokens: 200000, costPer1kTokens: 0.003, quality: 'high' },
       'gemini-2-5-pro': { maxTokens: 2097152, costPer1kTokens: 0.00125, quality: 'high' },

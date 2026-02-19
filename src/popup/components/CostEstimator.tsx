@@ -5,7 +5,7 @@ import {
   Typography,
 } from '@mui/material';
 import { AttachMoney } from '@mui/icons-material';
-import { RecordingSession, AIProvider } from '@/types';
+import { RecordingSession, AIProvider, AIModel } from '@/types';
 
 // Token estimation constants
 const BASE_TOKENS_PER_ENDPOINT = 800;
@@ -24,17 +24,31 @@ const COVERAGE_MULTIPLIERS: Record<string, number> = {
   minimal: 0.7,
 };
 
-// Provider cost per 1K tokens
-const PROVIDER_COSTS: Record<string, number> = {
-  openai: 0.00015,
-  anthropic: 0.00025,
-  gemini: 0.000075,
-  local: 0,
+// Per-model cost per 1K tokens (input/output)
+const MODEL_COSTS: Record<string, { input: number; output: number }> = {
+  'gpt-4.1':           { input: 0.002,    output: 0.008 },
+  'gpt-4.1-mini':      { input: 0.0004,   output: 0.0016 },
+  'claude-4-5-opus':   { input: 0.015,    output: 0.075 },
+  'claude-4-5-sonnet': { input: 0.003,    output: 0.015 },
+  'claude-4-sonnet':   { input: 0.003,    output: 0.015 },
+  'claude-3-7-sonnet': { input: 0.003,    output: 0.015 },
+  'gemini-2-5-pro':    { input: 0.00125,  output: 0.01 },
+  'gemini-2-5-flash':  { input: 0.00015,  output: 0.0035 },
+  'llama-3.2':         { input: 0,        output: 0 },
+  'deepseek-coder':    { input: 0,        output: 0 },
 };
+
+// Blended rate: 70% input tokens, 30% output tokens (typical for code generation)
+function getBlendedRate(model: AIModel): number {
+  const costs = MODEL_COSTS[model];
+  if (!costs) return 0;
+  return costs.input * 0.7 + costs.output * 0.3;
+}
 
 interface CostEstimatorProps {
   session: RecordingSession;
   provider: AIProvider;
+  model: AIModel;
   options: {
     includeAuth: boolean;
     includeErrorScenarios: boolean;
@@ -49,6 +63,7 @@ interface CostEstimatorProps {
 export function estimateCost(
   session: RecordingSession,
   provider: AIProvider,
+  model: AIModel,
   options: CostEstimatorProps['options'],
   excludedEndpoints: Set<string>,
 ): { cost: number; endpointCount: number; estimatedTokens: number } {
@@ -80,14 +95,14 @@ export function estimateCost(
 
   const coverageMultiplier = COVERAGE_MULTIPLIERS[options.testCoverage] || 1.2;
   const totalTokens = endpointCount * BASE_TOKENS_PER_ENDPOINT * complexityMultiplier * coverageMultiplier;
-  const costPer1K = PROVIDER_COSTS[provider] || 0.00015;
+  const costPer1K = getBlendedRate(model);
   const cost = (totalTokens / 1000) * costPer1K;
 
   return { cost, endpointCount, estimatedTokens: Math.round(totalTokens) };
 }
 
-export default function CostEstimator({ session, provider, options, excludedEndpoints }: CostEstimatorProps) {
-  const { cost, endpointCount, estimatedTokens } = estimateCost(session, provider, options, excludedEndpoints);
+export default function CostEstimator({ session, provider, model, options, excludedEndpoints }: CostEstimatorProps) {
+  const { cost, endpointCount, estimatedTokens } = estimateCost(session, provider, model, options, excludedEndpoints);
 
   return (
     <Paper elevation={1} sx={{ p: 2, mb: 2 }}>

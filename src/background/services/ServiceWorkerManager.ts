@@ -1,3 +1,5 @@
+import { Logger } from '@/services/logging/Logger';
+
 export type PersistenceMode = 'IDLE' | 'STANDARD' | 'INTENSIVE' | 'HEARTBEAT';
 
 export interface HeartbeatStatus {
@@ -385,7 +387,7 @@ export class ServiceWorkerManager {
     this.activeOperationInterval = setInterval(() => {
       this.lastActivity = Date.now();
       this.lastHeartbeat = Date.now();
-      chrome.storage.session.set({ activeOperation: Date.now() }).catch(() => {});
+      chrome.storage.session.set({ activeOperation: Date.now() }).catch((e: unknown) => Logger.getInstance().warn('Failed to persist active operation', { error: e }, 'ServiceWorkerManager'));
     }, 10000) as unknown as number;
   }
 

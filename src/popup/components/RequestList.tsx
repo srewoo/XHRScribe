@@ -11,6 +11,7 @@ import {
   Paper,
   TextField,
   InputAdornment,
+  Checkbox,
 } from '@mui/material';
 import {
   ExpandMore,
@@ -24,9 +25,12 @@ import ProtobufDetail from './ProtobufDetail';
 
 interface RequestListProps {
   requests: NetworkRequest[];
+  selectionMode?: boolean;
+  selectedIds?: Set<string>;
+  onToggleSelect?: (id: string) => void;
 }
 
-export default function RequestList({ requests }: RequestListProps) {
+export default function RequestList({ requests, selectionMode, selectedIds, onToggleSelect }: RequestListProps) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [filter, setFilter] = useState('');
 
@@ -113,9 +117,18 @@ export default function RequestList({ requests }: RequestListProps) {
         {filteredRequests.map((request) => (
           <Paper key={request.id} elevation={1} sx={{ mb: 1 }}>
             <ListItem
-              onClick={() => toggleExpand(request.id)}
+              onClick={() => selectionMode ? onToggleSelect?.(request.id) : toggleExpand(request.id)}
               sx={{ pr: 1, cursor: 'pointer' }}
             >
+              {selectionMode && (
+                <Checkbox
+                  checked={selectedIds?.has(request.id) || false}
+                  onChange={() => onToggleSelect?.(request.id)}
+                  onClick={(e) => e.stopPropagation()}
+                  size="small"
+                  sx={{ mr: 0.5 }}
+                />
+              )}
               <ListItemText
                 primary={
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>

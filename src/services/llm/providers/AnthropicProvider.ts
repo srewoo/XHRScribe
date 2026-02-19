@@ -12,7 +12,10 @@ export class AnthropicProvider implements LLMProvider {
 
   async generateTests(
     harData: HARData,
-    options: GenerationOptions
+    options: GenerationOptions,
+    _authFlow?: unknown,
+    _customAuthGuide?: string,
+    signal?: AbortSignal
   ): Promise<GeneratedTest> {
     if (!this.apiKey) {
       throw new Error('Anthropic API key not configured');
@@ -41,6 +44,7 @@ export class AnthropicProvider implements LLMProvider {
             'x-api-key': this.apiKey,
             'anthropic-version': '2023-06-01',
           },
+          signal
         }
       );
 

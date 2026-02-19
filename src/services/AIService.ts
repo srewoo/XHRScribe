@@ -3,13 +3,16 @@ import { ClaudeProvider } from './llm/providers/ClaudeProvider';
 import { GeminiProvider } from './llm/providers/GeminiProvider';
 import { LocalProvider } from './llm/providers/LocalProvider';
 import { GenerationOptions, RecordingSession, GeneratedTest, Settings, HARData, HAREntry } from '@/types';
+import { normalizePath } from './EndpointGrouper';
 import { StorageService } from './StorageService';
 import { AuthFlowAnalyzer, AuthFlow } from './AuthFlowAnalyzer';
+import { Logger } from '@/services/logging/Logger';
 
 export class AIService {
   private static instance: AIService;
   private storageService: StorageService;
   private authFlowAnalyzer: AuthFlowAnalyzer;
+  private abortController: AbortController | null = null;
 
   private constructor() {
     this.storageService = StorageService.getInstance();
@@ -21,6 +24,13 @@ export class AIService {
       AIService.instance = new AIService();
     }
     return AIService.instance;
+  }
+
+  cancel(): void {
+    if (this.abortController) {
+      this.abortController.abort();
+      this.abortController = null;
+    }
   }
 
   private convertSessionToHAR(session: RecordingSession): HARData {
@@ -90,48 +100,43 @@ export class AIService {
   }
 
   async generateTests(session: RecordingSession, options: GenerationOptions, excludedEndpoints?: Set<string>, progressCallback?: (current: number, total: number, stage: string, endpoint?: string) => void): Promise<GeneratedTest> {
-    // Determine generation strategy based on FILTERED endpoint count
-    const strategy = this.selectGenerationStrategy(session, options, excludedEndpoints);
+    this.abortController = new AbortController();
 
-    if (strategy.mode === 'individual') {
-      return this.generateTestsIndividually(session, options, excludedEndpoints, progressCallback);
-    } else {
-      return this.generateTestsBatch(session, options, excludedEndpoints);
-    }
-  }
-
-  private selectGenerationStrategy(session: RecordingSession, options: GenerationOptions, excludedEndpoints?: Set<string>): { mode: 'batch' | 'individual', reason: string } {
-    // Count unique endpoints AFTER filtering exclusions
-    const uniqueEndpoints = new Set<string>();
-    session.requests.forEach(req => {
-      try {
-        const url = new URL(req.url);
-        const sig = `${req.method}:${url.pathname}`;
-        if (!excludedEndpoints || !excludedEndpoints.has(sig)) {
-          uniqueEndpoints.add(sig);
-        }
-      } catch {
-        const sig = `${req.method}:${req.url}`;
-        if (!excludedEndpoints || !excludedEndpoints.has(sig)) {
-          uniqueEndpoints.add(sig);
-        }
+    // Load learned correction patterns and append to custom prompt
+    try {
+      const { CorrectionTracker } = await import('./CorrectionTracker');
+      const tracker = CorrectionTracker.getInstance();
+      const topPatterns = await tracker.getTopPatterns(3);
+      if (topPatterns.length > 0) {
+        const fewShot = tracker.buildFewShotExamples(topPatterns);
+        options = { ...options, customPrompt: (options.customPrompt || '') + fewShot };
       }
-    });
-    const endpointCount = uniqueEndpoints.size;
-    console.log(`📊 Strategy: ${endpointCount} unique endpoints after filtering (raw requests: ${session.requests.length})`);
-
-    // Force individual mode for large sessions
-    if (endpointCount > 5) {
-      return { mode: 'individual', reason: `Too many endpoints (${endpointCount}) for batch processing` };
+    } catch {
+      // CorrectionTracker not available — continue without
     }
 
-    // Use individual mode for better quality if explicitly requested
-    if (options.complexity === 'advanced') {
-      return { mode: 'individual', reason: 'Advanced complexity requested - using individual processing for better quality' };
+    // Always use individual parallel processing for better quality and speed
+    const result = await this.generateTestsIndividually(session, options, excludedEndpoints, progressCallback);
+
+    // Run DeepValidator to attach validation metadata
+    try {
+      const { DeepValidator } = await import('./DeepValidator');
+      const validator = DeepValidator.getInstance();
+      const harData = this.convertSessionToHAR(session);
+      const validationResult = validator.validateTestSuite(result.code, harData, options.framework);
+      result.validation = {
+        overallScore: validationResult.overallScore,
+        readinessLevel: validationResult.readinessLevel,
+        issueCount: validationResult.detailedIssues.length,
+        criticalIssues: validationResult.detailedIssues.filter(i => i.severity === 'critical').length,
+        suggestions: validationResult.improvementSuggestions.slice(0, 5),
+      };
+    } catch (error) {
+      Logger.getInstance().warn('DeepValidator failed, skipping validation', { error }, 'AIService');
     }
 
-    // Default to batch for smaller sessions (≤5 endpoints)
-    return { mode: 'batch', reason: `Small session (${endpointCount} endpoints) - using efficient batch processing` };
+    this.abortController = null;
+    return result;
   }
 
   private async generateTestsIndividually(session: RecordingSession, options: GenerationOptions, excludedEndpoints?: Set<string>, progressCallback?: (current: number, total: number, stage: string, endpoint?: string) => void): Promise<GeneratedTest> {
@@ -152,7 +157,7 @@ export class AIService {
         const filteredRequests = session.requests.filter(request => {
           try {
             const url = new URL(request.url);
-            const signature = `${request.method}:${url.pathname}`;
+            const signature = `${request.method}:${normalizePath(url.pathname)}`;
             const included = !excludedEndpoints.has(signature);
             if (!included) {
               console.log(`  ❌ Excluding: ${signature}`);
@@ -199,14 +204,17 @@ export class AIService {
       let qualityScore = 10;
 
       // Process endpoints in parallel batches
-      const batchSize = 3; // Process 3 endpoints at a time
+      const batchSize = 5; // Process 5 endpoints at a time
       for (let i = 0; i < uniqueEndpoints.length; i += batchSize) {
+        if (this.abortController?.signal.aborted) {
+          throw new DOMException('Generation cancelled', 'AbortError');
+        }
         const batch = uniqueEndpoints.slice(i, i + batchSize);
         
         const batchPromises = batch.map(async (endpoint, index) => {
           const currentIndex = i + index + 1;
           const endpointName = `${endpoint.method} ${endpoint.url}`;
-          const maxRetries = 2; // Up to 3 total attempts (1 initial + 2 retries)
+          const maxRetries = 1; // Up to 2 total attempts (1 initial + 1 retry)
 
           for (let attempt = 0; attempt <= maxRetries; attempt++) {
             try {
@@ -226,7 +234,7 @@ export class AIService {
               const endpointTest = await provider.generateTests(singleEndpointHAR, {
                 ...options,
                 complexity: 'intermediate'
-              }, authFlow, customAuthGuide);
+              }, authFlow, customAuthGuide, this.abortController?.signal);
 
               if (attempt > 0) {
                 console.log(`✅ Retry succeeded for ${endpointName} on attempt ${attempt + 1}`);
@@ -239,18 +247,18 @@ export class AIService {
                 warnings: endpointTest.warnings || []
               };
             } catch (error: any) {
-              console.error(`Attempt ${attempt + 1} failed for ${endpointName}:`, error.message);
+              Logger.getInstance().error(`Attempt ${attempt + 1} failed for ${endpointName}`, { message: error.message }, 'AIService');
 
               // If we have retries left, wait with exponential backoff then retry
               if (attempt < maxRetries) {
-                const backoffMs = Math.min(2000 * Math.pow(2, attempt), 8000);
+                const backoffMs = Math.min(1000 * Math.pow(2, attempt), 4000);
                 console.log(`⏳ Waiting ${backoffMs}ms before retry...`);
                 await this.delay(backoffMs);
                 continue;
               }
 
               // All retries exhausted
-              console.error(`❌ All ${maxRetries + 1} attempts failed for ${endpointName}`);
+              Logger.getInstance().error(`All ${maxRetries + 1} attempts failed for ${endpointName}`, null, 'AIService');
               return {
                 endpoint: endpointName,
                 code: `// Failed to generate tests for ${endpointName} after ${maxRetries + 1} attempts\n// Error: ${error.message}`,
@@ -302,137 +310,7 @@ export class AIService {
       };
 
     } catch (error) {
-      console.error('Individual test generation failed:', error);
-      throw error;
-    }
-  }
-
-  private async generateTestsBatch(session: RecordingSession, options: GenerationOptions, excludedEndpoints?: Set<string>): Promise<GeneratedTest> {
-    try {
-      console.log('📦 Using BATCH processing for efficiency');
-      
-      // Get settings for API keys
-      const batchApiSettings = await this.storageService.getSettings();
-      if (!batchApiSettings) {
-        throw new Error('Settings not found. Please configure your API keys.');
-      }
-
-      // Filter out excluded endpoints if provided
-      let filteredSession = session;
-      console.log(`🔍 [Batch] Endpoint filtering: excludedEndpoints=${excludedEndpoints ? `Set(${excludedEndpoints.size})` : 'undefined'}, total requests=${session.requests.length}`);
-      if (excludedEndpoints && excludedEndpoints.size > 0) {
-        console.log(`🔍 [Batch] Excluded signatures:`, Array.from(excludedEndpoints));
-        const filteredRequests = session.requests.filter(request => {
-          try {
-            const url = new URL(request.url);
-            const signature = `${request.method}:${url.pathname}`;
-            const included = !excludedEndpoints.has(signature);
-            if (!included) {
-              console.log(`  ❌ [Batch] Excluding: ${signature}`);
-            }
-            return included;
-          } catch (error) {
-            // For invalid URLs, use full URL as signature
-            const signature = `${request.method}:${request.url}`;
-            return !excludedEndpoints.has(signature);
-          }
-        });
-
-        console.log(`🔍 [Batch] Filtered: ${session.requests.length} → ${filteredRequests.length} requests`);
-        filteredSession = {
-          ...session,
-          requests: filteredRequests
-        };
-      } else {
-        console.log(`🔍 [Batch] No excluded endpoints — generating tests for ALL ${session.requests.length} requests`);
-      }
-
-      // Analyze authentication flow before conversion
-      const authFlow = this.authFlowAnalyzer.analyzeAuthFlow(filteredSession.requests);
-      console.log('Detected authentication flow:', authFlow);
-
-      // Get user's custom authentication guide if available
-      const batchAuthSettings = await this.storageService.getSettings();
-      const customAuthGuide = batchAuthSettings?.authGuide;
-
-      console.log(`🔐 Custom Auth Guide (Batch): ${customAuthGuide ? 'ENABLED ✅' : 'NOT PROVIDED ❌'}`);
-      if (customAuthGuide) {
-        console.log(`📋 Auth Guide Preview (Batch): "${customAuthGuide.substring(0, 100)}..."`);
-      }
-
-      // Convert RecordingSession to HARData
-      const harData = this.convertSessionToHAR(filteredSession);
-      
-      // Validate HAR data completeness
-      const validation = this.validateHARCompleteness(harData);
-      if (!validation.isComplete) {
-        console.warn('HAR data validation warnings:', validation.warnings);
-      }
-      
-      // Log endpoint summary for debugging
-      console.log(`Processing ${harData.entries.length} HAR entries for test generation`);
-      
-      // Get the appropriate provider
-      const provider = this.getProvider(batchApiSettings, options.provider);
-
-      // Generate the test code with HARData and authentication flow using retry mechanism
-      console.log('Generating tests with provider:', options.provider);
-      const generatedTest = await this.generateTestsWithRetry(provider, harData, options, authFlow, customAuthGuide);
-
-      // Enhancement 3: Auto-fix common issues before validation
-      generatedTest.code = this.autoFixCommonIssues(generatedTest.code, options.framework);
-
-      // Enhanced post-generation validation
-      const coverage = this.validateTestCoverage(generatedTest.code, validation.endpoints);
-      
-      // Check for placeholder comments that indicate incomplete generation
-      const hasPlaceholders = this.checkForPlaceholders(generatedTest.code);
-      if (hasPlaceholders.found) {
-        console.error('CRITICAL: Detected placeholder comments in generated code:', hasPlaceholders.placeholders);
-        
-        // Reduce quality score significantly for incomplete generation
-        generatedTest.qualityScore = Math.min(generatedTest.qualityScore, 3);
-        
-        generatedTest.warnings = generatedTest.warnings || [];
-        generatedTest.warnings.push(`🚨 INCOMPLETE GENERATION DETECTED`);
-        generatedTest.warnings.push(`Generated code contains placeholder comments: ${hasPlaceholders.placeholders.join(', ')}`);
-        generatedTest.warnings.push(`This is unacceptable. The LLM failed to generate complete tests.`);
-        generatedTest.warnings.push(`RECOMMENDATION: Try a different model (Claude 4 Sonnet or Gemini 2.5 Pro) for better results.`);
-        
-        // Log for debugging
-        console.log('Incomplete generated code sample:', generatedTest.code.substring(0, 1000));
-      }
-
-      // Check describe block count vs endpoint count
-      const describeBlockCount = this.countDescribeBlocks(generatedTest.code);
-      const expectedDescribeBlocks = validation.endpoints.length + 1; // +1 for main test suite
-      if (describeBlockCount < expectedDescribeBlocks) {
-        console.error(`CRITICAL: Insufficient describe blocks: ${describeBlockCount} found, ${expectedDescribeBlocks} expected`);
-        
-        // Reduce quality score for missing describe blocks
-        generatedTest.qualityScore = Math.min(generatedTest.qualityScore, 4);
-        
-        generatedTest.warnings = generatedTest.warnings || [];
-        generatedTest.warnings.push(`🚨 INCOMPLETE ENDPOINT COVERAGE`);
-        generatedTest.warnings.push(`Only ${describeBlockCount} describe blocks found, expected ${expectedDescribeBlocks} (one per endpoint + main suite)`);
-        generatedTest.warnings.push(`This indicates the LLM stopped generating tests before completing all endpoints.`);
-        generatedTest.warnings.push(`SOLUTION: Use a model with higher token limits or try Claude 4 Sonnet.`);
-      }
-      
-      // Check endpoint coverage
-      if (coverage.missingEndpoints.length > 0) {
-        console.warn('Missing tests for endpoints:', coverage.missingEndpoints);
-        generatedTest.warnings = generatedTest.warnings || [];
-        generatedTest.warnings.push(`Missing tests for endpoints: ${coverage.missingEndpoints.join(', ')}`);
-      }
-
-      // The provider already returns a GeneratedTest object
-      // Just add/override the ID to ensure uniqueness
-      generatedTest.id = `test_${Date.now()}`;
-
-      return generatedTest;
-    } catch (error) {
-      console.error('Batch test generation failed:', error);
+      Logger.getInstance().error('Individual test generation failed', error, 'AIService');
       throw error;
     }
   }
@@ -443,7 +321,7 @@ export class AIService {
     requests.forEach(request => {
       try {
         const url = new URL(request.url);
-        let signature = `${request.method}:${url.pathname}`;
+        let signature = `${request.method}:${normalizePath(url.pathname)}`;
         
         // ENHANCED: Special handling for GraphQL endpoints
         if (this.isGraphQLEndpoint(url.pathname, request)) {
@@ -459,7 +337,7 @@ export class AIService {
           console.log(`Unique endpoint detected: ${signature}`);
         }
       } catch (error) {
-        console.warn(`Failed to parse URL for request: ${request.url}`, error);
+        Logger.getInstance().warn(`Failed to parse URL for request: ${request.url}`, { error }, 'AIService');
         const fallbackSignature = `${request.method}:${request.url}`;
         if (!uniqueEndpoints.has(fallbackSignature)) {
           uniqueEndpoints.set(fallbackSignature, request);
@@ -1032,332 +910,8 @@ ${setupSection}${testContent}
     return errors;
   }
 
-  // Enhancement 2: Auto-Retry with Improved Prompts
-  private async generateTestsWithRetry(
-    provider: any, 
-    harData: HARData, 
-    options: GenerationOptions, 
-    authFlow?: AuthFlow,
-    customAuthGuide?: string,
-    maxAttempts: number = 3
-  ): Promise<GeneratedTest> {
-    let lastResult: GeneratedTest | null = null;
-    let bestResult: GeneratedTest | null = null;
-    let bestScore = 0;
-    
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      console.log(`🔄 Generation attempt ${attempt}/${maxAttempts}`);
-      
-      try {
-        const result = await provider.generateTests(harData, options, authFlow, customAuthGuide);
-        
-        // Comprehensive validation of the result
-        const validation = await this.comprehensiveValidation(result, harData, options.framework);
-        
-        console.log(`Attempt ${attempt} quality score: ${validation.overallScore}/10`);
-        
-        // Track the best result
-        if (validation.overallScore > bestScore) {
-          bestResult = result;
-          bestScore = validation.overallScore;
-        }
-        
-        // If we got a high-quality result, return it immediately
-        if (validation.isComplete && validation.overallScore >= 8) {
-          console.log(`✅ High-quality result achieved on attempt ${attempt}`);
-          result.metadata = {
-            ...result.metadata,
-            generationAttempts: attempt,
-            finalScore: validation.overallScore
-          };
-          return result;
-        }
-        
-        // If not the last attempt, refine the prompt based on detected issues
-        if (attempt < maxAttempts) {
-          console.log(`⚠️ Quality score ${validation.overallScore}/10 - refining prompt for next attempt`);
-          options = this.refinePromptBasedOnErrors(options, validation);
-          
-          // Add a small delay to avoid rate limiting
-          await this.delay(1000);
-        }
-        
-        lastResult = result;
-        
-      } catch (error) {
-        console.error(`Attempt ${attempt} failed:`, error);
-        
-        // If this is the last attempt, throw the error
-        if (attempt === maxAttempts) {
-          throw error;
-        }
-        
-        // Otherwise, continue to next attempt
-        console.log(`Retrying after error...`);
-        await this.delay(2000);
-      }
-    }
-    
-    // Return the best result we got, even if not perfect
-    const finalResult = bestResult || lastResult;
-    if (finalResult) {
-      finalResult.metadata = {
-        ...finalResult.metadata,
-        generationAttempts: maxAttempts,
-        finalScore: bestScore,
-        note: 'Best result from multiple attempts'
-      };
-      console.log(`📊 Returning best result with score: ${bestScore}/10`);
-      return finalResult;
-    }
-    
-    throw new Error('All generation attempts failed');
-  }
-
   private delay(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
-  }
-
-  private async comprehensiveValidation(result: GeneratedTest, harData: HARData, framework: string): Promise<{
-    isComplete: boolean;
-    overallScore: number;
-    issues: string[];
-    breakdown: {
-      syntax: number;
-      completeness: number;
-      coverage: number;
-      readiness: number;
-    };
-  }> {
-    console.log('🔍 Starting comprehensive validation (simplified)...');
-    
-    try {
-      // TEMPORARY: Use simplified validation until DOM dependencies are resolved
-      const issues: string[] = [];
-      let overallScore = 70; // Base score
-      
-      // Basic syntax validation
-      const syntaxValidation = this.validateSyntax(result.code, framework);
-      let syntaxScore = syntaxValidation.isValid ? 90 : 50;
-      
-      if (!syntaxValidation.isValid) {
-        issues.push(...syntaxValidation.errors.map(err => `[SYNTAX] ${err}`));
-        overallScore -= 20;
-      }
-      
-      // Completeness check
-      const placeholderCheck = this.checkForPlaceholders(result.code);
-      let completenessScore = placeholderCheck.found ? 30 : 85;
-      
-      if (placeholderCheck.found) {
-        issues.push('[COMPLETENESS] Code contains placeholder comments');
-        overallScore -= 25;
-      }
-      
-      // Coverage check (basic)
-      const endpointCount = harData.entries?.length || 0;
-      const testCount = this.countDescribeBlocks(result.code);
-      const coverageScore = Math.min(90, (testCount / Math.max(endpointCount, 1)) * 90);
-      
-      if (coverageScore < 50) {
-        issues.push('[COVERAGE] Insufficient test coverage for endpoints');
-        overallScore -= 15;
-      }
-      
-      // Readiness check
-      let readinessScore = 70;
-      if (result.code.includes('authToken') || result.code.includes('beforeAll')) {
-        readinessScore += 10; // Bonus for auth setup
-      }
-      if (result.code.includes('expect(') && result.code.includes('toBe')) {
-        readinessScore += 10; // Bonus for assertions
-      }
-      
-      // Apply auto-fix for common issues
-      if (syntaxScore < 80 || completenessScore < 70) {
-        console.log('🔧 Applying basic auto-fix...');
-        result.code = this.autoFixCommonIssues(result.code, framework);
-        // Recalculate after fixes
-        const newSyntaxValidation = this.validateSyntax(result.code, framework);
-        if (newSyntaxValidation.isValid && !syntaxValidation.isValid) {
-          syntaxScore = 85;
-          overallScore += 15;
-          result.warnings = result.warnings || [];
-          result.warnings.push('🔧 Auto-fixed syntax issues');
-        }
-      }
-      
-      // Ensure scores are within bounds
-      overallScore = Math.max(0, Math.min(100, overallScore));
-      syntaxScore = Math.max(0, Math.min(100, syntaxScore));
-      completenessScore = Math.max(0, Math.min(100, completenessScore));
-      readinessScore = Math.max(0, Math.min(100, readinessScore));
-      
-      // Add quality insights to result
-      if (result.metadata) {
-        result.metadata.validationResult = {
-          readinessLevel: overallScore >= 80 ? 'production' : overallScore >= 60 ? 'staging' : 'development',
-          estimatedFixTime: issues.length * 2, // 2 minutes per issue
-          improvementSuggestions: issues.length > 0 ? ['Fix identified issues for better code quality'] : ['Code looks good!']
-        };
-      }
-      
-      console.log(`📊 Comprehensive validation completed: ${overallScore}/100`);
-      
-      return {
-        isComplete: issues.length === 0,
-        overallScore,
-        issues,
-        breakdown: {
-          syntax: syntaxScore,
-          completeness: completenessScore,
-          coverage: coverageScore,
-          readiness: readinessScore
-        }
-      };
-      
-    } catch (error) {
-      console.warn('⚠️ Validation failed, using fallback:', error);
-      
-      return {
-        isComplete: false,
-        overallScore: 50,
-        issues: ['Validation system temporarily unavailable'],
-        breakdown: {
-          syntax: 50,
-          completeness: 50,
-          coverage: 50,
-          readiness: 50
-        }
-      };
-    }
-  }
-
-  private async applyIntelligentAutoFix(
-    result: GeneratedTest, 
-    issues: any[], 
-    framework: string
-  ): Promise<void> {
-    try {
-      const { IntelligentAutoFixer } = await import('./IntelligentAutoFixer');
-      const autoFixer = IntelligentAutoFixer.getInstance();
-      
-      const fixResult = await autoFixer.autoFixWithAI(result.code, issues, framework as any);
-      
-      if (fixResult.success && fixResult.confidenceScore > 70) {
-        result.code = fixResult.fixedCode;
-        result.warnings = result.warnings || [];
-        result.warnings.push(`🤖 Auto-fixed ${fixResult.issuesFixed.length} issues (${fixResult.confidenceScore}% confidence)`);
-        result.warnings.push(...fixResult.fixLog);
-        
-        console.log(`✅ Intelligent auto-fix applied: ${fixResult.issuesFixed.length} issues fixed`);
-      } else {
-        console.log('⚠️ Auto-fix had low confidence or failed, keeping original code');
-      }
-    } catch (error) {
-      console.warn('Auto-fix failed:', error);
-    }
-  }
-
-  private calculateReadinessScore(code: string, framework: string): number {
-    let score = 10;
-    
-    // Check for required imports
-    const requiredImports = this.getRequiredImports(framework);
-    const missingImports = requiredImports.filter(imp => !code.includes(imp));
-    
-    if (missingImports.length > 0) {
-      score -= missingImports.length * 2;
-    }
-    
-    // Check for proper test structure
-    if (framework === 'jest') {
-      if (!code.includes('describe(')) score -= 2;
-      if (!code.includes('test(') && !code.includes('it(')) score -= 3;
-    }
-    
-    // Check for environment variable usage
-    if (!code.includes('process.env')) {
-      score -= 1; // Minor deduction for hardcoded values
-    }
-    
-    return Math.max(0, score);
-  }
-
-  private getRequiredImports(framework: string): string[] {
-    switch (framework) {
-      case 'jest':
-        return ['axios', 'require'];
-      case 'playwright':
-        return ['test', 'expect'];
-      case 'cypress':
-        return ['cy.'];
-      default:
-        return [];
-    }
-  }
-
-  private refinePromptBasedOnErrors(options: GenerationOptions, validation: any): GenerationOptions {
-    const refinements: string[] = [];
-    
-    // Address specific issues found in validation
-    if (validation.breakdown.syntax < 8) {
-      refinements.push(`
-🚨 CRITICAL: Previous attempt had syntax errors. You MUST:
-- Balance all braces {} and parentheses ()
-- Ensure all quotes are properly matched
-- Add proper semicolons where needed
-- Make sure all function calls are complete`);
-    }
-    
-    if (validation.breakdown.completeness < 8) {
-      refinements.push(`
-🚨 CRITICAL: Previous attempt was incomplete. You MUST:
-- Generate COMPLETE tests for ALL endpoints
-- NO placeholder comments like "// add more tests" or "// continue..."
-- Every endpoint MUST have its own describe() block with real test cases
-- NO TODO or FIXME comments`);
-    }
-    
-    if (validation.breakdown.coverage < 8) {
-      refinements.push(`
-🚨 CRITICAL: Previous attempt missed endpoint coverage. You MUST:
-- Generate tests for EVERY single endpoint in the HAR data
-- Each endpoint needs its own describe() block
-- Include the HTTP method and path in test names
-- Cover happy path, error cases, and edge cases for each endpoint`);
-    }
-    
-    if (validation.breakdown.readiness < 8) {
-      refinements.push(`
-🚨 CRITICAL: Previous attempt wasn't ready to run. You MUST:
-- Include all necessary imports (axios, testing framework imports)
-- Add proper setup and teardown code
-- Use environment variables for configuration
-- Ensure async/await is used correctly`);
-    }
-    
-    // Create refined options with enhanced prompt
-    const refinedOptions = { ...options };
-    
-    if (refinements.length > 0) {
-      const existingPrompt = refinedOptions.customPrompt || '';
-      refinedOptions.customPrompt = `${existingPrompt}
-
-🔥🔥🔥 PROMPT REFINEMENT - ADDRESSING PREVIOUS ISSUES 🔥🔥🔥
-
-${refinements.join('\n')}
-
-🎯 MANDATORY SUCCESS CRITERIA:
-- Syntax Score: Must be 10/10 (perfect syntax)
-- Completeness Score: Must be 10/10 (no placeholders)  
-- Coverage Score: Must be 8+/10 (all endpoints covered)
-- Readiness Score: Must be 8+/10 (ready to run)
-
-GENERATE COMPLETE, RUNNABLE, ERROR-FREE CODE NOW!`;
-    }
-    
-    return refinedOptions;
   }
 
   // Enhancement 3: Code Auto-Fixing Pipeline
@@ -1971,7 +1525,7 @@ ${fixedCode}`;
       return `operation_${bodyHash}`;
       
     } catch (error) {
-      console.warn('Failed to extract GraphQL operation:', error);
+      Logger.getInstance().warn('Failed to extract GraphQL operation', { error }, 'AIService');
       return null;
     }
   }

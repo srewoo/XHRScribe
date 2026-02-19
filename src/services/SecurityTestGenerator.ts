@@ -451,24 +451,42 @@ export class SecurityTestGenerator {
   private injectPayload(originalBody: any, payload: string): any {
     if (!originalBody) return { injected: payload };
 
+    // If the body is a string, try to parse it as JSON first
+    if (typeof originalBody === 'string') {
+      try {
+        const parsed = JSON.parse(originalBody);
+        if (typeof parsed === 'object' && parsed !== null) {
+          const result = JSON.parse(JSON.stringify(parsed));
+          this.injectIntoObject(result, payload);
+          return result;
+        }
+      } catch {
+        // Not valid JSON string — return payload directly
+      }
+      return { injected: payload };
+    }
+
     const result = JSON.parse(JSON.stringify(originalBody));
 
-    // Inject into first string field
-    const injectIntoObject = (obj: any): boolean => {
-      for (const key of Object.keys(obj)) {
-        if (typeof obj[key] === 'string') {
-          obj[key] = payload;
-          return true;
-        }
-        if (typeof obj[key] === 'object' && obj[key] !== null) {
-          if (injectIntoObject(obj[key])) return true;
-        }
-      }
-      return false;
-    };
+    if (typeof result !== 'object' || result === null) {
+      return { injected: payload };
+    }
 
-    injectIntoObject(result);
+    this.injectIntoObject(result, payload);
     return result;
+  }
+
+  private injectIntoObject(obj: any, payload: string): boolean {
+    for (const key of Object.keys(obj)) {
+      if (typeof obj[key] === 'string') {
+        obj[key] = payload;
+        return true;
+      }
+      if (typeof obj[key] === 'object' && obj[key] !== null) {
+        if (this.injectIntoObject(obj[key], payload)) return true;
+      }
+    }
+    return false;
   }
 
   private calculateRiskScore(tests: SecurityTest[]): number {

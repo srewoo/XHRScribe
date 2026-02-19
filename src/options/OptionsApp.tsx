@@ -122,7 +122,6 @@ export default function OptionsApp() {
       maxRequestSize: 10485760,
     },
     advanced: {
-      maxTokens: 4000,
       temperature: 0.7,
       retryAttempts: 3,
       timeout: 30000,
@@ -245,7 +244,7 @@ export default function OptionsApp() {
                     const newProvider = e.target.value as AIProvider;
                     const providerModels: Record<AIProvider, AIModel> = {
                       openai: 'gpt-4.1-mini',
-                      anthropic: 'claude-4-sonnet',
+                      anthropic: 'claude-4-5-sonnet',
                       gemini: 'gemini-2-5-flash',
                       local: 'llama-3.2',
                     };
@@ -276,7 +275,9 @@ export default function OptionsApp() {
                     <MenuItem key="gpt-4.1-mini" value="gpt-4.1-mini">GPT-4.1 Mini (Fast & Cheap)</MenuItem>,
                   ]}
                   {settings.aiProvider === 'anthropic' && [
-                    <MenuItem key="claude-4-sonnet" value="claude-4-sonnet">Claude 4 Sonnet (Latest)</MenuItem>,
+                    <MenuItem key="claude-4-5-opus" value="claude-4-5-opus">Claude 4.5 Opus (Most Capable)</MenuItem>,
+                    <MenuItem key="claude-4-5-sonnet" value="claude-4-5-sonnet">Claude 4.5 Sonnet (Latest)</MenuItem>,
+                    <MenuItem key="claude-4-sonnet" value="claude-4-sonnet">Claude 4 Sonnet</MenuItem>,
                     <MenuItem key="claude-3-7-sonnet" value="claude-3-7-sonnet">Claude 3.7 Sonnet</MenuItem>,
                   ]}
                   {settings.aiProvider === 'gemini' && [
@@ -594,18 +595,6 @@ export default function OptionsApp() {
             <Typography variant="h6" gutterBottom>
               Advanced Settings
             </Typography>
-
-            <TextField
-              fullWidth
-              label="Max Tokens"
-              type="number"
-              value={settings.advanced.maxTokens}
-              onChange={(e) => setSettings({
-                ...settings,
-                advanced: { ...settings.advanced, maxTokens: parseInt(e.target.value) || 4000 },
-              })}
-              sx={{ mb: 2 }}
-            />
 
             <TextField
               fullWidth

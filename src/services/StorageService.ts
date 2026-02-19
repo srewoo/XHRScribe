@@ -1,5 +1,6 @@
 import CryptoJS from 'crypto-js';
 import { RecordingSession, Settings } from '@/types';
+import { Logger } from '@/services/logging/Logger';
 
 export class StorageService {
   private static instance: StorageService;
@@ -30,7 +31,7 @@ export class StorageService {
         await chrome.storage.local.set({ persistentEncryptionKey: newKey });
       }
     } catch (error) {
-      console.error('Failed to initialize encryption key:', error);
+      Logger.getInstance().error('Failed to initialize encryption key', error, 'StorageService');
       // Fallback to a static key if storage fails
       this.encryptionKey = CryptoJS.SHA256(`${chrome.runtime.id}_fallback`).toString();
     }
@@ -45,7 +46,7 @@ export class StorageService {
   // Decrypt sensitive data with multiple fallback strategies
   private decrypt(encryptedData: string): any {
     if (!encryptedData || typeof encryptedData !== 'string') {
-      console.warn('Invalid encrypted data');
+      Logger.getInstance().warn('Invalid encrypted data', null, 'StorageService');
       return null;
     }
 
@@ -56,12 +57,12 @@ export class StorageService {
     // Try without encryption (backward compatibility)
     try {
       const parsed = JSON.parse(encryptedData);
-      console.log('Data was not encrypted, returning as-is');
+      Logger.getInstance().debug('Data was not encrypted, returning as-is', null, 'StorageService');
       return parsed;
     } catch {}
 
     // Data is corrupted
-    console.warn('Unable to decrypt data with any method');
+    Logger.getInstance().warn('Unable to decrypt data with any method', null, 'StorageService');
     return null;
   }
 
@@ -99,21 +100,21 @@ export class StorageService {
         pruned.push(session);
         const encrypted = this.encrypt(pruned);
         await chrome.storage.local.set({ sessions: encrypted });
-        console.warn(`Storage at ${Math.round(usageRatio * 100)}% - auto-pruned ${sessions.length - pruned.length + 1} oldest sessions`);
+        Logger.getInstance().warn(`Storage at ${Math.round(usageRatio * 100)}% - auto-pruned ${sessions.length - pruned.length + 1} oldest sessions`, null, 'StorageService');
         return;
       }
       throw new Error(`Storage is ${Math.round(usageRatio * 100)}% full. Please delete old sessions to free space.`);
     }
 
     if (usageRatio >= StorageService.QUOTA_WARN_THRESHOLD) {
-      console.warn(`Storage usage at ${Math.round(usageRatio * 100)}% (${(usage.used / 1024 / 1024).toFixed(1)}MB / ${(usage.total / 1024 / 1024).toFixed(0)}MB)`);
+      Logger.getInstance().warn(`Storage usage at ${Math.round(usageRatio * 100)}% (${(usage.used / 1024 / 1024).toFixed(1)}MB / ${(usage.total / 1024 / 1024).toFixed(0)}MB)`, null, 'StorageService');
     }
 
     const sessions = await this.getSessions();
     sessions.push(session);
 
-    // Keep only last 50 sessions
-    if (sessions.length > 50) {
+    // Keep only last 200 sessions (quota-based pruning is the real safety net)
+    if (sessions.length > 200) {
       sessions.shift();
     }
 
@@ -122,8 +123,8 @@ export class StorageService {
       ...s,
       requests: s.requests.map(r => ({
         ...r,
-        responseBody: typeof r.responseBody === 'string' && r.responseBody.length > 50000
-          ? r.responseBody.substring(0, 50000) + '\n... [truncated - response too large]'
+        responseBody: typeof r.responseBody === 'string' && r.responseBody.length > 200000
+          ? r.responseBody.substring(0, 200000) + '\n... [truncated - response too large]'
           : r.responseBody,
       })),
     }));
@@ -147,6 +148,19 @@ export class StorageService {
     const sessions = await this.getSessions();
     const filtered = sessions.filter(s => s.id !== sessionId);
     const encrypted = this.encrypt(filtered);
+    await chrome.storage.local.set({ sessions: encrypted });
+  }
+
+  // Delete individual requests from a session
+  async deleteRequestsFromSession(sessionId: string, requestIds: string[]): Promise<void> {
+    const sessions = await this.getSessions();
+    const idsToRemove = new Set(requestIds);
+    const updated = sessions.map(s =>
+      s.id === sessionId
+        ? { ...s, requests: s.requests.filter(r => !idsToRemove.has(r.id)) }
+        : s
+    );
+    const encrypted = this.encrypt(updated);
     await chrome.storage.local.set({ sessions: encrypted });
   }
 
@@ -194,7 +208,7 @@ export class StorageService {
           
           // If decryption failed, clear the corrupted data
           if (!decryptedKeys && result.encryptedApiKeys) {
-            console.warn('Clearing corrupted API keys, user will need to re-enter them');
+            Logger.getInstance().warn('Clearing corrupted API keys, user will need to re-enter them', null, 'StorageService');
             await chrome.storage.sync.remove('encryptedApiKeys');
           }
         } else {
@@ -204,7 +218,7 @@ export class StorageService {
         return settings;
       }
     } catch (error) {
-      console.error('Error loading settings:', error);
+      Logger.getInstance().error('Error loading settings', error, 'StorageService');
       // Return default settings on error
       return this.getDefaultSettings();
     }
@@ -235,7 +249,6 @@ export class StorageService {
         maxRequestSize: 10485760,
       },
       advanced: {
-        maxTokens: 4000,
         temperature: 0.7,
         retryAttempts: 3,
         timeout: 30000,
@@ -252,7 +265,7 @@ export class StorageService {
 
   // Reset corrupted encrypted data only
   async resetCorruptedData(): Promise<void> {
-    console.warn('Resetting corrupted encrypted data...');
+    Logger.getInstance().warn('Resetting corrupted encrypted data', null, 'StorageService');
     
     // Remove encrypted API keys but keep other settings
     await chrome.storage.sync.remove('encryptedApiKeys');
@@ -262,7 +275,7 @@ export class StorageService {
     if (result.sessions && typeof result.sessions === 'string') {
       const testDecrypt = this.decrypt(result.sessions);
       if (!testDecrypt) {
-        console.warn('Sessions data is corrupted, clearing...');
+        Logger.getInstance().warn('Sessions data is corrupted, clearing', null, 'StorageService');
         await chrome.storage.local.remove('sessions');
       }
     }
@@ -272,7 +285,7 @@ export class StorageService {
     this.encryptionKey = newKey;
     await chrome.storage.local.set({ persistentEncryptionKey: newKey });
     
-    console.log('Corrupted data reset complete');
+    Logger.getInstance().info('Corrupted data reset complete', null, 'StorageService');
   }
 
   // Export data (for backup)
@@ -364,7 +377,7 @@ export class StorageService {
     try {
       return JSON.parse(jsonString);
     } catch (error) {
-      console.error('Failed to parse large data:', error);
+      Logger.getInstance().error('Failed to parse large data', error, 'StorageService');
       return null;
     }
   }

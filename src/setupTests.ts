@@ -14,6 +14,7 @@ import '@testing-library/jest-dom';
     getURL: jest.fn((path) => `chrome-extension://test-extension-id/${path}`),
     openOptionsPage: jest.fn(),
     getContexts: jest.fn(),
+    getManifest: jest.fn(() => ({ update_url: '', version: '3.0.0' })),
   },
   storage: {
     local: {

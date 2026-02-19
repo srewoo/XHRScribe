@@ -1,6 +1,8 @@
 // Content script for XHRScribe
 // Runs on all web pages to support service worker persistence
 
+import { Logger } from '@/services/logging/Logger';
+
 let pingInterval: ReturnType<typeof setInterval> | null = null;
 let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -20,15 +22,15 @@ function startPinging(): void {
       chrome.runtime.sendMessage({ type: 'PING' }, (response) => {
         // Check for chrome.runtime.lastError to prevent unchecked error
         if (chrome.runtime.lastError) {
-          console.log('Service worker connection error:', chrome.runtime.lastError.message);
+          Logger.getInstance().warn('Service worker connection error', { message: chrome.runtime.lastError.message }, 'ContentScript');
           return;
         }
         if (!response) {
-          console.log('Service worker not responding, may have been suspended');
+          Logger.getInstance().warn('Service worker not responding, may have been suspended', null, 'ContentScript');
         }
       });
     } catch (error) {
-      console.log('Failed to ping service worker:', error);
+      Logger.getInstance().warn('Failed to ping service worker', { error }, 'ContentScript');
     }
   }, 20000); // Every 20 seconds
 }
@@ -37,7 +39,7 @@ function startPinging(): void {
 function startHeartbeat(): void {
   if (heartbeatInterval) return;
 
-  console.log('🫀 Starting heartbeat from content script (30s interval)');
+  Logger.getInstance().info('Starting heartbeat from content script (30s interval)', null, 'ContentScript');
 
   // Send initial heartbeat
   sendHeartbeat();
@@ -56,7 +58,7 @@ function sendHeartbeat(): void {
       source: 'content_script'
     }, (response) => {
       if (chrome.runtime.lastError) {
-        console.warn('💔 Heartbeat failed:', chrome.runtime.lastError.message);
+        Logger.getInstance().warn('Heartbeat failed', { message: chrome.runtime.lastError.message }, 'ContentScript');
         // Try to recover by restarting heartbeat
         attemptHeartbeatRecovery();
         return;
@@ -65,18 +67,18 @@ function sendHeartbeat(): void {
       if (response?.status) {
         const status = response.status as HeartbeatStatus;
         if (status.missedBeats > 0) {
-          console.warn(`⚠️ Service worker missed ${status.missedBeats} heartbeats`);
+          Logger.getInstance().warn(`Service worker missed ${status.missedBeats} heartbeats`, null, 'ContentScript');
         }
       }
     });
   } catch (error) {
-    console.error('Heartbeat send error:', error);
+    Logger.getInstance().error('Heartbeat send error', error, 'ContentScript');
     attemptHeartbeatRecovery();
   }
 }
 
 function attemptHeartbeatRecovery(): void {
-  console.log('🔄 Attempting heartbeat recovery...');
+  Logger.getInstance().info('Attempting heartbeat recovery', null, 'ContentScript');
 
   // Stop current heartbeat
   stopHeartbeat();
@@ -91,7 +93,7 @@ function stopHeartbeat(): void {
   if (heartbeatInterval) {
     clearInterval(heartbeatInterval);
     heartbeatInterval = null;
-    console.log('💤 Heartbeat stopped');
+    Logger.getInstance().debug('Heartbeat stopped', null, 'ContentScript');
   }
 }
 
@@ -112,7 +114,7 @@ class FloatingPanel {
   private isMaximized = false;
   private isRecording = false;
   private isHidden = false; // true when minimized (container hidden but alive)
-  private readonly NORMAL_WIDTH = '420px';
+  private readonly NORMAL_WIDTH = '580px';
   private readonly MAX_WIDTH = '800px';
 
   toggle(): void {
@@ -322,7 +324,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
     case 'HEARTBEAT_RECOVERY':
       // Service worker is requesting recovery - restart heartbeat
-      console.log('🔄 Received heartbeat recovery request');
+      Logger.getInstance().info('Received heartbeat recovery request', null, 'ContentScript');
       stopHeartbeat();
       startHeartbeat();
       sendResponse({ success: true });
@@ -410,14 +412,14 @@ function captureConsoleOutput(): void {
 }
 
 // Initialize
-console.log('XHRScribe content script loaded');
+Logger.getInstance().info('XHRScribe content script loaded', null, 'ContentScript');
 
 // Start pinging immediately if on a page being recorded
 try {
   chrome.runtime.sendMessage({ type: 'CONTENT_SCRIPT_READY' }, (response) => {
     // Check for chrome.runtime.lastError to prevent unchecked error
     if (chrome.runtime.lastError) {
-      console.log('Extension not ready:', chrome.runtime.lastError.message);
+      Logger.getInstance().warn('Extension not ready', { message: chrome.runtime.lastError.message }, 'ContentScript');
       return;
     }
     if (response?.shouldPing) {
@@ -434,7 +436,7 @@ try {
     }
   });
 } catch (error) {
-  console.log('Failed to notify extension of content script ready:', error);
+  Logger.getInstance().warn('Failed to notify extension of content script ready', { error }, 'ContentScript');
   // Still try to start heartbeat even if initial message failed
   startHeartbeat();
 }

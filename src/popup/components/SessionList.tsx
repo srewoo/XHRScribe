@@ -2,9 +2,6 @@ import React, { useState } from 'react';
 import {
   Box,
   List,
-  ListItem,
-  ListItemText,
-  ListItemSecondaryAction,
   IconButton,
   Typography,
   Chip,
@@ -31,6 +28,7 @@ import {
   RadioButtonChecked,
   Folder,
   Language,
+  Share,
 } from '@mui/icons-material';
 import { RecordingSession } from '@/types';
 import { useStore } from '@/store/useStore';
@@ -156,6 +154,28 @@ export default function SessionList({ sessions }: SessionListProps) {
     URL.revokeObjectURL(url);
   };
 
+  const handleExportBundle = (session: RecordingSession) => {
+    const bundle = {
+      version: '1.0.0',
+      exportedAt: new Date().toISOString(),
+      session: {
+        ...session,
+      },
+    };
+
+    const blob = new Blob([JSON.stringify(bundle, null, 2)], {
+      type: 'application/json'
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${session.name.replace(/\s+/g, '-')}.xhrscribe`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   if (sessions.length === 0) {
     return (
       <Box sx={{ textAlign: 'center', py: 4 }}>
@@ -173,149 +193,107 @@ export default function SessionList({ sessions }: SessionListProps) {
   return (
     <Box>
       {/* Session Count */}
-      <Box sx={{ mb: 2, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <Typography variant="subtitle2" color="text.secondary">
+      <Box sx={{ mb: 0.5, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <Typography variant="caption" color="text.secondary">
           {sessions.length} session{sessions.length !== 1 ? 's' : ''}
         </Typography>
       </Box>
 
       {/* Sessions List */}
-      <List sx={{ maxHeight: 300, overflow: 'auto' }}>
+      <List sx={{ overflow: 'auto', py: 0 }}>
         {sessions.slice(0, visibleCount).map((session) => (
-          <Paper key={session.id} elevation={1} sx={{ mb: 1 }}>
-            <ListItem
-              component="div"
-              onClick={() => handleSessionClick(session)}
+          <Paper
+            key={session.id}
+            elevation={1}
+            sx={{
+              mb: 1,
+              overflow: 'hidden',
+              '&:hover': { bgcolor: 'action.hover', cursor: 'pointer' },
+              bgcolor: isImportedSession(session) ? 'action.selected' : 'transparent',
+            }}
+            onClick={() => handleSessionClick(session)}
+          >
+            {/* Row 1: Icon + Name + Status */}
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 1.5, pt: 1.25, pb: 0.25 }}>
+              {React.cloneElement(getSessionTypeIcon(session), { sx: { ...getSessionTypeIcon(session).props.sx, fontSize: 20 } })}
+              <Typography variant="body2" sx={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+                {session.name}
+              </Typography>
+              <Chip
+                label={getImportTypeLabel(session)}
+                size="small"
+                variant={isImportedSession(session) ? "filled" : "outlined"}
+                color={isImportedSession(session) ? "primary" : "default"}
+                sx={{ fontSize: '0.6rem', height: 18, flexShrink: 0 }}
+              />
+            </Box>
+
+            {/* Row 2: Metadata */}
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, px: 1.5, pb: 0.5 }}>
+              <Typography variant="caption" sx={{ display: 'flex', alignItems: 'center', gap: 0.3 }}>
+                <Code sx={{ fontSize: 12 }} />
+                {session.requests.length} req
+              </Typography>
+              {session.startTime && (
+                <Typography variant="caption" sx={{ display: 'flex', alignItems: 'center', gap: 0.3 }}>
+                  <Timer sx={{ fontSize: 12 }} />
+                  {formatDate(session.startTime)}
+                </Typography>
+              )}
+              {session.url && (
+                <Typography variant="caption" color="text.secondary" noWrap sx={{ maxWidth: 200 }}>
+                  {new URL(session.url).hostname}
+                </Typography>
+              )}
+            </Box>
+
+            {/* Row 3: Action Buttons */}
+            <Box
               sx={{
-                '&:hover': {
-                  bgcolor: 'action.hover',
-                  cursor: 'pointer'
-                },
-                bgcolor: isImportedSession(session) ? 'action.selected' : 'transparent'
+                display: 'flex',
+                justifyContent: 'flex-end',
+                gap: 0.5,
+                px: 1,
+                pb: 0.75,
+                borderTop: '1px solid',
+                borderColor: 'divider',
+                pt: 0.5,
               }}
             >
-              <Box sx={{ mr: 2 }}>
-                {getSessionTypeIcon(session)}
-              </Box>
-              <ListItemText
-                primary={
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                    <Typography variant="subtitle2" sx={{ fontWeight: 'medium' }}>
-                      {session.name}
-                    </Typography>
-                    <Chip
-                      label={getImportTypeLabel(session)}
-                      size="small"
-                      variant={isImportedSession(session) ? "filled" : "outlined"}
-                      color={isImportedSession(session) ? "primary" : "default"}
-                      sx={{ fontSize: '0.7rem', height: 20 }}
-                    />
-                  </Box>
-                }
-                secondary={
-                  <Box sx={{ mt: 1 }}>
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
-                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                        <Code sx={{ fontSize: 14 }} />
-                        <Typography variant="caption">
-                          {session.requests.length} requests
-                        </Typography>
-                      </Box>
-
-                      {session.startTime && (
-                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                          <Timer sx={{ fontSize: 14 }} />
-                          <Typography variant="caption">
-                            {formatDate(session.startTime)}
-                          </Typography>
-                        </Box>
-                      )}
-
-                      {session.url && (
-                        <Typography variant="caption" color="text.secondary" sx={{
-                          maxWidth: 200,
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          whiteSpace: 'nowrap'
-                        }}>
-                          {session.url}
-                        </Typography>
-                      )}
-                    </Box>
-
-                    {/* Import metadata */}
-                    {isImportedSession(session) && session.metadata && (
-                      <Box sx={{ mt: 0.5, display: 'flex', gap: 1, flexWrap: 'wrap' }}>
-                        {session.metadata.collectionName && (
-                          <Chip
-                            label={session.metadata.collectionName}
-                            size="small"
-                            variant="outlined"
-                            sx={{ fontSize: '0.65rem', height: 18 }}
-                          />
-                        )}
-                        {session.metadata.apiTitle && (
-                          <Chip
-                            label={session.metadata.apiTitle}
-                            size="small"
-                            variant="outlined"
-                            sx={{ fontSize: '0.65rem', height: 18 }}
-                          />
-                        )}
-                        {session.metadata.apiVersion && (
-                          <Chip
-                            label={`v${session.metadata.apiVersion}`}
-                            size="small"
-                            variant="outlined"
-                            sx={{ fontSize: '0.65rem', height: 18 }}
-                          />
-                        )}
-                      </Box>
-                    )}
-                  </Box>
-                }
-              />
-              <ListItemSecondaryAction>
-                <Box sx={{ display: 'flex', gap: 0.5 }}>
-                  <Tooltip title="Rename Session">
-                    <IconButton
-                      size="small"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleRename(session);
-                      }}
-                    >
-                      <Edit fontSize="small" />
-                    </IconButton>
-                  </Tooltip>
-
-                  <Tooltip title="Export HAR">
-                    <IconButton
-                      size="small"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleExport(session);
-                      }}
-                    >
-                      <Download fontSize="small" />
-                    </IconButton>
-                  </Tooltip>
-
-                  <Tooltip title="Delete Session">
-                    <IconButton
-                      size="small"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        deleteSession(session.id);
-                      }}
-                      color="error"
-                    >
-                      <Delete fontSize="small" />
-                    </IconButton>
-                  </Tooltip>
-                </Box>
-              </ListItemSecondaryAction>
-            </ListItem>
+              <Tooltip title="Rename">
+                <IconButton
+                  size="small"
+                  onClick={(e) => { e.stopPropagation(); handleRename(session); }}
+                >
+                  <Edit sx={{ fontSize: 16 }} />
+                </IconButton>
+              </Tooltip>
+              <Tooltip title="Export HAR">
+                <IconButton
+                  size="small"
+                  onClick={(e) => { e.stopPropagation(); handleExport(session); }}
+                >
+                  <Download sx={{ fontSize: 16 }} />
+                </IconButton>
+              </Tooltip>
+              <Tooltip title="Share Bundle (.xhrscribe)">
+                <IconButton
+                  size="small"
+                  onClick={(e) => { e.stopPropagation(); handleExportBundle(session); }}
+                >
+                  <Share sx={{ fontSize: 16 }} />
+                </IconButton>
+              </Tooltip>
+              <Tooltip title="Delete">
+                <IconButton
+                  size="small"
+                  onClick={(e) => { e.stopPropagation(); deleteSession(session.id); }}
+                  color="error"
+                >
+                  <Delete sx={{ fontSize: 16 }} />
+                </IconButton>
+              </Tooltip>
+            </Box>
           </Paper>
         ))}
       </List>
