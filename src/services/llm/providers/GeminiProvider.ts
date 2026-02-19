@@ -289,7 +289,7 @@ YOU MUST GENERATE COMPLETE, FULLY-IMPLEMENTED ${framework} TEST CODE FOR ALL ${u
 
 🔥 MANDATORY REQUIREMENTS:
 ✅ GENERATE ACTUAL WORKING CODE FOR ALL ${uniqueEndpoints.size} ENDPOINTS
-✅ Each endpoint gets a complete test suite with 10-15 real test cases
+✅ Each endpoint gets a complete test suite with ${options.testCoverage === 'minimal' ? '1-2' : options.testCoverage === 'exhaustive' ? '8-12' : '3-5'} real test cases
 ✅ NO placeholder comments, NO template suggestions
 ✅ Production-ready, runnable code that I can use immediately
 
@@ -494,7 +494,7 @@ I WILL REJECT ANY RESPONSE THAT:
 
 🎯 EXACT REQUIREMENTS:
 1. Generate ${uniqueEndpoints.size} complete describe blocks (one per endpoint)
-2. Each describe block contains 10-15 actual test cases
+2. Each describe block contains ${options.testCoverage === 'minimal' ? '1-2' : options.testCoverage === 'exhaustive' ? '8-12' : '3-5'} actual test cases
 3. All code must be production-ready and runnable
 4. No shortcuts, no placeholders, no "continue" instructions
 
@@ -780,16 +780,12 @@ ${pb.getQualityGateSection()}
 - Handle async with async/await
 - Implement proper error assertions`,
       
-      postman: `Postman Collection:
-- Create proper collection structure
-- Add collection variables
-- Implement pre-request scripts
-- Write test scripts using pm.test()
-- Use pm.expect() for assertions
-- Add environment variables
-- Include response examples
-- Document each request
-- Add proper authentication`,
+      postman: `Postman Request Item (NOT a full collection):
+- Output ONLY the request item object with { name, request, event }
+- Do NOT include collection wrapper (no "info", "variable", or "item" array)
+- Write test scripts using pm.test() and pm.expect()
+- Use {{baseUrl}} for base URL variable
+- Add pre-request scripts for auth if needed`,
       
       restassured: `🚨 REST ASSURED JAVA FRAMEWORK - ABSOLUTELY NO JAVASCRIPT:
 - MANDATORY: Generate complete Java test class using REST Assured library

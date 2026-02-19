@@ -208,10 +208,9 @@ YOU MUST GENERATE COMPLETE, FULLY-IMPLEMENTED ${framework} TEST CODE FOR ALL ${e
 
 🔥 MANDATORY REQUIREMENTS:
 ✅ GENERATE ACTUAL WORKING CODE FOR ALL ${entries.length} ENDPOINTS
-✅ Each endpoint gets a complete test suite with 10-15 real test cases
+✅ Each endpoint gets a complete test suite with ${options.testCoverage === 'minimal' ? '1-2' : options.testCoverage === 'exhaustive' ? '8-12' : '3-5'} real test cases
 ✅ NO placeholder comments, NO template suggestions
 ✅ Production-ready, runnable code that I can use immediately
-⚠️  Each endpoint MUST have its own test suite with 10-15 complete test cases
 
 `;
     
@@ -364,7 +363,7 @@ ${responseBody ? responseBody.substring(0, 1500) : 'No response'}
 
 ✅ MUST GENERATE: Complete test suite for ALL ${uniqueEndpoints.size} endpoints
 ❌ MUST NOT INCLUDE: "// Continue adding more tests..." or similar placeholders
-✅ EACH ENDPOINT: Must have 10-15 individual test cases
+✅ EACH ENDPOINT: Must have ${options.testCoverage === 'minimal' ? '1-2' : options.testCoverage === 'exhaustive' ? '8-12' : '3-5'} individual test cases
 ✅ CODE QUALITY: Production-ready, runnable without modifications
 ✅ COVERAGE: Positive, negative, edge case, and security tests for every endpoint
 
@@ -457,13 +456,12 @@ ${pb.getQualityGateSection()}
 - .expect() with callback for body assertions
 - proper async/await usage`,
       
-      postman: `Generate Postman collection JSON with:
-- Proper collection structure
-- Pre-request scripts
-- Test scripts in JavaScript
-- Environment variables
-- Collection variables
-- Response examples`,
+      postman: `Generate Postman request item JSON (NOT a full collection):
+- Output ONLY the request item object with { name, request, event }
+- Do NOT include collection wrapper (no "info", "variable", or "item" array)
+- Use pm.test() and pm.expect() in event test scripts
+- Use {{baseUrl}} for base URL variable
+- Pre-request scripts for auth if needed`,
       
       restassured: `🚨 REST ASSURED JAVA FRAMEWORK - NO JAVASCRIPT ALLOWED:
 - MANDATORY: Generate complete Java test class using REST Assured

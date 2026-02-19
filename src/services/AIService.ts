@@ -422,27 +422,26 @@ export class AIService {
       sharedSetup = analyzer.generateAuthSetup(authFlow, framework);
     }
 
+    // Frameworks that don't use JS describe() blocks — keep raw output
+    const rawFrameworks = ['restassured', 'karate', 'k6', 'artillery', 'pytest', 'httpx', 'postman'];
+
     // Process each individual test - framework-aware extraction
     individualTests.forEach((testCode, index) => {
-      if (framework === 'restassured') {
-        // For REST Assured, extract Java class content (no describe blocks)
-        const classMatch = testCode.match(/public\s+class\s+\w+\s*\{([\s\S]*)\}/);
-        if (classMatch) {
-          testBlocks.push(`// Endpoint ${index + 1} tests\n${testCode}`);
-        } else {
-          // Just add the raw Java code
-          testBlocks.push(`// Endpoint ${index + 1} tests\n${testCode}`);
-        }
-      } else if (framework === 'postman') {
-        // For Postman, extract collection items
-        testBlocks.push(`// Endpoint ${index + 1}\n${testCode}`);
+      if (framework === 'postman') {
+        // For Postman, extract request item from LLM output (strip collection wrapper if present)
+        const extracted = this.extractPostmanItem(testCode);
+        testBlocks.push(extracted);
+      } else if (rawFrameworks.includes(framework)) {
+        // Non-JS frameworks: keep raw code, just add separator comment
+        const commentPrefix = framework === 'karate' ? '#' : (framework === 'pytest' || framework === 'httpx') ? '#' : '//';
+        testBlocks.push(`${commentPrefix} Endpoint ${index + 1} tests\n${testCode}`);
       } else {
-        // For other frameworks, extract describe blocks
+        // JS frameworks: extract describe blocks
         const describeMatch = testCode.match(/describe\(['"`]([^'"`]+)['"`],\s*\(\)\s*=>\s*\{([\s\S]*)\}\);?\s*$/);
         if (describeMatch) {
           const [, testName, testContent] = describeMatch;
           const cleanContent = testContent.trim();
-          
+
           if (framework === 'playwright') {
             testBlocks.push(`  test.describe('${testName}', () => {\n${cleanContent}\n  });`);
           } else {
@@ -454,7 +453,7 @@ export class AIService {
           if (fallbackMatch) {
             testBlocks.push(`  // Endpoint ${index + 1} tests\n${fallbackMatch[0]}`);
           } else {
-            // Last resort: wrap the entire test
+            // Last resort: keep raw code
             testBlocks.push(`  // Endpoint ${index + 1} tests\n  ${testCode.replace(/\n/g, '\n  ')}`);
           }
         }
@@ -473,14 +472,31 @@ export class AIService {
 
   private wrapTestSuiteForFramework(framework: string, testContent: string, sharedSetup?: string): string {
     const setupSection = sharedSetup ? `  // Authentication setup\n${sharedSetup.split('\n').map(line => `  ${line}`).join('\n')}\n` : '';
-    
+
     switch (framework) {
       case 'restassured':
-        // For REST Assured, don't wrap - the Java classes are standalone
+        // Java classes are standalone
         return testContent;
-      
+
+      case 'karate':
+        // Karate uses Feature file format — no JS wrapper
+        return testContent;
+
+      case 'k6':
+        // k6 uses export default function — no JS wrapper
+        return testContent;
+
+      case 'artillery':
+        // Artillery uses YAML config — no JS wrapper
+        return testContent;
+
+      case 'pytest':
+      case 'httpx':
+        // Python frameworks — no JS wrapper
+        return testContent;
+
       case 'postman':
-        // For Postman, generate collection wrapper
+        // Postman collection wrapper
         return `{
   "info": {
     "name": "API Test Suite - Complete Coverage",
@@ -491,19 +507,66 @@ export class AIService {
 ${testContent}
   ]
 }`;
-      
+
       case 'playwright':
         return `import { test, expect } from '@playwright/test';
 
 test.describe('API Test Suite - Complete Coverage', () => {
 ${setupSection}${testContent}
 });`;
-      
+
       default:
-        // For Jest, Mocha, Cypress, etc. - use traditional describe wrapper
+        // For Jest, Vitest, Mocha, Cypress, Supertest, PactumJS, Puppeteer, Mocha/Chai
         return `describe('API Test Suite - Complete Coverage', () => {
 ${setupSection}${testContent}
 });`;
+    }
+  }
+
+  /** Extract request item JSON from LLM output, stripping collection wrapper if present */
+  private extractPostmanItem(code: string): string {
+    // Strip JS-style comments (JSON doesn't support them)
+    let cleaned = code
+      .replace(/\/\/[^\n]*/g, '')     // single-line comments
+      .replace(/\/\*[\s\S]*?\*\//g, '') // block comments
+      .replace(/\n{3,}/g, '\n')        // collapse excessive empty lines
+      .trim();
+
+    // Try to parse as JSON
+    try {
+      const parsed = JSON.parse(cleaned);
+
+      // If it's a full collection with "item" array, extract the items
+      if (parsed.info && Array.isArray(parsed.item)) {
+        // Return just the item objects as JSON strings
+        return parsed.item.map((item: any) => JSON.stringify(item, null, 2)).join(',\n');
+      }
+
+      // If it's already a request item (has "request" or "event"), return as-is
+      if (parsed.request || parsed.event || parsed.name) {
+        return JSON.stringify(parsed, null, 2);
+      }
+
+      // Unknown structure, return cleaned
+      return cleaned;
+    } catch {
+      // Not valid JSON — try to find the first complete JSON object
+      const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        try {
+          const parsed = JSON.parse(jsonMatch[0]);
+          if (parsed.info && Array.isArray(parsed.item)) {
+            return parsed.item.map((item: any) => JSON.stringify(item, null, 2)).join(',\n');
+          }
+          if (parsed.request || parsed.event || parsed.name) {
+            return JSON.stringify(parsed, null, 2);
+          }
+        } catch {
+          // Fall through
+        }
+      }
+      // Return cleaned code as-is
+      return cleaned;
     }
   }
 

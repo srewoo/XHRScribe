@@ -243,7 +243,7 @@ YOU MUST GENERATE COMPLETE, FULLY-IMPLEMENTED ${framework} TEST CODE FOR ALL ${u
 
 🔥 MANDATORY REQUIREMENTS:
 ✅ GENERATE ACTUAL WORKING CODE FOR ALL ${uniqueEndpoints.size} ENDPOINTS
-✅ Each endpoint gets a complete test suite with 10-15 real test cases
+✅ Each endpoint gets a complete test suite with ${options.testCoverage === 'minimal' ? '1-2' : options.testCoverage === 'exhaustive' ? '8-12' : '3-5'} real test cases
 ✅ NO placeholder comments, NO template suggestions
 ✅ Production-ready, runnable code that I can use immediately
 
@@ -508,14 +508,14 @@ I WILL REJECT ANY RESPONSE THAT:
 ❌ Uses placeholder or template comments
 
 🎯 EXACT REQUIREMENTS:
-1. Generate ${uniqueEndpoints.size} complete describe blocks (one per endpoint)
-2. Each describe block contains 10-15 actual test cases
+1. Generate ${uniqueEndpoints.size} complete ${framework === 'postman' ? 'request items' : 'describe blocks'} (one per endpoint)
+2. Each ${framework === 'postman' ? 'request item' : 'describe block'} contains ${options.testCoverage === 'minimal' ? '1-2' : options.testCoverage === 'exhaustive' ? '8-12' : '3-5'} actual test cases
 3. All code must be production-ready and runnable
 4. No shortcuts, no placeholders, no "continue" instructions
 
 📊 MANDATORY OUTPUT STRUCTURE:
 Generate ${framework.toUpperCase()} test code following the framework's specific syntax and conventions.
-Each endpoint must have a complete test suite with 10-15 individual test cases.
+Each endpoint must have ${options.testCoverage === 'minimal' ? '1-2' : options.testCoverage === 'exhaustive' ? '8-12' : '3-5'} test cases.
 Use the framework's proper test organization, imports, and assertion methods.
 
 ${pb.getQualityGateSection()}
@@ -673,14 +673,13 @@ ${pb.getQualityGateSection()}
 - .send() for request bodies
 - .set() for headers`,
       
-      postman: `Generate Postman collection with:
-- Pre-request scripts
-- Test scripts with pm.test()
-- pm.expect() assertions
-- Environment variables with {{variable}}
-- Collection variables
-- Response validation
-- Newman CLI compatible`,
+      postman: `Generate Postman request item JSON (NOT a full collection):
+- Output ONLY the request item object with { name, request, event }
+- Do NOT include collection wrapper (no "info", "variable", or "item" array — we add those)
+- Test scripts with pm.test() and pm.expect() in event arrays
+- Use {{baseUrl}} for base URL variable
+- Pre-request scripts for auth if needed
+- No JavaScript comments (// ...) — JSON does not allow comments`,
       
       restassured: `🚨 REST ASSURED (JAVA) ONLY - NO JAVASCRIPT SYNTAX ALLOWED:
 - MANDATORY: Generate complete Java test class using REST Assured library

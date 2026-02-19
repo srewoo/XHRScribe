@@ -173,10 +173,10 @@ FOR JEST/VITEST:
      - Use test.beforeAll/test.afterAll for setup/teardown`;
       case 'postman':
         return `For POSTMAN individual mode:
-     - Create ONE collection
-     - Create SEPARATE request items for EACH endpoint
-     - Each request should be independently runnable
-     - Use pre-request scripts for shared setup`;
+     - Output ONLY the request item JSON object for THIS endpoint
+     - Do NOT output a full collection wrapper (no "info", no "variable", no "item" array)
+     - Each request item should be independently importable
+     - Use pre-request scripts for auth/setup if needed`;
       default:
         return `For ${framework} individual mode:
      - Create ONE describe block
@@ -455,59 +455,35 @@ describe('API Tests', () => {
 });`,
 
       postman: `{
-  "info": {
-    "name": "API Test Collection",
-    "description": "Generated API test collection",
-    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
-  },
-  "item": [
-    {
-      "name": "GET Endpoint Test",
-      "request": {
-        "method": "GET",
-        "header": [
-          {
-            "key": "Authorization",
-            "value": "Bearer {{authToken}}"
-          }
-        ],
-        "url": {
-          "raw": "{{baseUrl}}/api/endpoint",
-          "host": ["{{baseUrl}}"],
-          "path": ["api", "endpoint"]
-        }
-      },
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "exec": [
-              "pm.test('Status code is 200', function () {",
-              "    pm.response.to.have.status(200);",
-              "});",
-              "",
-              "pm.test('Response has expected field', function () {",
-              "    const jsonData = pm.response.json();",
-              "    pm.expect(jsonData).to.have.property('expectedField');",
-              "});",
-              "",
-              "pm.test('Response time is acceptable', function () {",
-              "    pm.expect(pm.response.responseTime).to.be.below(1000);",
-              "});"
-            ]
-          }
-        }
-      ]
+  "name": "GET /api/endpoint - Tests",
+  "request": {
+    "method": "GET",
+    "header": [
+      { "key": "Authorization", "value": "Bearer {{authToken}}" }
+    ],
+    "url": {
+      "raw": "{{baseUrl}}/api/endpoint",
+      "host": ["{{baseUrl}}"],
+      "path": ["api", "endpoint"]
     }
-  ],
-  "variable": [
+  },
+  "event": [
     {
-      "key": "baseUrl",
-      "value": "https://api.example.com"
-    },
-    {
-      "key": "authToken",
-      "value": "your-auth-token-here"
+      "listen": "test",
+      "script": {
+        "exec": [
+          "pm.test('Status code is 200', function () {",
+          "    pm.response.to.have.status(200);",
+          "});",
+          "pm.test('Response has expected field', function () {",
+          "    const jsonData = pm.response.json();",
+          "    pm.expect(jsonData).to.have.property('expectedField');",
+          "});",
+          "pm.test('Response time is acceptable', function () {",
+          "    pm.expect(pm.response.responseTime).to.be.below(1000);",
+          "});"
+        ]
+      }
     }
   ]
 }`,
@@ -769,11 +745,13 @@ Use request(app) chaining for all HTTP operations.`;
 Generate PURE JAVA code. ZERO JavaScript syntax allowed.`;
 
       case 'postman':
-        return `📌 RULE 2 — POSTMAN COLLECTION FORMAT (MUST follow EXACTLY):
-- Output MUST be valid JSON (Postman Collection v2.1.0)
+        return `📌 RULE 2 — POSTMAN REQUEST ITEM FORMAT (MUST follow EXACTLY):
+- Output ONLY request item object(s) — NOT a full collection wrapper
+- Do NOT include "info", "variable", or top-level "item" array — we add those automatically
+- Output MUST be valid JSON: a single request item object with { name, request, event }
 - Use pm.test() and pm.expect() inside "event" arrays
 - NEVER output describe(), it(), or expect() — those are JavaScript framework syntax
-- Collection structure: { info, item[], variable[] }`;
+- NEVER output comments (// ...) — JSON does not allow comments`;
 
       default:
         return `📌 RULE 2 — Use ONLY ${framework.toUpperCase()} syntax. Do NOT mix with other frameworks.`;
@@ -787,12 +765,11 @@ Generate PURE JAVA code. ZERO JavaScript syntax allowed.`;
   getCodeStructureTemplate(framework: string): string {
     if (framework === 'postman') {
       return `
-📐 CODE STRUCTURE — Follow this order:
-1. Collection info and variables
-2. Pre-request scripts for auth/setup
-3. Request items grouped by endpoint
-4. Test scripts per request with assertions
-5. Collection-level cleanup scripts
+📐 CODE STRUCTURE — Output a SINGLE JSON request item object:
+1. "name" — descriptive name like "GET /todos/1 - Tests"
+2. "request" — method, headers, url, body (if applicable)
+3. "event" — array with test script containing pm.test() assertions
+Do NOT wrap in a collection. Do NOT include "info" or "variable" keys.
 `;
     }
 

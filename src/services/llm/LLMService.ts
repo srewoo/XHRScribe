@@ -474,49 +474,38 @@ Feature: API Tests
 
 Include Background for common setup, use Karate match syntax`,
 
-      postman: `POSTMAN COLLECTION REQUIREMENTS:
-🚨 CRITICAL: You MUST generate a complete Postman Collection JSON, NOT test code!
+      postman: `POSTMAN REQUEST ITEM REQUIREMENTS:
+🚨 CRITICAL: Output ONLY a Postman request item object — NOT a full collection!
 
-MANDATORY OUTPUT FORMAT - Generate VALID JSON following this EXACT structure:
+We wrap the output in a collection automatically. You MUST output ONLY this structure:
 {
-  "info": {
-    "name": "Generated API Collection",
-    "description": "Generated from XHRScribe recording",
-    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  "name": "GET /endpoint - Tests",
+  "request": {
+    "method": "GET",
+    "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }],
+    "url": { "raw": "{{baseUrl}}/endpoint", "host": ["{{baseUrl}}"], "path": ["endpoint"] }
   },
-  "item": [
+  "event": [
     {
-      "name": "Endpoint Name",
-      "request": {
-        "method": "GET|POST|PUT|DELETE",
-        "header": [],
-        "body": { "mode": "raw", "raw": "{\"key\": \"value\"}" },
-        "url": { "raw": "{{baseUrl}}/endpoint", "host": ["{{baseUrl}}"], "path": ["endpoint"] }
-      },
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "exec": [
-              "pm.test('Status code is 200', function () {",
-              "    pm.response.to.have.status(200);",
-              "});",
-              "pm.test('Response has required fields', function () {",
-              "    const jsonData = pm.response.json();",
-              "    pm.expect(jsonData).to.have.property('expectedField');",
-              "});"
-            ]
-          }
-        }
-      ]
+      "listen": "test",
+      "script": {
+        "exec": [
+          "pm.test('Status code is 200', function () {",
+          "    pm.response.to.have.status(200);",
+          "});",
+          "pm.test('Response has required fields', function () {",
+          "    const jsonData = pm.response.json();",
+          "    pm.expect(jsonData).to.have.property('expectedField');",
+          "});"
+        ]
+      }
     }
-  ],
-  "variable": [
-    { "key": "baseUrl", "value": "https://api.example.com" }
   ]
 }
 
-⚠️  DO NOT generate describe() or it() blocks - Only valid Postman Collection JSON!`,
+⚠️ Do NOT include "info", "variable", or top-level "item" array — we add those.
+⚠️ Do NOT output JavaScript comments (// ...) — JSON does not support comments.
+⚠️ Do NOT output describe() or it() blocks — use pm.test() only.`,
 
         restassured: `REST ASSURED (JAVA) FRAMEWORK REQUIREMENTS:
 🚨 CRITICAL: Generate Java test code using REST Assured library!
