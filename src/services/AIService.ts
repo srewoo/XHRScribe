@@ -3,7 +3,7 @@ import { ClaudeProvider } from './llm/providers/ClaudeProvider';
 import { GeminiProvider } from './llm/providers/GeminiProvider';
 import { LocalProvider } from './llm/providers/LocalProvider';
 import { GenerationOptions, RecordingSession, GeneratedTest, Settings, HARData, HAREntry } from '@/types';
-import { normalizePath } from './EndpointGrouper';
+import { normalizePath, getEndpointSignature } from './EndpointGrouper';
 import { StorageService } from './StorageService';
 import { AuthFlowAnalyzer, AuthFlow } from './AuthFlowAnalyzer';
 import { Logger } from '@/services/logging/Logger';
@@ -155,18 +155,12 @@ export class AIService {
       if (excludedEndpoints && excludedEndpoints.size > 0) {
         console.log(`🔍 Excluded signatures:`, Array.from(excludedEndpoints));
         const filteredRequests = session.requests.filter(request => {
-          try {
-            const url = new URL(request.url);
-            const signature = `${request.method}:${normalizePath(url.pathname)}`;
-            const included = !excludedEndpoints.has(signature);
-            if (!included) {
-              console.log(`  ❌ Excluding: ${signature}`);
-            }
-            return included;
-          } catch (error) {
-            const signature = `${request.method}:${request.url}`;
-            return !excludedEndpoints.has(signature);
+          const signature = getEndpointSignature(request);
+          const included = !excludedEndpoints.has(signature);
+          if (!included) {
+            console.log(`  ❌ Excluding: ${signature}`);
           }
+          return included;
         });
 
         console.log(`🔍 Filtered: ${session.requests.length} → ${filteredRequests.length} requests`);
