@@ -1,4 +1,5 @@
 import { RecordingSession, TestFramework, GeneratedTest, GenerationOptions as AIGenerationOptions } from '@/types';
+import { getEndpointSignature } from './EndpointGrouper';
 import { SmartAssertionBuilder, AssertionSuggestion } from './SmartAssertionBuilder';
 import { PerformanceAssertionGenerator, EndpointPerformanceProfile } from './PerformanceAssertionGenerator';
 import { SchemaExtractor, OpenAPISpec } from './SchemaExtractor';
@@ -64,6 +65,7 @@ export interface GenerationOptions {
   enableAITests?: boolean; // Generate AI-powered test scripts
   framework: TestFramework;
   maxConcurrency: number;
+  excludedEndpoints?: string[]; // Endpoint signatures to exclude (e.g., "GET:/api/users")
   dataDrivenConfig?: DataDrivenConfig;
   // AI-specific options (only used when enableAITests is true)
   aiProvider?: 'openai' | 'anthropic' | 'gemini' | 'local';
@@ -107,6 +109,15 @@ export class ParallelGenerationOrchestrator {
     const startTime = Date.now();
     this.abortController = new AbortController();
     this.tasks.clear();
+
+    // Filter out excluded endpoints from session before processing
+    if (options.excludedEndpoints && options.excludedEndpoints.length > 0) {
+      const excludedSet = new Set(options.excludedEndpoints);
+      const filteredRequests = session.requests.filter(req => {
+        return !excludedSet.has(getEndpointSignature(req));
+      });
+      session = { ...session, requests: filteredRequests };
+    }
 
     const result: ParallelGenerationResult = {
       timing: { total: 0, byTask: {} },

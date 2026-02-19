@@ -6,6 +6,7 @@ import {
 } from '@mui/material';
 import { AttachMoney } from '@mui/icons-material';
 import { RecordingSession, AIProvider, AIModel } from '@/types';
+import { getEndpointSignature } from '@/services/EndpointGrouper';
 
 // Token estimation constants
 const BASE_TOKENS_PER_ENDPOINT = 800;
@@ -69,17 +70,9 @@ export function estimateCost(
 ): { cost: number; endpointCount: number; estimatedTokens: number } {
   const uniqueEndpoints = new Set<string>();
   session.requests.forEach(request => {
-    try {
-      const url = new URL(request.url);
-      const signature = `${request.method}:${url.pathname}`;
-      if (!excludedEndpoints.has(signature)) {
-        uniqueEndpoints.add(signature);
-      }
-    } catch {
-      const signature = `${request.method}:${request.url}`;
-      if (!excludedEndpoints.has(signature)) {
-        uniqueEndpoints.add(signature);
-      }
+    const sig = getEndpointSignature(request);
+    if (!excludedEndpoints.has(sig)) {
+      uniqueEndpoints.add(sig);
     }
   });
 

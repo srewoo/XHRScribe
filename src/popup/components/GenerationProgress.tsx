@@ -115,7 +115,9 @@ export default function GenerationProgress({ generationState }: GenerationProgre
           }}>
             <Info fontSize="small" />
             <Typography variant="body2">
-              Estimated time remaining: {Math.max(1, Math.ceil(generationState.estimatedTime * (100 - generationState.progress) / 100))} seconds
+              Estimated time remaining: {generationState.estimatedTime > 0
+                ? `${generationState.estimatedTime} second${generationState.estimatedTime !== 1 ? 's' : ''}`
+                : 'calculating...'}
             </Typography>
           </Box>
 

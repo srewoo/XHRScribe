@@ -219,6 +219,15 @@ YOU MUST GENERATE COMPLETE, FULLY-IMPLEMENTED ${framework} TEST CODE FOR ALL ${e
     prompt += this.getFrameworkInstructions(framework);
     prompt += '\n\n';
     
+    // Add test coverage depth
+    if (options.testCoverage === 'minimal') {
+      prompt += 'Test Depth: MINIMAL — Generate only happy-path tests (1-2 test cases per endpoint).\n\n';
+    } else if (options.testCoverage === 'exhaustive') {
+      prompt += 'Test Depth: EXHAUSTIVE — Generate comprehensive tests covering happy path, error cases, edge cases, and all status codes (8+ test cases per endpoint).\n\n';
+    } else {
+      prompt += 'Test Depth: STANDARD — Generate happy-path and basic error tests (3-5 test cases per endpoint).\n\n';
+    }
+
     // Add test requirements
     prompt += 'Requirements:\n';
     if (options.includeAuth) {

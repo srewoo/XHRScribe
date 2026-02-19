@@ -146,11 +146,6 @@ export interface GenerationOptions {
   generateMockData: boolean;
   includeEdgeCases?: boolean;
   includeIntegrationTests?: boolean;
-  includeNullTests?: boolean;
-  includeBoundaryTests?: boolean;
-  includeDataTypeTests?: boolean;
-  includeConcurrencyTests?: boolean;
-  includeIdempotencyTests?: boolean;
   testCoverage?: 'exhaustive' | 'standard' | 'minimal';
   complexity: 'basic' | 'intermediate' | 'advanced';
   customPrompt?: string;

@@ -302,6 +302,8 @@ ${this.getFrameworkInstructions(framework)}
 ❌ Unclosed test suite blocks
 ❌ Missing authToken setup
 
+TEST DEPTH: ${options.testCoverage === 'minimal' ? 'MINIMAL — Generate only happy-path tests (1-2 test cases per endpoint).' : options.testCoverage === 'exhaustive' ? 'EXHAUSTIVE — Generate comprehensive tests covering happy path, error cases, edge cases, and all status codes (8+ test cases per endpoint).' : 'STANDARD — Generate happy-path and basic error tests (3-5 test cases per endpoint).'}
+
 TEST CATEGORIES TO INCLUDE:
 
 1. ✅ POSITIVE/HAPPY PATH TESTS:

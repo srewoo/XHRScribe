@@ -10,6 +10,62 @@ export function normalizePath(pathname: string): string {
     .replace(/\/+$/, ''); // Trailing slashes
 }
 
+/** Compute the canonical signature for a request, matching EndpointPreview logic */
+export function getEndpointSignature(req: NetworkRequest): string {
+  try {
+    const url = new URL(req.url);
+    let signature = `${req.method}:${normalizePath(url.pathname)}`;
+
+    // GraphQL: append operation name to distinguish different operations on the same path
+    if (url.pathname.includes('graphql') || url.pathname.includes('gql') || looksLikeGraphQL(req.requestBody)) {
+      const operation = extractGraphQLOp(req.requestBody);
+      if (operation) {
+        signature = `${req.method}:${url.pathname}:${operation}`;
+      }
+    }
+    return signature;
+  } catch {
+    return `${req.method}:${req.url}`;
+  }
+}
+
+function looksLikeGraphQL(requestBody: any): boolean {
+  if (!requestBody) return false;
+  try {
+    const bodyStr = typeof requestBody === 'string' ? requestBody : JSON.stringify(requestBody);
+    const body = typeof requestBody === 'object' ? requestBody : JSON.parse(bodyStr);
+    return !!(body.query || body.operationName || body.variables ||
+      bodyStr.includes('query ') || bodyStr.includes('mutation ') ||
+      bodyStr.includes('subscription '));
+  } catch {
+    return false;
+  }
+}
+
+function extractGraphQLOp(requestBody: any): string | null {
+  if (!requestBody) return null;
+  try {
+    const bodyStr = typeof requestBody === 'string' ? requestBody : JSON.stringify(requestBody);
+    const body = typeof requestBody === 'object' ? requestBody : JSON.parse(bodyStr);
+    if (body.operationName && typeof body.operationName === 'string') return body.operationName;
+    if (body.query && typeof body.query === 'string') {
+      const m = body.query.match(/(?:query|mutation|subscription)\s+([a-zA-Z][a-zA-Z0-9_]*)/);
+      if (m && m[1]) return m[1];
+      const opType = body.query.trim().match(/^(query|mutation|subscription)/);
+      if (opType) {
+        let hash = 0;
+        for (let i = 0; i < body.query.length; i++) { hash = ((hash << 5) - hash) + body.query.charCodeAt(i); hash = hash & hash; }
+        return `${opType[1]}_${Math.abs(hash).toString(16).substring(0, 8)}`;
+      }
+    }
+    let hash = 0;
+    for (let i = 0; i < bodyStr.length; i++) { hash = ((hash << 5) - hash) + bodyStr.charCodeAt(i); hash = hash & hash; }
+    return `operation_${Math.abs(hash).toString(16).substring(0, 8)}`;
+  } catch {
+    return null;
+  }
+}
+
 export class EndpointGrouper {
   private static instance: EndpointGrouper;
 

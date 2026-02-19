@@ -18,6 +18,7 @@ import {
   Download,
 } from '@mui/icons-material';
 import { RecordingSession, GeneratedTest } from '@/types';
+import { getEndpointSignature } from '@/services/EndpointGrouper';
 
 interface GeneratedResultsProps {
   generatedCode: string;
@@ -63,14 +64,7 @@ export default function GeneratedResults({
   const hasPlaceholderWarnings = warnings.some(w => w.includes('placeholder'));
 
   const includedCount = session.requests.filter(request => {
-    try {
-      const url = new URL(request.url);
-      const signature = `${request.method}:${url.pathname}`;
-      return !excludedEndpoints.has(signature);
-    } catch {
-      const signature = `${request.method}:${request.url}`;
-      return !excludedEndpoints.has(signature);
-    }
+    return !excludedEndpoints.has(getEndpointSignature(request));
   }).length;
 
   return (

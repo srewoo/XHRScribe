@@ -55,6 +55,7 @@ import GeneratedResults from './GeneratedResults';
 import ReplayPanel from './ReplayPanel';
 import CostEstimator from './CostEstimator';
 import { Logger } from '@/services/logging/Logger';
+import { getEndpointSignature } from '@/services/EndpointGrouper';
 import {
   ParallelGenerationOrchestrator,
   ParallelGenerationResult,
@@ -90,14 +91,8 @@ export default function GeneratePanel({ sessions }: GeneratePanelProps) {
     includePerformanceTests: true,
     includeSecurityTests: true,
     generateMockData: true,
-    // New exhaustive options
     includeEdgeCases: true,
-    includeNullTests: true,
-    includeBoundaryTests: true,
-    includeDataTypeTests: true,
-    includeConcurrencyTests: true,
-    includeIdempotencyTests: true,
-    testCoverage: 'exhaustive' as 'exhaustive' | 'standard' | 'minimal',
+    testCoverage: 'standard' as 'exhaustive' | 'standard' | 'minimal',
   });
   const [generatedCode, setGeneratedCode] = useState<string>('');
   const [excludedEndpoints, setExcludedEndpoints] = useState<Set<string>>(new Set());
@@ -347,10 +342,12 @@ export default function GeneratePanel({ sessions }: GeneratePanelProps) {
 
     // Calculate real estimates based on endpoints and provider
     const requests = session.requests || [];
-    const endpoints = requests.map(req => `${req.method} ${req.url}`);
-    const uniqueEndpoints = [...new Set(endpoints)].filter(endpoint => 
-      !Array.from(excludedEndpoints).some(excluded => endpoint.includes(excluded))
-    );
+    const includedSigs = new Set<string>();
+    requests.forEach(req => {
+      const sig = getEndpointSignature(req);
+      if (!excludedEndpoints.has(sig)) includedSigs.add(sig);
+    });
+    const uniqueEndpoints = Array.from(includedSigs);
     
     // More accurate timing based on provider and complexity
     const timePerEndpoint = {
@@ -650,27 +647,36 @@ ${options.includeErrorScenarios ? `
   const handleParallelGenerate = useCallback(async () => {
     if (!session) return;
 
+    const parallelStartTime = Date.now();
+
     setGenerationState(prev => ({
       ...prev,
       isGenerating: true,
       progress: 0,
-      stage: 'Initializing parallel generation...'
+      stage: 'Initializing parallel generation...',
+      estimatedTime: 0,
     }));
     setParallelProgress(null);
     setParallelResult(null);
 
     try {
       const orchestrator = ParallelGenerationOrchestrator.getInstance();
+      const excludedArray = Array.from(excludedEndpoints);
       const result = await orchestrator.generateAll(
         session,
-        { ...parallelOptions, framework },
+        { ...parallelOptions, framework, excludedEndpoints: excludedArray },
         (prog) => {
           setParallelProgress(prog);
+          // Compute remaining time from elapsed time and progress rate
+          const elapsedSec = (Date.now() - parallelStartTime) / 1000;
+          const rate = prog.overall > 0 ? elapsedSec / prog.overall : 0; // seconds per %
+          const remainingSec = rate > 0 ? Math.ceil((100 - prog.overall) * rate) : 0;
           // Update main generation state progress
           setGenerationState(prev => ({
             ...prev,
             progress: prog.overall,
-            stage: prog.currentTask ? `Running: ${prog.currentTask}` : 'Processing...'
+            stage: prog.currentTask ? `Running: ${prog.currentTask}` : 'Processing...',
+            estimatedTime: remainingSec,
           }));
         }
       );
@@ -698,7 +704,7 @@ ${options.includeErrorScenarios ? `
     } finally {
       setGenerationState(prev => ({ ...prev, isGenerating: false }));
     }
-  }, [session, parallelOptions, framework]);
+  }, [session, parallelOptions, framework, excludedEndpoints]);
 
   const handleParallelDownload = useCallback((type: 'tests' | 'openapi' | 'graphql' | 'env' | 'security') => {
     if (!parallelResult) return;
@@ -748,22 +754,14 @@ ${options.includeErrorScenarios ? `
   // Compute active endpoint count for the Generate button label
   const activeEndpointCount = useMemo(() => {
     if (!session) return 0;
-    const endpointMap = new Map<string, boolean>();
+    const included = new Set<string>();
     session.requests.forEach(req => {
-      try {
-        const url = new URL(req.url);
-        const signature = `${req.method}:${url.pathname}`;
-        if (!excludedEndpoints.has(signature)) {
-          endpointMap.set(signature, true);
-        }
-      } catch {
-        const signature = `${req.method}:${req.url}`;
-        if (!excludedEndpoints.has(signature)) {
-          endpointMap.set(signature, true);
-        }
+      const sig = getEndpointSignature(req);
+      if (!excludedEndpoints.has(sig)) {
+        included.add(sig);
       }
     });
-    return endpointMap.size;
+    return included.size;
   }, [session, excludedEndpoints]);
 
   if (!session) {
@@ -1138,11 +1136,7 @@ ${options.includeErrorScenarios ? `
         </FormGroup>
 
         <Divider sx={{ my: 2 }} />
-        
-        <Typography variant="subtitle2" gutterBottom color="primary">
-          Exhaustive Testing Options (for &gt;80% coverage)
-        </Typography>
-        
+
         <FormGroup>
           <FormControlLabel
             control={
@@ -1155,75 +1149,10 @@ ${options.includeErrorScenarios ? `
                 disabled={generationState.isGenerating}
               />
             }
-            label="Include Edge Cases (special chars, unicode, emoji)"
-          />
-          <FormControlLabel
-            control={
-              <Checkbox
-                checked={options.includeNullTests}
-                onChange={(e) =>
-                  setOptions({ ...options, includeNullTests: e.target.checked })
-                }
-                size="small"
-                disabled={generationState.isGenerating}
-              />
-            }
-            label="Include Null/Undefined Tests"
-          />
-          <FormControlLabel
-            control={
-              <Checkbox
-                checked={options.includeBoundaryTests}
-                onChange={(e) =>
-                  setOptions({ ...options, includeBoundaryTests: e.target.checked })
-                }
-                size="small"
-                disabled={generationState.isGenerating}
-              />
-            }
-            label="Include Boundary Tests (min/max values)"
-          />
-          <FormControlLabel
-            control={
-              <Checkbox
-                checked={options.includeDataTypeTests}
-                onChange={(e) =>
-                  setOptions({ ...options, includeDataTypeTests: e.target.checked })
-                }
-                size="small"
-                disabled={generationState.isGenerating}
-              />
-            }
-            label="Include Data Type Validation"
-          />
-          <FormControlLabel
-            control={
-              <Checkbox
-                checked={options.includeConcurrencyTests}
-                onChange={(e) =>
-                  setOptions({ ...options, includeConcurrencyTests: e.target.checked })
-                }
-                size="small"
-                disabled={generationState.isGenerating}
-              />
-            }
-            label="Include Concurrency Tests"
-          />
-          <FormControlLabel
-            control={
-              <Checkbox
-                checked={options.includeIdempotencyTests}
-                onChange={(e) =>
-                  setOptions({ ...options, includeIdempotencyTests: e.target.checked })
-                }
-                size="small"
-                disabled={generationState.isGenerating}
-              />
-            }
-            label="Include Idempotency Tests"
+            label="Include Edge Cases (null, boundary, special chars)"
           />
         </FormGroup>
-        
+
         <Box sx={{ mt: 2 }}>
           <Typography variant="subtitle2" gutterBottom>
             Test Coverage Level
@@ -1233,9 +1162,9 @@ ${options.includeErrorScenarios ? `
             onChange={(e) => setOptions({ ...options, testCoverage: e.target.value as any })}
             row
           >
-            <FormControlLabel value="minimal" control={<Radio size="small" />} label="Minimal (50%)" />
-            <FormControlLabel value="standard" control={<Radio size="small" />} label="Standard (70%)" />
-            <FormControlLabel value="exhaustive" control={<Radio size="small" />} label="Exhaustive (>80%)" />
+            <FormControlLabel value="minimal" control={<Radio size="small" />} label="Minimal" />
+            <FormControlLabel value="standard" control={<Radio size="small" />} label="Standard" />
+            <FormControlLabel value="exhaustive" control={<Radio size="small" />} label="Exhaustive" />
           </RadioGroup>
         </Box>
       </Paper>
@@ -1281,58 +1210,76 @@ ${options.includeErrorScenarios ? `
 
           <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, mb: 2 }}>
             <Box sx={{ width: '48%' }}>
-              <FormControlLabel
-                control={<Switch checked={parallelOptions.enableAssertions} onChange={handleParallelOptionChange('enableAssertions')} size="small" />}
-                label={<Typography variant="body2">Smart Assertions</Typography>}
-              />
+              <Tooltip title="Analyze request/response pairs to generate intelligent assertions with confidence scores" arrow enterDelay={200}>
+                <FormControlLabel
+                  control={<Switch checked={parallelOptions.enableAssertions} onChange={handleParallelOptionChange('enableAssertions')} size="small" />}
+                  label={<Typography variant="body2">Smart Assertions</Typography>}
+                />
+              </Tooltip>
             </Box>
             <Box sx={{ width: '48%' }}>
-              <FormControlLabel
-                control={<Switch checked={parallelOptions.enablePerformance} onChange={handleParallelOptionChange('enablePerformance')} size="small" />}
-                label={<Typography variant="body2">Performance Tests</Typography>}
-              />
+              <Tooltip title="Generate performance metrics (p50, p95, p99) and response time assertions from recorded timings" arrow enterDelay={200}>
+                <FormControlLabel
+                  control={<Switch checked={parallelOptions.enablePerformance} onChange={handleParallelOptionChange('enablePerformance')} size="small" />}
+                  label={<Typography variant="body2">Performance Tests</Typography>}
+                />
+              </Tooltip>
             </Box>
             <Box sx={{ width: '48%' }}>
-              <FormControlLabel
-                control={<Switch checked={parallelOptions.enableOpenAPI} onChange={handleParallelOptionChange('enableOpenAPI')} size="small" />}
-                label={<Typography variant="body2">OpenAPI Spec</Typography>}
-              />
+              <Tooltip title="Infer an OpenAPI 3.0 spec from recorded traffic — paths, schemas, and parameters" arrow enterDelay={200}>
+                <FormControlLabel
+                  control={<Switch checked={parallelOptions.enableOpenAPI} onChange={handleParallelOptionChange('enableOpenAPI')} size="small" />}
+                  label={<Typography variant="body2">OpenAPI Spec</Typography>}
+                />
+              </Tooltip>
             </Box>
             <Box sx={{ width: '48%' }}>
-              <FormControlLabel
-                control={<Switch checked={parallelOptions.enableGraphQL} onChange={handleParallelOptionChange('enableGraphQL')} size="small" />}
-                label={<Typography variant="body2">GraphQL Schema</Typography>}
-              />
+              <Tooltip title="Detect GraphQL requests and infer the schema (types, queries, mutations)" arrow enterDelay={200}>
+                <FormControlLabel
+                  control={<Switch checked={parallelOptions.enableGraphQL} onChange={handleParallelOptionChange('enableGraphQL')} size="small" />}
+                  label={<Typography variant="body2">GraphQL Schema</Typography>}
+                />
+              </Tooltip>
             </Box>
             <Box sx={{ width: '48%' }}>
-              <FormControlLabel
-                control={<Switch checked={parallelOptions.enableScenarios} onChange={handleParallelOptionChange('enableScenarios')} size="small" />}
-                label={<Typography variant="body2">Test Scenarios</Typography>}
-              />
+              <Tooltip title="Build multi-step test workflows by detecting data dependencies between requests" arrow enterDelay={200}>
+                <FormControlLabel
+                  control={<Switch checked={parallelOptions.enableScenarios} onChange={handleParallelOptionChange('enableScenarios')} size="small" />}
+                  label={<Typography variant="body2">Test Scenarios</Typography>}
+                />
+              </Tooltip>
             </Box>
             <Box sx={{ width: '48%' }}>
-              <FormControlLabel
-                control={<Switch checked={parallelOptions.enableDataDriven} onChange={handleParallelOptionChange('enableDataDriven')} size="small" />}
-                label={<Typography variant="body2">Data-Driven Tests</Typography>}
-              />
+              <Tooltip title="Generate parameterized test datasets — valid variations, boundary values, and negative tests" arrow enterDelay={200}>
+                <FormControlLabel
+                  control={<Switch checked={parallelOptions.enableDataDriven} onChange={handleParallelOptionChange('enableDataDriven')} size="small" />}
+                  label={<Typography variant="body2">Data-Driven Tests</Typography>}
+                />
+              </Tooltip>
             </Box>
             <Box sx={{ width: '48%' }}>
-              <FormControlLabel
-                control={<Switch checked={parallelOptions.enableSecurity} onChange={handleParallelOptionChange('enableSecurity')} size="small" />}
-                label={<Typography variant="body2">Security Tests</Typography>}
-              />
+              <Tooltip title="Generate OWASP Top 10 security tests — SQL injection, XSS, auth bypass, and more" arrow enterDelay={200}>
+                <FormControlLabel
+                  control={<Switch checked={parallelOptions.enableSecurity} onChange={handleParallelOptionChange('enableSecurity')} size="small" />}
+                  label={<Typography variant="body2">Security Tests</Typography>}
+                />
+              </Tooltip>
             </Box>
             <Box sx={{ width: '48%' }}>
-              <FormControlLabel
-                control={<Switch checked={parallelOptions.enableAutoHealing} onChange={handleParallelOptionChange('enableAutoHealing')} size="small" />}
-                label={<Typography variant="body2">Auto-Healing</Typography>}
-              />
+              <Tooltip title="Generate self-healing test wrappers that detect and adapt to breaking API changes" arrow enterDelay={200}>
+                <FormControlLabel
+                  control={<Switch checked={parallelOptions.enableAutoHealing} onChange={handleParallelOptionChange('enableAutoHealing')} size="small" />}
+                  label={<Typography variant="body2">Auto-Healing</Typography>}
+                />
+              </Tooltip>
             </Box>
             <Box sx={{ width: '48%' }}>
-              <FormControlLabel
-                control={<Switch checked={parallelOptions.enableEnvironment} onChange={handleParallelOptionChange('enableEnvironment')} size="small" />}
-                label={<Typography variant="body2">Environment Vars</Typography>}
-              />
+              <Tooltip title="Extract environment variables (tokens, API keys, IDs) and generate .env files" arrow enterDelay={200}>
+                <FormControlLabel
+                  control={<Switch checked={parallelOptions.enableEnvironment} onChange={handleParallelOptionChange('enableEnvironment')} size="small" />}
+                  label={<Typography variant="body2">Environment Vars</Typography>}
+                />
+              </Tooltip>
             </Box>
           </Box>
 
