@@ -67,8 +67,9 @@ export class ClaudeProvider implements LLMProvider {
           {
             headers: {
               'Content-Type': 'application/json',
-              'X-API-Key': this.apiKey,
+              'x-api-key': this.apiKey,
               'anthropic-version': '2023-06-01',
+              'anthropic-dangerous-direct-browser-access': 'true',
             },
             timeout: 120000,
             signal

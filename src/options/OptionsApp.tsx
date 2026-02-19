@@ -33,7 +33,11 @@ import {
   Code,
   FilterList,
   AttachMoney,
+  CheckCircle,
+  Cancel,
 } from '@mui/icons-material';
+import { CircularProgress } from '@mui/material';
+import axios from 'axios';
 import { Settings, AIProvider, TestFramework, AIModel } from '@/types';
 import { StorageService } from '@/services/StorageService';
 
@@ -56,6 +60,9 @@ export default function OptionsApp() {
   const [tabValue, setTabValue] = useState(0);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [showApiKeys, setShowApiKeys] = useState<Record<string, boolean>>({});
+  const [keyStatus, setKeyStatus] = useState<Record<string, 'idle' | 'loading' | 'valid' | 'invalid'>>({
+    openai: 'idle', anthropic: 'idle', gemini: 'idle'
+  });
   const [snackbar, setSnackbar] = useState({ open: false, message: '', severity: 'success' as 'success' | 'error' });
   const [customPattern, setCustomPattern] = useState('');
   const [includeDomainsText, setIncludeDomainsText] = useState<string>('');
@@ -174,6 +181,42 @@ export default function OptionsApp() {
 
   const toggleApiKeyVisibility = (key: string) => {
     setShowApiKeys(prev => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  const verifyApiKey = async (provider: string) => {
+    const key = settings?.apiKeys?.[provider as keyof typeof settings.apiKeys];
+    if (!key) return;
+
+    setKeyStatus(prev => ({ ...prev, [provider]: 'loading' }));
+    try {
+      if (provider === 'openai') {
+        await axios.get('https://api.openai.com/v1/models', {
+          headers: { 'Authorization': `Bearer ${key}` },
+          timeout: 10000,
+        });
+      } else if (provider === 'anthropic') {
+        await axios.post('https://api.anthropic.com/v1/messages', {
+          model: 'claude-3-7-sonnet-20250219',
+          max_tokens: 1,
+          messages: [{ role: 'user', content: 'hi' }],
+        }, {
+          headers: {
+            'x-api-key': key,
+            'anthropic-version': '2023-06-01',
+            'content-type': 'application/json',
+            'anthropic-dangerous-direct-browser-access': 'true',
+          },
+          timeout: 10000,
+        });
+      } else if (provider === 'gemini') {
+        await axios.get(`https://generativelanguage.googleapis.com/v1/models?key=${key}`, {
+          timeout: 10000,
+        });
+      }
+      setKeyStatus(prev => ({ ...prev, [provider]: 'valid' }));
+    } catch {
+      setKeyStatus(prev => ({ ...prev, [provider]: 'invalid' }));
+    }
   };
 
   const addCustomPattern = () => {
@@ -333,67 +376,47 @@ export default function OptionsApp() {
               API Keys
             </Typography>
 
-            <TextField
-              fullWidth
-              label="OpenAI API Key"
-              type={showApiKeys.openai ? 'text' : 'password'}
-              value={settings.apiKeys.openai || ''}
-              onChange={(e) => setSettings({
-                ...settings,
-                apiKeys: { ...settings.apiKeys, openai: e.target.value },
-              })}
-              sx={{ mb: 2 }}
-              InputProps={{
-                endAdornment: (
-                  <InputAdornment position="end">
-                    <IconButton onClick={() => toggleApiKeyVisibility('openai')}>
-                      {showApiKeys.openai ? <VisibilityOff /> : <Visibility />}
-                    </IconButton>
-                  </InputAdornment>
-                ),
-              }}
-            />
-
-            <TextField
-              fullWidth
-              label="Anthropic API Key"
-              type={showApiKeys.anthropic ? 'text' : 'password'}
-              value={settings.apiKeys.anthropic || ''}
-              onChange={(e) => setSettings({
-                ...settings,
-                apiKeys: { ...settings.apiKeys, anthropic: e.target.value },
-              })}
-              sx={{ mb: 2 }}
-              InputProps={{
-                endAdornment: (
-                  <InputAdornment position="end">
-                    <IconButton onClick={() => toggleApiKeyVisibility('anthropic')}>
-                      {showApiKeys.anthropic ? <VisibilityOff /> : <Visibility />}
-                    </IconButton>
-                  </InputAdornment>
-                ),
-              }}
-            />
-
-            <TextField
-              fullWidth
-              label="Google Gemini API Key"
-              type={showApiKeys.gemini ? 'text' : 'password'}
-              value={settings.apiKeys.gemini || ''}
-              onChange={(e) => setSettings({
-                ...settings,
-                apiKeys: { ...settings.apiKeys, gemini: e.target.value },
-              })}
-              InputProps={{
-                endAdornment: (
-                  <InputAdornment position="end">
-                    <IconButton onClick={() => toggleApiKeyVisibility('gemini')}>
-                      {showApiKeys.gemini ? <VisibilityOff /> : <Visibility />}
-                    </IconButton>
-                  </InputAdornment>
-                ),
-              }}
-            />
+            {(['openai', 'anthropic', 'gemini'] as const).map((provider) => {
+              const labels: Record<string, string> = { openai: 'OpenAI API Key', anthropic: 'Anthropic API Key', gemini: 'Google Gemini API Key' };
+              return (
+                <TextField
+                  key={provider}
+                  fullWidth
+                  label={labels[provider]}
+                  type={showApiKeys[provider] ? 'text' : 'password'}
+                  value={settings.apiKeys[provider] || ''}
+                  onChange={(e) => {
+                    setSettings({ ...settings, apiKeys: { ...settings.apiKeys, [provider]: e.target.value } });
+                    setKeyStatus(prev => ({ ...prev, [provider]: 'idle' }));
+                  }}
+                  sx={{ mb: 2 }}
+                  InputProps={{
+                    endAdornment: (
+                      <InputAdornment position="end">
+                        {keyStatus[provider] === 'loading' ? (
+                          <CircularProgress size={20} sx={{ mr: 1 }} />
+                        ) : keyStatus[provider] === 'valid' ? (
+                          <CheckCircle sx={{ color: 'success.main', mr: 1 }} />
+                        ) : keyStatus[provider] === 'invalid' ? (
+                          <Cancel sx={{ color: 'error.main', mr: 1 }} />
+                        ) : settings.apiKeys[provider] ? (
+                          <Button
+                            size="small"
+                            onClick={() => verifyApiKey(provider)}
+                            sx={{ mr: 0.5, minWidth: 'auto', textTransform: 'none', fontSize: '0.75rem' }}
+                          >
+                            Verify
+                          </Button>
+                        ) : null}
+                        <IconButton onClick={() => toggleApiKeyVisibility(provider)}>
+                          {showApiKeys[provider] ? <VisibilityOff /> : <Visibility />}
+                        </IconButton>
+                      </InputAdornment>
+                    ),
+                  }}
+                />
+              );
+            })}
 
             <Alert severity="info" sx={{ mt: 2 }}>
               API keys are encrypted and stored securely. Never share your API keys.

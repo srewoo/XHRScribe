@@ -247,7 +247,10 @@ export class AIService {
                 warnings: endpointTest.warnings || []
               };
             } catch (error: any) {
-              Logger.getInstance().error(`Attempt ${attempt + 1} failed for ${endpointName}`, { message: error.message }, 'AIService');
+              const errorDetail = error.response
+                ? `${error.response.status}: ${JSON.stringify(error.response.data)}`
+                : error.message || String(error);
+              Logger.getInstance().error(`Attempt ${attempt + 1} failed for ${endpointName}: ${errorDetail}`, null, 'AIService');
 
               // If we have retries left, wait with exponential backoff then retry
               if (attempt < maxRetries) {

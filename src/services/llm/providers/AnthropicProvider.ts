@@ -43,6 +43,7 @@ export class AnthropicProvider implements LLMProvider {
             'Content-Type': 'application/json',
             'x-api-key': this.apiKey,
             'anthropic-version': '2023-06-01',
+            'anthropic-dangerous-direct-browser-access': 'true',
           },
           signal
         }
