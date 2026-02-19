@@ -265,7 +265,8 @@ export interface BackgroundMessage extends Message {
     | 'CHECK_READY'
     | 'GENERATION_PROGRESS'
     | 'DIFF_SESSIONS'
-    | 'CLEAR_GENERATION_STATE';
+    | 'CLEAR_GENERATION_STATE'
+    | 'CONTENT_SCRIPT_READY';
 }
 
 // WebSocket Frame Types
