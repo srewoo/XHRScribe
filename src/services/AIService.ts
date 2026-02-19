@@ -90,9 +90,9 @@ export class AIService {
   }
 
   async generateTests(session: RecordingSession, options: GenerationOptions, excludedEndpoints?: Set<string>, progressCallback?: (current: number, total: number, stage: string, endpoint?: string) => void): Promise<GeneratedTest> {
-    // Determine generation strategy based on endpoint count and options
-    const strategy = this.selectGenerationStrategy(session, options);
-    
+    // Determine generation strategy based on FILTERED endpoint count
+    const strategy = this.selectGenerationStrategy(session, options, excludedEndpoints);
+
     if (strategy.mode === 'individual') {
       return this.generateTestsIndividually(session, options, excludedEndpoints, progressCallback);
     } else {
@@ -100,19 +100,36 @@ export class AIService {
     }
   }
 
-  private selectGenerationStrategy(session: RecordingSession, options: GenerationOptions): { mode: 'batch' | 'individual', reason: string } {
-    const endpointCount = session.requests.length;
-    
+  private selectGenerationStrategy(session: RecordingSession, options: GenerationOptions, excludedEndpoints?: Set<string>): { mode: 'batch' | 'individual', reason: string } {
+    // Count unique endpoints AFTER filtering exclusions
+    const uniqueEndpoints = new Set<string>();
+    session.requests.forEach(req => {
+      try {
+        const url = new URL(req.url);
+        const sig = `${req.method}:${url.pathname}`;
+        if (!excludedEndpoints || !excludedEndpoints.has(sig)) {
+          uniqueEndpoints.add(sig);
+        }
+      } catch {
+        const sig = `${req.method}:${req.url}`;
+        if (!excludedEndpoints || !excludedEndpoints.has(sig)) {
+          uniqueEndpoints.add(sig);
+        }
+      }
+    });
+    const endpointCount = uniqueEndpoints.size;
+    console.log(`📊 Strategy: ${endpointCount} unique endpoints after filtering (raw requests: ${session.requests.length})`);
+
     // Force individual mode for large sessions
     if (endpointCount > 5) {
       return { mode: 'individual', reason: `Too many endpoints (${endpointCount}) for batch processing` };
     }
-    
+
     // Use individual mode for better quality if explicitly requested
     if (options.complexity === 'advanced') {
       return { mode: 'individual', reason: 'Advanced complexity requested - using individual processing for better quality' };
     }
-    
+
     // Default to batch for smaller sessions (≤5 endpoints)
     return { mode: 'batch', reason: `Small session (${endpointCount} endpoints) - using efficient batch processing` };
   }
@@ -129,32 +146,41 @@ export class AIService {
 
       // Filter out excluded endpoints if provided
       let filteredSession = session;
+      console.log(`🔍 Endpoint filtering: excludedEndpoints=${excludedEndpoints ? `Set(${excludedEndpoints.size})` : 'undefined'}, total requests=${session.requests.length}`);
       if (excludedEndpoints && excludedEndpoints.size > 0) {
+        console.log(`🔍 Excluded signatures:`, Array.from(excludedEndpoints));
         const filteredRequests = session.requests.filter(request => {
           try {
             const url = new URL(request.url);
             const signature = `${request.method}:${url.pathname}`;
-            return !excludedEndpoints.has(signature);
+            const included = !excludedEndpoints.has(signature);
+            if (!included) {
+              console.log(`  ❌ Excluding: ${signature}`);
+            }
+            return included;
           } catch (error) {
             const signature = `${request.method}:${request.url}`;
             return !excludedEndpoints.has(signature);
           }
         });
-        
+
+        console.log(`🔍 Filtered: ${session.requests.length} → ${filteredRequests.length} requests`);
         filteredSession = {
           ...session,
           requests: filteredRequests
         };
+      } else {
+        console.log(`🔍 No excluded endpoints — generating tests for ALL ${session.requests.length} requests`);
       }
 
       // Analyze authentication flow
       const authFlow = this.authFlowAnalyzer.analyzeAuthFlow(filteredSession.requests);
       console.log('Detected authentication flow:', authFlow);
-      
+
       // Get user's custom authentication guide if available
       const authSettings = await this.storageService.getSettings();
       const customAuthGuide = authSettings?.authGuide;
-      
+
       console.log(`🔐 Custom Auth Guide: ${customAuthGuide ? 'ENABLED ✅' : 'NOT PROVIDED ❌'}`);
       if (customAuthGuide) {
         console.log(`📋 Auth Guide Preview: "${customAuthGuide.substring(0, 100)}..."`);
@@ -178,41 +204,69 @@ export class AIService {
         const batch = uniqueEndpoints.slice(i, i + batchSize);
         
         const batchPromises = batch.map(async (endpoint, index) => {
-          try {
-            const currentIndex = i + index + 1;
-            const endpointName = `${endpoint.method} ${endpoint.url}`;
-            
-            console.log(`Generating tests for endpoint ${currentIndex}/${uniqueEndpoints.length}: ${endpointName}`);
-            
-            // Send progress update
-            if (progressCallback) {
-              progressCallback(currentIndex, uniqueEndpoints.length, 'Generating tests', endpointName);
-            }
-            
-            // Create single-endpoint HAR data
-            const singleEndpointHAR = this.createSingleEndpointHAR(endpoint);
-            
-            // Generate tests for this specific endpoint
-            const endpointTest = await provider.generateTests(singleEndpointHAR, {
-              ...options,
-              complexity: 'intermediate' // Use intermediate to get good quality without being too verbose
-            }, authFlow, customAuthGuide);
+          const currentIndex = i + index + 1;
+          const endpointName = `${endpoint.method} ${endpoint.url}`;
+          const maxRetries = 2; // Up to 3 total attempts (1 initial + 2 retries)
 
-            return {
-              endpoint: `${endpoint.method} ${endpoint.url}`,
-              code: endpointTest.code,
-              qualityScore: endpointTest.qualityScore,
-              warnings: endpointTest.warnings || []
-            };
-          } catch (error: any) {
-            console.error(`Failed to generate tests for ${endpoint.method} ${endpoint.url}:`, error);
-            return {
-              endpoint: `${endpoint.method} ${endpoint.url}`,
-              code: `// Failed to generate tests for ${endpoint.method} ${endpoint.url}\n// Error: ${error.message}`,
-              qualityScore: 0,
-              warnings: [`Failed to generate tests: ${error.message}`]
-            };
+          for (let attempt = 0; attempt <= maxRetries; attempt++) {
+            try {
+              const attemptLabel = attempt > 0 ? ` (retry ${attempt}/${maxRetries})` : '';
+              console.log(`Generating tests for endpoint ${currentIndex}/${uniqueEndpoints.length}: ${endpointName}${attemptLabel}`);
+
+              // Send progress update
+              if (progressCallback) {
+                const stage = attempt > 0 ? `Retrying (${attempt}/${maxRetries})` : 'Generating tests';
+                progressCallback(currentIndex, uniqueEndpoints.length, stage, endpointName);
+              }
+
+              // Create single-endpoint HAR data
+              const singleEndpointHAR = this.createSingleEndpointHAR(endpoint);
+
+              // Generate tests for this specific endpoint
+              const endpointTest = await provider.generateTests(singleEndpointHAR, {
+                ...options,
+                complexity: 'intermediate'
+              }, authFlow, customAuthGuide);
+
+              if (attempt > 0) {
+                console.log(`✅ Retry succeeded for ${endpointName} on attempt ${attempt + 1}`);
+              }
+
+              return {
+                endpoint: endpointName,
+                code: endpointTest.code,
+                qualityScore: endpointTest.qualityScore,
+                warnings: endpointTest.warnings || []
+              };
+            } catch (error: any) {
+              console.error(`Attempt ${attempt + 1} failed for ${endpointName}:`, error.message);
+
+              // If we have retries left, wait with exponential backoff then retry
+              if (attempt < maxRetries) {
+                const backoffMs = Math.min(2000 * Math.pow(2, attempt), 8000);
+                console.log(`⏳ Waiting ${backoffMs}ms before retry...`);
+                await this.delay(backoffMs);
+                continue;
+              }
+
+              // All retries exhausted
+              console.error(`❌ All ${maxRetries + 1} attempts failed for ${endpointName}`);
+              return {
+                endpoint: endpointName,
+                code: `// Failed to generate tests for ${endpointName} after ${maxRetries + 1} attempts\n// Error: ${error.message}`,
+                qualityScore: 0,
+                warnings: [`Failed to generate tests after ${maxRetries + 1} attempts: ${error.message}`]
+              };
+            }
           }
+
+          // TypeScript requires a return here (unreachable)
+          return {
+            endpoint: endpointName,
+            code: `// Failed to generate tests for ${endpointName}`,
+            qualityScore: 0,
+            warnings: ['Generation failed']
+          };
         });
 
         const batchResults = await Promise.all(batchPromises);
@@ -265,33 +319,42 @@ export class AIService {
 
       // Filter out excluded endpoints if provided
       let filteredSession = session;
+      console.log(`🔍 [Batch] Endpoint filtering: excludedEndpoints=${excludedEndpoints ? `Set(${excludedEndpoints.size})` : 'undefined'}, total requests=${session.requests.length}`);
       if (excludedEndpoints && excludedEndpoints.size > 0) {
+        console.log(`🔍 [Batch] Excluded signatures:`, Array.from(excludedEndpoints));
         const filteredRequests = session.requests.filter(request => {
           try {
             const url = new URL(request.url);
             const signature = `${request.method}:${url.pathname}`;
-            return !excludedEndpoints.has(signature);
+            const included = !excludedEndpoints.has(signature);
+            if (!included) {
+              console.log(`  ❌ [Batch] Excluding: ${signature}`);
+            }
+            return included;
           } catch (error) {
             // For invalid URLs, use full URL as signature
             const signature = `${request.method}:${request.url}`;
             return !excludedEndpoints.has(signature);
           }
         });
-        
+
+        console.log(`🔍 [Batch] Filtered: ${session.requests.length} → ${filteredRequests.length} requests`);
         filteredSession = {
           ...session,
           requests: filteredRequests
         };
+      } else {
+        console.log(`🔍 [Batch] No excluded endpoints — generating tests for ALL ${session.requests.length} requests`);
       }
 
       // Analyze authentication flow before conversion
       const authFlow = this.authFlowAnalyzer.analyzeAuthFlow(filteredSession.requests);
       console.log('Detected authentication flow:', authFlow);
-      
+
       // Get user's custom authentication guide if available
       const batchAuthSettings = await this.storageService.getSettings();
       const customAuthGuide = batchAuthSettings?.authGuide;
-      
+
       console.log(`🔐 Custom Auth Guide (Batch): ${customAuthGuide ? 'ENABLED ✅' : 'NOT PROVIDED ❌'}`);
       if (customAuthGuide) {
         console.log(`📋 Auth Guide Preview (Batch): "${customAuthGuide.substring(0, 100)}..."`);

@@ -272,27 +272,19 @@ export default function OptionsApp() {
                   label="AI Model"
                 >
                   {settings.aiProvider === 'openai' && [
-                    <MenuItem key="gpt-4.1" value="gpt-4.1">gpt-4.1 (Most Capable)</MenuItem>,
-                    <MenuItem key="gpt-4.1-mini" value="gpt-4.1-mini">gpt-4.1 Mini (Fast & Cheap)</MenuItem>,
-                    <MenuItem key="gpt-4-turbo" value="gpt-4-turbo">GPT-4 Turbo</MenuItem>,
-                    <MenuItem key="gpt-3.5-turbo" value="gpt-3.5-turbo">GPT-3.5 Turbo</MenuItem>,
+                    <MenuItem key="gpt-4.1" value="gpt-4.1">GPT-4.1 (Most Capable)</MenuItem>,
+                    <MenuItem key="gpt-4.1-mini" value="gpt-4.1-mini">GPT-4.1 Mini (Fast & Cheap)</MenuItem>,
                   ]}
                   {settings.aiProvider === 'anthropic' && [
                     <MenuItem key="claude-4-sonnet" value="claude-4-sonnet">Claude 4 Sonnet (Latest)</MenuItem>,
                     <MenuItem key="claude-3-7-sonnet" value="claude-3-7-sonnet">Claude 3.7 Sonnet</MenuItem>,
-                    <MenuItem key="claude-3-5-sonnet-20241022" value="claude-3-5-sonnet-20241022">Claude 3.5 Sonnet</MenuItem>,
-                    <MenuItem key="claude-3-opus-20240229" value="claude-3-opus-20240229">Claude 3 Opus (Legacy)</MenuItem>,
                   ]}
                   {settings.aiProvider === 'gemini' && [
-                    <MenuItem key="gemini-2-5-pro" value="gemini-2-5-pro">Gemini 2.5 Pro (Latest)</MenuItem>,
+                    <MenuItem key="gemini-2-5-pro" value="gemini-2-5-pro">Gemini 2.5 Pro</MenuItem>,
                     <MenuItem key="gemini-2-5-flash" value="gemini-2-5-flash">Gemini 2.5 Flash (Fast)</MenuItem>,
-                    <MenuItem key="gemini-1.5-pro-latest" value="gemini-1.5-pro-latest">Gemini 1.5 Pro (Legacy)</MenuItem>,
-                    <MenuItem key="gemini-1.5-flash" value="gemini-1.5-flash">Gemini 1.5 Flash (Legacy)</MenuItem>,
                   ]}
                   {settings.aiProvider === 'local' && [
                     <MenuItem key="llama-3.2" value="llama-3.2">Llama 3.2</MenuItem>,
-                    <MenuItem key="codellama-70b" value="codellama-70b">CodeLlama 70B</MenuItem>,
-                    <MenuItem key="mixtral-8x7b" value="mixtral-8x7b">Mixtral 8x7B</MenuItem>,
                     <MenuItem key="deepseek-coder" value="deepseek-coder">DeepSeek Coder</MenuItem>,
                   ]}
                 </Select>

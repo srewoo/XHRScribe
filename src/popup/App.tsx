@@ -24,6 +24,9 @@ import {
   Settings,
   Code,
   Help,
+  Close,
+  Minimize,
+  OpenInFull,
 } from '@mui/icons-material';
 import { RecordingSession, NetworkRequest } from '@/types';
 import RecordingPanel from './components/RecordingPanel';
@@ -58,6 +61,7 @@ function TabPanel(props: TabPanelProps) {
 
 export default function App() {
   const [tabValue, setTabValue] = useState(0);
+  const [isMaximized, setIsMaximized] = useState(false);
   const [helpMenuAnchor, setHelpMenuAnchor] = useState<null | HTMLElement>(null);
   const {
     recording,
@@ -71,11 +75,16 @@ export default function App() {
     clearError,
   } = useStore();
 
+  // Send postMessage to parent (content script) for panel control
+  const sendPanelMessage = (type: string, data?: Record<string, unknown>) => {
+    window.parent.postMessage({ type, ...data }, '*');
+  };
+
   useEffect(() => {
     // Load initial data
     loadSessions();
     checkRecordingStatus();
-    
+
     // Listen for tab switch events
     const handleSwitchToGenerate = () => {
       setTabValue(3); // Switch to Generate tab
@@ -137,6 +146,8 @@ export default function App() {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (tab.id) {
       await startRecording(tab.id);
+      // Auto-minimize with recording indicator
+      sendPanelMessage('XHRSCRIBE_RECORDING', { recording: true });
     }
   };
 
@@ -144,6 +155,7 @@ export default function App() {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (tab.id) {
       await stopRecording(tab.id);
+      sendPanelMessage('XHRSCRIBE_RECORDING', { recording: false });
       setTabValue(1); // Switch to sessions tab
     }
   };
@@ -175,20 +187,20 @@ export default function App() {
   };
 
   return (
-    <Box sx={{ width: '100%', minHeight: 500, bgcolor: 'background.default' }}>
+    <Box sx={{ width: '100%', height: '100vh', bgcolor: 'background.default', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
       {/* Header */}
-      <Paper elevation={0} sx={{ p: 2, borderRadius: 0, bgcolor: 'primary.main', color: 'white' }}>
+      <Paper elevation={0} sx={{ p: 1.5, borderRadius: 0, bgcolor: 'primary.main', color: 'white', flexShrink: 0 }}>
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
             <Code sx={{ color: 'white' }} />
             <Box sx={{ display: 'flex', flexDirection: 'column', lineHeight: 1 }}>
-              <Typography variant="h6" fontWeight="bold" sx={{ lineHeight: 1.2, color: 'white' }}>
+              <Typography variant="h6" fontWeight="bold" sx={{ lineHeight: 1.2, color: 'white', fontSize: '1rem' }}>
                 XHRScribe
               </Typography>
               <Typography
                 variant="caption"
                 sx={{
-                  fontSize: '0.7rem',
+                  fontSize: '0.65rem',
                   fontStyle: 'italic',
                   fontWeight: 500,
                   letterSpacing: '0.02em',
@@ -209,15 +221,34 @@ export default function App() {
               />
             )}
           </Box>
-          <Box sx={{ display: 'flex', gap: 1 }}>
+          <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center' }}>
             <Tooltip title="Help & Support">
               <IconButton size="small" onClick={handleHelpMenuOpen} sx={{ color: 'white' }}>
-                <Help />
+                <Help sx={{ fontSize: 18 }} />
               </IconButton>
             </Tooltip>
             <Tooltip title="Settings">
               <IconButton size="small" onClick={handleOpenOptions} sx={{ color: 'white' }}>
-                <Settings />
+                <Settings sx={{ fontSize: 18 }} />
+              </IconButton>
+            </Tooltip>
+            <Tooltip title={isMaximized ? 'Restore' : 'Maximize'}>
+              <IconButton
+                size="small"
+                onClick={() => { setIsMaximized(!isMaximized); sendPanelMessage('XHRSCRIBE_MAXIMIZE'); }}
+                sx={{ color: 'white' }}
+              >
+                <OpenInFull sx={{ fontSize: 15 }} />
+              </IconButton>
+            </Tooltip>
+            <Tooltip title="Minimize">
+              <IconButton size="small" onClick={() => sendPanelMessage('XHRSCRIBE_MINIMIZE')} sx={{ color: 'white' }}>
+                <Minimize sx={{ fontSize: 15 }} />
+              </IconButton>
+            </Tooltip>
+            <Tooltip title="Close">
+              <IconButton size="small" onClick={() => sendPanelMessage('XHRSCRIBE_CLOSE')} sx={{ color: 'white' }}>
+                <Close sx={{ fontSize: 15 }} />
               </IconButton>
             </Tooltip>
           </Box>
@@ -228,13 +259,13 @@ export default function App() {
 
       {/* Error Alert */}
       {error && (
-        <Alert severity="error" onClose={clearError} sx={{ m: 2 }}>
+        <Alert severity="error" onClose={clearError} sx={{ m: 2, flexShrink: 0 }}>
           {error}
         </Alert>
       )}
 
       {/* Main Content */}
-      <Box sx={{ px: 2 }}>
+      <Box sx={{ px: 2, flex: 1, overflow: 'auto' }}>
         {/* Recording Controls */}
         <RecordingPanel
           recording={recording}

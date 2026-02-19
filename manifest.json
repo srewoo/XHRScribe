@@ -9,8 +9,7 @@
     "tabs",
     "activeTab",
     "alarms",
-    "clipboardWrite",
-    "sidePanel"
+    "clipboardWrite"
   ],
   "host_permissions": [
     "http://*/*",
@@ -27,9 +26,6 @@
       "128": "icons/icon128.png"
     },
     "default_title": "XHRScribe - Click to open"
-  },
-  "side_panel": {
-    "default_path": "dist/popup.html"
   },
   "options_page": "dist/options.html",
   "icons": {
@@ -54,7 +50,9 @@
     {
       "resources": [
         "dist/*.js",
-        "dist/*.css"
+        "dist/*.css",
+        "dist/*.html",
+        "icons/*.png"
       ],
       "matches": [
         "<all_urls>"

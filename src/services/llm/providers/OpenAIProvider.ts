@@ -72,7 +72,7 @@ export class OpenAIProvider implements LLMProvider {
               'Content-Type': 'application/json',
               'Authorization': `Bearer ${this.apiKey}`
             },
-            timeout: 60000 // 60 second timeout for complex test generation
+            timeout: 120000 // 120 second timeout for complex test generation
           }
         );
 
@@ -144,12 +144,9 @@ export class OpenAIProvider implements LLMProvider {
     const modelPricing: Record<string, { input: number; output: number }> = {
       'gpt-4.1': { input: 0.005, output: 0.015 },
       'gpt-4.1-mini': { input: 0.00015, output: 0.0006 },
-      'gpt-4-turbo': { input: 0.01, output: 0.03 },
-      'gpt-4': { input: 0.03, output: 0.06 },
-      'gpt-3.5-turbo': { input: 0.0005, output: 0.0015 },
     };
-    
-    const pricing = modelPricing[model || 'gpt-3.5-turbo'] || modelPricing['gpt-3.5-turbo'];
+
+    const pricing = modelPricing[model || 'gpt-4.1-mini'] || modelPricing['gpt-4.1-mini'];
     
     // Estimate 70% input, 30% output for test generation
     const inputTokens = tokenCount * 0.7;
@@ -658,11 +655,8 @@ Use the framework's proper test organization, imports, and assertion methods.
     const limits: Record<string, number> = {
       'gpt-4.1': 128000,
       'gpt-4.1-mini': 128000,
-      'gpt-4-turbo': 128000,
-      'gpt-4': 8192,
-      'gpt-3.5-turbo': 16384,
     };
-    return limits[model] || 4096;
+    return limits[model] || 128000;
   }
 
   private calculateQualityScore(code: string, harData: HARData): number {

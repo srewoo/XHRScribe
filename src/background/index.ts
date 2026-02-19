@@ -34,8 +34,17 @@ async function initializeBackground() {
 // Start initialization
 initializeBackground();
 
-// Auto-open side panel when extension icon is clicked
-chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
+// --- Floating panel toggle ---
+// When extension icon is clicked, send TOGGLE_PANEL to the active tab's content script
+chrome.action.onClicked.addListener(async (tab) => {
+  if (tab.id) {
+    try {
+      await chrome.tabs.sendMessage(tab.id, { type: 'TOGGLE_PANEL' });
+    } catch {
+      console.log('Content script not ready on this tab');
+    }
+  }
+});
 
 // Handle extension installation
 chrome.runtime.onInstalled.addListener((details) => {
@@ -59,7 +68,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ success: false, error: 'Invalid message format' });
       return false;
     }
-    
+
     // Handle message asynchronously
     backgroundService.handleMessage(message, sender, sendResponse).catch(error => {
       console.error('Error in handleMessage:', error);

@@ -651,17 +651,12 @@ public class APITests {
     const capabilities: Record<string, any> = {
       'gpt-4.1': { maxTokens: 128000, costPer1kTokens: 0.01, quality: 'high' },
       'gpt-4.1-mini': { maxTokens: 128000, costPer1kTokens: 0.0003, quality: 'medium' },
-      'gpt-4-turbo': { maxTokens: 128000, costPer1kTokens: 0.01, quality: 'high' },
-      'gpt-4': { maxTokens: 8192, costPer1kTokens: 0.03, quality: 'high' },
-      'gpt-3.5-turbo': { maxTokens: 16384, costPer1kTokens: 0.0015, quality: 'medium' },
-      'claude-3.5-sonnet': { maxTokens: 200000, costPer1kTokens: 0.003, quality: 'high' },
-      'claude-3-haiku': { maxTokens: 200000, costPer1kTokens: 0.00025, quality: 'medium' },
-      'claude-3-opus': { maxTokens: 200000, costPer1kTokens: 0.015, quality: 'high' },
-      'gemini-1.5-pro': { maxTokens: 1000000, costPer1kTokens: 0.007, quality: 'high' },
-      'gemini-1.5-flash': { maxTokens: 1000000, costPer1kTokens: 0.00035, quality: 'medium' },
-      'gemini-pro': { maxTokens: 32000, costPer1kTokens: 0.001, quality: 'medium' },
-      'llama-3.1': { maxTokens: 128000, costPer1kTokens: 0, quality: 'medium' },
-      'codellama': { maxTokens: 16000, costPer1kTokens: 0, quality: 'low' },
+      'claude-4-sonnet': { maxTokens: 200000, costPer1kTokens: 0.003, quality: 'high' },
+      'claude-3-7-sonnet': { maxTokens: 200000, costPer1kTokens: 0.003, quality: 'high' },
+      'gemini-2-5-pro': { maxTokens: 2097152, costPer1kTokens: 0.00125, quality: 'high' },
+      'gemini-2-5-flash': { maxTokens: 1048576, costPer1kTokens: 0.00015, quality: 'medium' },
+      'llama-3.2': { maxTokens: 128000, costPer1kTokens: 0, quality: 'medium' },
+      'deepseek-coder': { maxTokens: 128000, costPer1kTokens: 0, quality: 'medium' },
     };
 
     return (

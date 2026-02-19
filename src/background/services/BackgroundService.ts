@@ -170,6 +170,18 @@ export class BackgroundService {
           sendResponse({ success: true, status });
           break;
 
+        case 'CONTENT_SCRIPT_READY':
+          // Content script loaded (e.g. after navigation) — tell it if recording is active
+          const senderTabId = _sender.tab?.id;
+          const isTabRecording = senderTabId ? this.isRecording(senderTabId) : false;
+          sendResponse({
+            success: true,
+            shouldPing: isTabRecording,
+            shouldHeartbeat: true,
+            isRecording: isTabRecording,
+          });
+          break;
+
         case 'SAVE_SESSION':
           await this.storageService.saveSession(message.payload.session);
           sendResponse({ success: true });
@@ -185,7 +197,11 @@ export class BackgroundService {
           }
 
           // Convert excluded endpoints array back to Set
-          const excludedEndpoints = options.excludedEndpoints ? new Set<string>(options.excludedEndpoints) : undefined;
+          console.log(`🔍 GENERATE_TESTS: excludedEndpoints array from message:`, options.excludedEndpoints);
+          console.log(`🔍 GENERATE_TESTS: excludedEndpoints length: ${options.excludedEndpoints?.length || 0}`);
+          const excludedEndpoints = options.excludedEndpoints && options.excludedEndpoints.length > 0
+            ? new Set<string>(options.excludedEndpoints)
+            : undefined;
 
           // Keep service worker alive during long AI generation
           const swManager = ServiceWorkerManager.getInstance();

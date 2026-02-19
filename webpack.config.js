@@ -76,11 +76,8 @@ module.exports = (env, argv) => {
               // Remove dist/ prefix from manifest paths since we're copying to dist
               manifest.background.service_worker = 'background.js';
               manifest.options_page = 'options.html';
-              if (manifest.side_panel) {
-                manifest.side_panel.default_path = 'popup.html';
-              }
               manifest.content_scripts[0].js = ['content.js'];
-              manifest.web_accessible_resources[0].resources = ['*.js', '*.css', '*.map'];
+              manifest.web_accessible_resources[0].resources = ['*.js', '*.css', '*.html', '*.map', 'icons/*.png'];
               return JSON.stringify(manifest, null, 2);
             },
           },
@@ -105,7 +102,7 @@ module.exports = (env, argv) => {
       splitChunks: {
         chunks(chunk) {
           // Don't split chunks for background script - it needs to be a single file
-          return chunk.name !== 'background';
+          return chunk.name !== 'background' && chunk.name !== 'content';
         },
         cacheGroups: {
           vendor: {
@@ -115,7 +112,7 @@ module.exports = (env, argv) => {
             reuseExistingChunk: true,
             enforce: true,
             chunks(chunk) {
-              return chunk.name !== 'background';
+              return chunk.name !== 'background' && chunk.name !== 'content';
             },
           },
           mui: {
@@ -124,7 +121,7 @@ module.exports = (env, argv) => {
             priority: 20,
             reuseExistingChunk: true,
             chunks(chunk) {
-              return chunk.name !== 'background';
+              return chunk.name !== 'background' && chunk.name !== 'content';
             },
           },
           crypto: {
@@ -133,7 +130,7 @@ module.exports = (env, argv) => {
             priority: 15,
             reuseExistingChunk: true,
             chunks(chunk) {
-              return chunk.name !== 'background';
+              return chunk.name !== 'background' && chunk.name !== 'content';
             },
           },
           common: {
@@ -141,13 +138,13 @@ module.exports = (env, argv) => {
             priority: 5,
             reuseExistingChunk: true,
             chunks(chunk) {
-              return chunk.name !== 'background';
+              return chunk.name !== 'background' && chunk.name !== 'content';
             },
           },
         },
       },
       runtimeChunk: {
-        name: (entrypoint) => entrypoint.name !== 'background' ? 'runtime' : false,
+        name: (entrypoint) => (entrypoint.name !== 'background' && entrypoint.name !== 'content') ? 'runtime' : false,
       },
       usedExports: true,
       sideEffects: false,

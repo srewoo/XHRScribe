@@ -119,30 +119,19 @@ export type AIProvider =
   | 'gemini'
   | 'local';
 
-export type AIModel = 
-  // OpenAI Models (Latest)
+export type AIModel =
+  // OpenAI Models
   | 'gpt-4.1'           // Most capable, multimodal
   | 'gpt-4.1-mini'      // Smaller, faster, cheaper
-  | 'gpt-4-turbo'      // Latest GPT-4 Turbo
-  | 'gpt-3.5-turbo'    // Fast and cheap
-  // Anthropic Claude Models (Latest)
-  | 'claude-4-sonnet'            // Latest Claude 4 model
-  | 'claude-3-7-sonnet'          // Claude 3.7 Sonnet  
-  | 'claude-3-5-sonnet-20241022' // Claude 3.5 Sonnet
-  | 'claude-3-opus-20240229'     // Legacy - Most capable Claude 3 model
-  | 'claude-3-sonnet-20240229'   // Legacy - Balanced performance
-  | 'claude-3-haiku-20240307'    // Legacy - Fast and cheap
-  // Google Gemini Models (Latest)
-  | 'gemini-2-5-pro'          // Latest Gemini 2.5 Pro
-  | 'gemini-2-5-flash'        // Latest Gemini 2.5 Flash
-  | 'gemini-1.5-pro-latest'   // Legacy - 2M context
-  | 'gemini-1.5-flash'        // Legacy - Fast, efficient
-  | 'gemini-1.5-flash-8b'     // Legacy - Smaller, faster
+  // Anthropic Claude Models
+  | 'claude-4-sonnet'   // Latest Claude 4 model
+  | 'claude-3-7-sonnet' // Claude 3.7 Sonnet
+  // Google Gemini Models
+  | 'gemini-2-5-pro'    // Gemini 2.5 Pro
+  | 'gemini-2-5-flash'  // Gemini 2.5 Flash
   // Local Models
-  | 'llama-3.2'        // Latest Llama
-  | 'codellama-70b'    // Code-specific
-  | 'mixtral-8x7b'     // MoE model
-  | 'deepseek-coder'   // Code-specific;
+  | 'llama-3.2'         // Latest Llama
+  | 'deepseek-coder'    // Code-specific;
 
 export interface GenerationOptions {
   framework: TestFramework;
@@ -163,6 +152,7 @@ export interface GenerationOptions {
   testCoverage?: 'exhaustive' | 'standard' | 'minimal';
   complexity: 'basic' | 'intermediate' | 'advanced';
   customPrompt?: string;
+  excludedEndpoints?: string[]; // Endpoint signatures to exclude from generation
   // New parallel generation options
   parallelGeneration?: ParallelGenerationOptions;
 }

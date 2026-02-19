@@ -103,9 +103,203 @@ function stopPinging(): void {
   }
 }
 
+// =============================================
+// Floating Panel — injected UI for XHRScribe
+// =============================================
+class FloatingPanel {
+  private container: HTMLDivElement | null = null;
+  private minimizedBtn: HTMLDivElement | null = null;
+  private isMaximized = false;
+  private isRecording = false;
+  private isHidden = false; // true when minimized (container hidden but alive)
+  private readonly NORMAL_WIDTH = '420px';
+  private readonly MAX_WIDTH = '800px';
+
+  toggle(): void {
+    if (this.isHidden) {
+      // Panel exists but is hidden (minimized) — restore it
+      this.restore();
+    } else if (this.container) {
+      // Panel is visible — close it
+      this.close();
+    } else {
+      // No panel at all — create it
+      this.show();
+    }
+  }
+
+  show(): void {
+    if (this.container) return;
+    this.removeMinimizedBtn();
+
+    // Container
+    const container = document.createElement('div');
+    container.id = 'xhrscribe-panel-container';
+    Object.assign(container.style, {
+      position: 'fixed',
+      top: '0',
+      right: '0',
+      width: this.NORMAL_WIDTH,
+      height: '100vh',
+      zIndex: '2147483647',
+      boxShadow: '-2px 0 12px rgba(0,0,0,0.15)',
+      transition: 'width 0.3s ease',
+      display: 'flex',
+      flexDirection: 'column',
+    } as Partial<CSSStyleDeclaration>);
+
+    // iframe loading the React app
+    const iframe = document.createElement('iframe');
+    iframe.src = chrome.runtime.getURL('popup.html');
+    iframe.id = 'xhrscribe-iframe';
+    Object.assign(iframe.style, {
+      width: '100%',
+      height: '100%',
+      border: 'none',
+      background: '#fff',
+    });
+    iframe.allow = 'clipboard-write';
+
+    container.appendChild(iframe);
+    document.body.appendChild(container);
+    this.container = container;
+    this.isMaximized = false;
+    this.isHidden = false;
+  }
+
+  minimize(): void {
+    // Hide the container instead of removing it — keeps iframe alive
+    if (this.container) {
+      this.container.style.display = 'none';
+      this.isHidden = true;
+    }
+    this.showMinimizedBtn();
+  }
+
+  maximize(): void {
+    if (!this.container) return;
+    this.isMaximized = !this.isMaximized;
+    this.container.style.width = this.isMaximized ? this.MAX_WIDTH : this.NORMAL_WIDTH;
+  }
+
+  close(): void {
+    // Actually destroy the container and iframe
+    if (this.container) {
+      this.container.remove();
+      this.container = null;
+    }
+    this.isHidden = false;
+    this.removeMinimizedBtn();
+  }
+
+  restore(): void {
+    this.removeMinimizedBtn();
+    if (this.container && this.isHidden) {
+      // Unhide the existing container — iframe state is preserved
+      this.container.style.display = 'flex';
+      this.isHidden = false;
+    } else {
+      // No container exists — create fresh
+      this.show();
+    }
+  }
+
+  setRecording(recording: boolean): void {
+    this.isRecording = recording;
+    // Update minimized button if visible
+    if (this.minimizedBtn) {
+      const dot = this.minimizedBtn.querySelector('#xhrscribe-rec-dot') as HTMLElement;
+      if (recording && !dot) {
+        this.minimizedBtn.insertAdjacentHTML('afterbegin', this.recDotHTML());
+      } else if (!recording && dot) {
+        dot.remove();
+      }
+    }
+  }
+
+  private showMinimizedBtn(): void {
+    if (this.minimizedBtn) return;
+
+    const btn = document.createElement('div');
+    btn.id = 'xhrscribe-minimized-btn';
+    Object.assign(btn.style, {
+      position: 'fixed',
+      bottom: '20px',
+      right: '20px',
+      zIndex: '2147483647',
+      background: '#0d9488',
+      color: '#fff',
+      borderRadius: '24px',
+      padding: '8px 16px',
+      cursor: 'pointer',
+      fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+      fontSize: '13px',
+      fontWeight: '600',
+      display: 'flex',
+      alignItems: 'center',
+      gap: '6px',
+      boxShadow: '0 4px 12px rgba(0,0,0,0.2)',
+      transition: 'transform 0.2s ease',
+      userSelect: 'none',
+    } as Partial<CSSStyleDeclaration>);
+    btn.innerHTML = `${this.isRecording ? this.recDotHTML() : ''}<span style="font-size:16px">&lt;&gt;</span> XHRScribe`;
+
+    btn.addEventListener('mouseenter', () => { btn.style.transform = 'scale(1.05)'; });
+    btn.addEventListener('mouseleave', () => { btn.style.transform = 'scale(1)'; });
+    btn.addEventListener('click', () => this.restore());
+
+    document.body.appendChild(btn);
+    this.minimizedBtn = btn;
+  }
+
+  private removeMinimizedBtn(): void {
+    if (this.minimizedBtn) {
+      this.minimizedBtn.remove();
+      this.minimizedBtn = null;
+    }
+  }
+
+  private recDotHTML(): string {
+    return `<span id="xhrscribe-rec-dot" style="
+      width:10px;height:10px;border-radius:50%;background:#ef4444;display:inline-block;
+      animation:xhrscribe-blink 1s infinite;flex-shrink:0;
+    "></span>
+    <style>@keyframes xhrscribe-blink{0%,100%{opacity:1}50%{opacity:0.2}}</style>`;
+  }
+}
+
+const floatingPanel = new FloatingPanel();
+
+// Listen for postMessage from iframe (minimize/maximize/close commands)
+window.addEventListener('message', (event) => {
+  if (!event.data || typeof event.data.type !== 'string') return;
+  switch (event.data.type) {
+    case 'XHRSCRIBE_MINIMIZE':
+      floatingPanel.minimize();
+      break;
+    case 'XHRSCRIBE_RECORDING':
+      floatingPanel.setRecording(!!event.data.recording);
+      if (event.data.recording) {
+        floatingPanel.minimize();
+      }
+      break;
+    case 'XHRSCRIBE_MAXIMIZE':
+      floatingPanel.maximize();
+      break;
+    case 'XHRSCRIBE_CLOSE':
+      floatingPanel.close();
+      break;
+  }
+});
+
 // Listen for messages from the extension
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   switch (message.type) {
+    case 'TOGGLE_PANEL':
+      floatingPanel.toggle();
+      sendResponse({ success: true });
+      break;
+
     case 'START_PINGING':
       startPinging();
       sendResponse({ success: true });
@@ -232,6 +426,11 @@ try {
     // Always start heartbeat to keep extension alive
     if (response?.shouldHeartbeat !== false) {
       startHeartbeat();
+    }
+    // If recording is active on this tab, show minimized pill with recording indicator
+    if (response?.isRecording) {
+      floatingPanel.setRecording(true);
+      floatingPanel.minimize();
     }
   });
 } catch (error) {

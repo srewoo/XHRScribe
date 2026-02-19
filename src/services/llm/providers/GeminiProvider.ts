@@ -87,7 +87,7 @@ export class GeminiProvider implements LLMProvider {
             headers: {
               'Content-Type': 'application/json',
             },
-            timeout: 60000,
+            timeout: 120000,
           }
         );
 
@@ -190,16 +190,12 @@ export class GeminiProvider implements LLMProvider {
   }
 
   private getModelName(model: string): string {
-    // Map user-friendly names to Gemini API model names
     const modelMap: Record<string, string> = {
-      'gemini-1.5-pro-latest': 'gemini-1.5-pro-latest',
-      'gemini-1.5-flash': 'gemini-1.5-flash',
-      'gemini-1.5-flash-8b': 'gemini-1.5-flash-8b',
-      'gemini-pro': 'gemini-pro',
-      'gemini-pro-vision': 'gemini-pro-vision',
+      'gemini-2-5-pro': 'gemini-2.5-pro',
+      'gemini-2-5-flash': 'gemini-2.5-flash',
     };
-    
-    return modelMap[model] || 'gemini-1.5-flash';
+
+    return modelMap[model] || 'gemini-2.5-flash';
   }
 
   private delay(ms: number): Promise<void> {
@@ -209,12 +205,11 @@ export class GeminiProvider implements LLMProvider {
   estimateCost(tokenCount: number, model: string): number {
     // Gemini pricing as of 2024 (approximate)
     const pricing: Record<string, { input: number; output: number }> = {
-      'gemini-1.5-pro': { input: 0.00125, output: 0.00375 }, // per 1k tokens
-      'gemini-1.5-flash': { input: 0.00015, output: 0.0006 },
-      'gemini-pro': { input: 0.0005, output: 0.0015 },
+      'gemini-2-5-pro': { input: 0.00125, output: 0.00375 },
+      'gemini-2-5-flash': { input: 0.00015, output: 0.0006 },
     };
-    
-    const modelPricing = pricing[model] || pricing['gemini-1.5-flash'];
+
+    const modelPricing = pricing[model] || pricing['gemini-2-5-flash'];
     // Rough estimate: 60% input, 40% output
     const inputTokens = tokenCount * 0.6;
     const outputTokens = tokenCount * 0.4;
@@ -235,14 +230,10 @@ export class GeminiProvider implements LLMProvider {
 
   private getMaxTokens(model: string): number {
     const limits: Record<string, number> = {
-      'gemini-2-5-pro': 2097152,        // Latest Gemini 2.5 Pro - 2M context
-      'gemini-2-5-flash': 1048576,      // Latest Gemini 2.5 Flash - 1M context
-      'gemini-1.5-pro-latest': 2097152, // Legacy - 2M context window
-      'gemini-1.5-flash': 1048576,      // Legacy - 1M context window
-      'gemini-1.5-flash-8b': 1048576,   // Legacy - 1M context window
-      'gemini-pro': 32768,              // Legacy
+      'gemini-2-5-pro': 2097152,
+      'gemini-2-5-flash': 1048576,
     };
-    return limits[model] || 32768;
+    return limits[model] || 1048576;
   }
 
   private buildExhaustivePrompt(harData: HARData, options: GenerationOptions, authFlow?: AuthFlow, customAuthGuide?: string): string {

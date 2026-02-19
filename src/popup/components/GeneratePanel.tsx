@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   Box,
   Paper,
@@ -242,31 +242,20 @@ export default function GeneratePanel({ sessions }: GeneratePanelProps) {
   const getAllAvailableModels = (): { value: AIModel; label: string }[] => {
     return [
       // OpenAI Models
-      { value: 'gpt-4.1', label: 'gpt-4.1 (Most Capable, Multimodal)' },
-      { value: 'gpt-4.1-mini', label: 'gpt-4.1 Mini (Fast & Cheap)' },
-      { value: 'gpt-4-turbo', label: 'GPT-4 Turbo' },
-      { value: 'gpt-3.5-turbo', label: 'GPT-3.5 Turbo' },
-      
+      { value: 'gpt-4.1', label: 'GPT-4.1 (Most Capable)' },
+      { value: 'gpt-4.1-mini', label: 'GPT-4.1 Mini (Fast & Cheap)' },
+
       // Anthropic Claude Models
-      { value: 'claude-4-sonnet', label: 'Claude 4 Sonnet (Latest & Most Capable)' },
-      { value: 'claude-3-7-sonnet', label: 'Claude 3.7 Sonnet (Advanced)' },
-      { value: 'claude-3-5-sonnet-20241022', label: 'Claude 3.5 Sonnet (Proven)' },
-      { value: 'claude-3-opus-20240229', label: 'Claude 3 Opus (Legacy)' },
-      { value: 'claude-3-sonnet-20240229', label: 'Claude 3 Sonnet (Legacy)' },
-      { value: 'claude-3-haiku-20240307', label: 'Claude 3 Haiku (Legacy)' },
-      
+      { value: 'claude-4-sonnet', label: 'Claude 4 Sonnet (Latest)' },
+      { value: 'claude-3-7-sonnet', label: 'Claude 3.7 Sonnet' },
+
       // Google Gemini Models
-      { value: 'gemini-2-5-pro', label: 'Gemini 2.5 Pro (Latest & Most Capable)' },
-      { value: 'gemini-2-5-flash', label: 'Gemini 2.5 Flash (Latest & Fast)' },
-      { value: 'gemini-1.5-pro-latest', label: 'Gemini 1.5 Pro (Legacy)' },
-      { value: 'gemini-1.5-flash', label: 'Gemini 1.5 Flash (Legacy)' },
-      { value: 'gemini-1.5-flash-8b', label: 'Gemini 1.5 Flash 8B (Legacy)' },
-      
+      { value: 'gemini-2-5-pro', label: 'Gemini 2.5 Pro' },
+      { value: 'gemini-2-5-flash', label: 'Gemini 2.5 Flash (Fast)' },
+
       // Local Models
-      { value: 'llama-3.2', label: 'Llama 3.2 (Latest)' },
-      { value: 'codellama-70b', label: 'CodeLlama 70B (Code-specific)' },
-      { value: 'mixtral-8x7b', label: 'Mixtral 8x7B (MoE model)' },
-      { value: 'deepseek-coder', label: 'DeepSeek Coder (Code-specific)' },
+      { value: 'llama-3.2', label: 'Llama 3.2' },
+      { value: 'deepseek-coder', label: 'DeepSeek Coder' },
     ];
   };
 
@@ -363,13 +352,17 @@ export default function GeneratePanel({ sessions }: GeneratePanelProps) {
       }));
     };
 
+    const excludedArray = Array.from(excludedEndpoints);
+    console.log(`🔍 [GeneratePanel] Excluded endpoints (${excludedArray.length}):`, excludedArray);
+    console.log(`🔍 [GeneratePanel] Active endpoints: ${activeEndpointCount}`);
+
     const generationOptions = {
       framework,
       provider,
       model, // Use the local model state instead of settings
       ...options,
       complexity: 'intermediate' as const,
-      excludedEndpoints: Array.from(excludedEndpoints), // Convert Set to Array for serialization
+      excludedEndpoints: excludedArray, // Convert Set to Array for serialization
     };
 
     try {
@@ -695,6 +688,27 @@ ${options.includeErrorScenarios ? `
   const enabledParallelCount = Object.entries(parallelOptions)
     .filter(([key, value]) => key.startsWith('enable') && value === true)
     .length;
+
+  // Compute active endpoint count for the Generate button label
+  const activeEndpointCount = useMemo(() => {
+    if (!session) return 0;
+    const endpointMap = new Map<string, boolean>();
+    session.requests.forEach(req => {
+      try {
+        const url = new URL(req.url);
+        const signature = `${req.method}:${url.pathname}`;
+        if (!excludedEndpoints.has(signature)) {
+          endpointMap.set(signature, true);
+        }
+      } catch {
+        const signature = `${req.method}:${req.url}`;
+        if (!excludedEndpoints.has(signature)) {
+          endpointMap.set(signature, true);
+        }
+      }
+    });
+    return endpointMap.size;
+  }, [session, excludedEndpoints]);
 
   if (!session) {
     return (
@@ -1198,7 +1212,7 @@ ${options.includeErrorScenarios ? `
           ? 'Generating Tests...'
           : parallelEnabled
             ? `Generate All (${enabledParallelCount} features)`
-            : 'Generate Tests'}
+            : `Generate Tests (${activeEndpointCount} endpoint${activeEndpointCount !== 1 ? 's' : ''})`}
       </Button>
 
       {/* Generation Progress */}

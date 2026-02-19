@@ -66,7 +66,7 @@ export class ClaudeProvider implements LLMProvider {
               'X-API-Key': this.apiKey,
               'anthropic-version': '2023-06-01',
             },
-            timeout: 60000,
+            timeout: 120000,
           }
         );
 
@@ -140,13 +140,11 @@ export class ClaudeProvider implements LLMProvider {
   estimateCost(tokenCount: number, model: string): number {
     // Claude pricing as of 2024
     const pricing: Record<string, { input: number; output: number }> = {
-      'claude-3-opus-20240229': { input: 0.015, output: 0.075 }, // per 1k tokens
-      'claude-3-5-sonnet-20241022': { input: 0.003, output: 0.015 },
-      'claude-3-sonnet-20240229': { input: 0.003, output: 0.015 },
-      'claude-3-haiku-20240307': { input: 0.00025, output: 0.00125 },
+      'claude-4-sonnet': { input: 0.003, output: 0.015 },
+      'claude-3-7-sonnet': { input: 0.003, output: 0.015 },
     };
-    
-    const modelPricing = pricing[model] || pricing['claude-3-haiku-20240307'];
+
+    const modelPricing = pricing[model] || pricing['claude-4-sonnet'];
     // Rough estimate: 60% input, 40% output
     const inputTokens = tokenCount * 0.6;
     const outputTokens = tokenCount * 0.4;
@@ -167,14 +165,10 @@ export class ClaudeProvider implements LLMProvider {
 
   private getMaxTokens(model: string): number {
     const limits: Record<string, number> = {
-      'claude-4-sonnet': 200000,           // Latest Claude 4
-      'claude-3-7-sonnet': 200000,         // Claude 3.7
-      'claude-3-5-sonnet-20241022': 200000, // Claude 3.5
-      'claude-3-opus-20240229': 200000,     // Legacy
-      'claude-3-sonnet-20240229': 200000,   // Legacy
-      'claude-3-haiku-20240307': 200000,    // Legacy
+      'claude-4-sonnet': 200000,
+      'claude-3-7-sonnet': 200000,
     };
-    return limits[model] || 100000;
+    return limits[model] || 200000;
   }
 
   private buildPrompt(harData: HARData, options: GenerationOptions, authFlow?: AuthFlow, customAuthGuide?: string): string {
