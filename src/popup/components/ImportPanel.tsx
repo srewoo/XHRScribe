@@ -18,17 +18,15 @@ import {
   Zoom,
   IconButton,
 } from '@mui/material';
-import {
-  CloudUpload,
-  InsertDriveFile,
-  Description,
-  Code,
-  Api,
-  Visibility,
-  FileUpload,
-  GetApp,
-  AutoAwesome,
-} from '@mui/icons-material';
+import CloudUpload from '@mui/icons-material/CloudUpload';
+import InsertDriveFile from '@mui/icons-material/InsertDriveFile';
+import Description from '@mui/icons-material/Description';
+import Code from '@mui/icons-material/Code';
+import Api from '@mui/icons-material/Api';
+import Visibility from '@mui/icons-material/Visibility';
+import FileUpload from '@mui/icons-material/FileUpload';
+import GetApp from '@mui/icons-material/GetApp';
+import AutoAwesome from '@mui/icons-material/AutoAwesome';
 import { useStore } from '@/store/useStore';
 import ImportProgressComponent from './ImportProgress';
 import FilePreviewCard from './FilePreviewCard';
@@ -67,7 +65,7 @@ interface FilePreview {
 }
 
 export default function ImportPanel() {
-  const { importSession, sessions } = useStore();
+  const { importSession } = useStore();
   const [importState, setImportState] = useState<ImportState>({
     isImporting: false,
     progress: 0,
@@ -162,7 +160,7 @@ export default function ImportPanel() {
       let domains: string[] = [];
 
       switch (type) {
-        case 'har':
+        case 'har': {
           const harData = JSON.parse(content);
           if (harData.log?.entries) {
             endpoints = harData.log.entries.length;
@@ -172,8 +170,9 @@ export default function ImportPanel() {
             }))] as string[];
           }
           break;
+        }
 
-        case 'postman':
+        case 'postman': {
           const collection = JSON.parse(content);
           const items = [];
           const processItems = (itemList: any[]) => {
@@ -190,11 +189,12 @@ export default function ImportPanel() {
             try { return new URL(url).hostname; } catch { return 'unknown'; }
           }))];
           break;
+        }
 
-        case 'openapi':
+        case 'openapi': {
           const spec = JSON.parse(content);
           if (spec.paths) {
-            Object.entries(spec.paths).forEach(([path, pathMethods]: [string, any]) => {
+            Object.entries(spec.paths).forEach(([_path, pathMethods]: [string, any]) => {
               Object.keys(pathMethods).forEach(method => {
                 if (['get', 'post', 'put', 'delete', 'patch', 'head', 'options'].includes(method.toLowerCase())) {
                   endpoints++;
@@ -208,8 +208,9 @@ export default function ImportPanel() {
             }) || ['api.example.com'];
           }
           break;
+        }
 
-        case 'insomnia':
+        case 'insomnia': {
           const data = JSON.parse(content);
           const requests = data.resources?.filter((r: any) => r._type === 'request') || [];
           endpoints = requests.length;
@@ -218,10 +219,11 @@ export default function ImportPanel() {
             try { return new URL(r.url).hostname; } catch { return 'unknown'; }
           }))] as string[];
           break;
+        }
       }
 
       return { endpoints, methods: methods.slice(0, 5), domains: domains.slice(0, 3) };
-    } catch (error) {
+    } catch {
       return { endpoints: 0, methods: [], domains: [] };
     }
   };
@@ -373,7 +375,7 @@ export default function ImportPanel() {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = (e) => resolve(e.target?.result as string);
-      reader.onerror = (e) => reject(new Error('Failed to read file'));
+      reader.onerror = (_e) => reject(new Error('Failed to read file'));
       reader.readAsText(file);
     });
   };

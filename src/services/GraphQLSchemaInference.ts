@@ -192,7 +192,7 @@ export class GraphQLSchemaInference {
     const fieldMatches = query.match(/\{\s*([A-Za-z_][A-Za-z0-9_]*)/g);
     if (fieldMatches) {
       fieldMatches.forEach(match => {
-        const field = match.replace(/[\{\s]/g, '');
+        const field = match.replace(/[{\s]/g, '');
         if (field && !fields.includes(field)) {
           fields.push(field);
         }
@@ -514,7 +514,7 @@ export class GraphQLSchemaInference {
     return lines.join('\n');
   }
 
-  private generateQueryTest(query: GraphQLField, framework: string): string {
+  private generateQueryTest(query: GraphQLField, _framework: string): string {
     const testName = `should execute ${query.name} query`;
     const args = query.args?.map(a => `$${a.name}: ${a.type}${a.isRequired ? '!' : ''}`).join(', ') || '';
     const params = query.args?.map(a => `${a.name}: $${a.name}`).join(', ') || '';
@@ -539,7 +539,7 @@ export class GraphQLSchemaInference {
 `;
   }
 
-  private generateMutationTest(mutation: GraphQLField, framework: string): string {
+  private generateMutationTest(mutation: GraphQLField, _framework: string): string {
     const testName = `should execute ${mutation.name} mutation`;
     const args = mutation.args?.map(a => `$${a.name}: ${a.type}${a.isRequired ? '!' : ''}`).join(', ') || '';
     const params = mutation.args?.map(a => `${a.name}: $${a.name}`).join(', ') || '';

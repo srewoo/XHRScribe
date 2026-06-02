@@ -8,12 +8,10 @@ import {
   Avatar,
   Fade,
 } from '@mui/material';
-import {
-  Speed,
-  Security,
-  BugReport,
-  Animation,
-} from '@mui/icons-material';
+import Speed from '@mui/icons-material/Speed';
+import Security from '@mui/icons-material/Security';
+import BugReport from '@mui/icons-material/BugReport';
+import Animation from '@mui/icons-material/Animation';
 
 interface ImportState {
   isImporting: boolean;

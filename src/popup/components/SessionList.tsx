@@ -14,22 +14,19 @@ import {
   DialogActions,
   TextField,
 } from '@mui/material';
-import {
-  Delete,
-  Download,
-  Code,
-  Timer,
-  NetworkCheck,
-  Edit,
-  Api,
-  Description,
-  InsertDriveFile,
-  ImportExport,
-  RadioButtonChecked,
-  Folder,
-  Language,
-  Share,
-} from '@mui/icons-material';
+import Delete from '@mui/icons-material/Delete';
+import Download from '@mui/icons-material/Download';
+import Code from '@mui/icons-material/Code';
+import Timer from '@mui/icons-material/Timer';
+import NetworkCheck from '@mui/icons-material/NetworkCheck';
+import Edit from '@mui/icons-material/Edit';
+import Api from '@mui/icons-material/Api';
+import Description from '@mui/icons-material/Description';
+import InsertDriveFile from '@mui/icons-material/InsertDriveFile';
+import ImportExport from '@mui/icons-material/ImportExport';
+import RadioButtonChecked from '@mui/icons-material/RadioButtonChecked';
+import Language from '@mui/icons-material/Language';
+import Share from '@mui/icons-material/Share';
 import { RecordingSession } from '@/types';
 import { useStore } from '@/store/useStore';
 
@@ -40,7 +37,7 @@ interface SessionListProps {
 const SESSIONS_PER_PAGE = 10;
 
 export default function SessionList({ sessions }: SessionListProps) {
-  const { deleteSession, renameSession, selectSession, setLoading } = useStore();
+  const { deleteSession, renameSession, selectSession } = useStore();
   const [renameDialogOpen, setRenameDialogOpen] = useState(false);
   const [sessionToRename, setSessionToRename] = useState<RecordingSession | null>(null);
   const [newSessionName, setNewSessionName] = useState('');

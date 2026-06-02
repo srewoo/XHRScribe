@@ -243,7 +243,7 @@ beforeAll(() => {
   }
 
   private generatePlaywrightAuth(authFlow: AuthFlow, method: string): string {
-    const loginUrl = authFlow.loginEndpoint?.url || '/login';
+    const _loginUrl = authFlow.loginEndpoint?.url || '/login';
     
     let authSetup = `
 // Authentication setup
@@ -588,7 +588,7 @@ beforeAll(async () => {
     }
   }
 
-  private generatePlaywrightUtilities(authFlow: AuthFlow): string {
+  private generatePlaywrightUtilities(_authFlow: AuthFlow): string {
     return `
 // Utility functions
 function getAuthHeaders(): Record<string, string> {
@@ -635,7 +635,7 @@ function validateSchema(data: any, schema: object): boolean {
 
 function generateTestData(template: any): any {
   // Replace template values with realistic fake data
-  return JSON.parse(JSON.stringify(template).replace(/"FAKE_(\w+)"/g, (match, type) => {
+  return JSON.parse(JSON.stringify(template).replace(/"FAKE_(\\w+)"/g, (match, type) => {
     switch (type.toLowerCase()) {
       case 'email': return \`"\${faker.internet.email()}"\`;
       case 'name': return \`"\${faker.person.fullName()}"\`;
@@ -649,7 +649,7 @@ function generateTestData(template: any): any {
 }`;
   }
 
-  private generateCypressUtilities(authFlow: AuthFlow): string {
+  private generateCypressUtilities(_authFlow: AuthFlow): string {
     return `
 // Utility commands
 Cypress.Commands.add('makeAuthenticatedRequest', (method, url, body = null) => {
@@ -688,7 +688,7 @@ Cypress.Commands.add('validateSchema', (data, schema) => {
 });`;
   }
 
-  private generateJestUtilities(authFlow: AuthFlow): string {
+  private generateJestUtilities(_authFlow: AuthFlow): string {
     return `
 // Utility functions
 function getAuthHeaders(): Record<string, string> {
@@ -718,7 +718,7 @@ function validateSchema(data: any, schema: object): boolean {
 }
 
 function generateTestData(template: any): any {
-  return JSON.parse(JSON.stringify(template).replace(/"FAKE_(\w+)"/g, (match, type) => {
+  return JSON.parse(JSON.stringify(template).replace(/"FAKE_(\\w+)"/g, (match, type) => {
     switch (type.toLowerCase()) {
       case 'email': return \`"\${faker.internet.email()}"\`;
       case 'name': return \`"\${faker.person.fullName()}"\`;
@@ -732,7 +732,7 @@ function generateTestData(template: any): any {
 }`;
   }
 
-  private generateCleanup(framework: TestFramework, authFlow: AuthFlow): string {
+  private generateCleanup(framework: TestFramework, _authFlow: AuthFlow): string {
     switch (framework) {
       case 'playwright':
         return `

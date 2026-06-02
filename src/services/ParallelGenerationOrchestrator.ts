@@ -284,7 +284,7 @@ export class ParallelGenerationOrchestrator {
 
     try {
       // Generate tests using AIService
-      const generatedTest = await aiService.generateTests(session, aiOptions, undefined, (current, total, stage) => {
+      const generatedTest = await aiService.generateTests(session, aiOptions, undefined, (current, total, _stage) => {
         // Map AI progress (0-100%) to task progress (30-90%)
         const aiProgress = total > 0 ? (current / total) * 100 : 0;
         task.progress = 30 + (aiProgress * 0.6); // 30% to 90%
@@ -416,7 +416,7 @@ export class ParallelGenerationOrchestrator {
   ): Promise<ParameterizedTest[]> {
     const generator = DataDrivenGenerator.getInstance();
     const tests: ParameterizedTest[] = [];
-    const total = session.requests.length;
+    const _total = session.requests.length;
 
     // Filter requests with body (candidates for data-driven tests)
     const candidates = session.requests.filter(r => r.requestBody);

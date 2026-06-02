@@ -577,7 +577,7 @@ export class SmartAssertionBuilder {
     };
   }
 
-  generateAssertionCode(suggestion: AssertionSuggestion, framework: TestFramework): string {
+  generateAssertionCode(suggestion: AssertionSuggestion, _framework: TestFramework): string {
     const lines: string[] = [
       `// Smart Assertions for ${suggestion.method} ${suggestion.endpoint}`,
       `// Generated ${suggestion.summary.total} assertions (avg confidence: ${suggestion.summary.averageConfidence}%)`,

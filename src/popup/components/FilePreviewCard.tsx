@@ -9,11 +9,9 @@ import {
   Stack,
   Fade,
 } from '@mui/material';
-import {
-  Delete,
-  Preview,
-  Rocket,
-} from '@mui/icons-material';
+import Delete from '@mui/icons-material/Delete';
+import Preview from '@mui/icons-material/Preview';
+import Rocket from '@mui/icons-material/Rocket';
 
 interface FilePreviewData {
   file: File;

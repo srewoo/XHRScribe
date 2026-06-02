@@ -116,7 +116,7 @@ export class EnvironmentExtractor {
           });
         }
       });
-    } catch (error) {
+    } catch {
       // Invalid URL, skip
     }
   }
@@ -406,7 +406,7 @@ export class EnvironmentExtractor {
     return variable.value;
   }
 
-  generateEnvironments(variables: ExtractedVariable[], session: RecordingSession): ExtractionResult['environments'] {
+  generateEnvironments(variables: ExtractedVariable[], _session: RecordingSession): ExtractionResult['environments'] {
     const baseUrl = variables.find(v => v.name === 'BASE_URL');
     let devUrl = 'http://localhost:3000';
     let stagingUrl = 'https://staging.example.com';

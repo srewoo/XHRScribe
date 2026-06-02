@@ -15,15 +15,13 @@ import {
   ToggleButtonGroup,
   ToggleButton,
 } from '@mui/material';
-import {
-  ArrowUpward,
-  ArrowDownward,
-  ExpandMore,
-  ExpandLess,
-  Search,
-} from '@mui/icons-material';
+import ArrowUpward from '@mui/icons-material/ArrowUpward';
+import ArrowDownward from '@mui/icons-material/ArrowDownward';
+import ExpandMore from '@mui/icons-material/ExpandMore';
+import ExpandLess from '@mui/icons-material/ExpandLess';
+import Search from '@mui/icons-material/Search';
 import { WebSocketParser } from '@/services/WebSocketParser';
-import { ParsedWebSocketFrame } from '@/types';
+import {  } from '@/types';
 
 interface WebSocketDetailProps {
   frames: any[];

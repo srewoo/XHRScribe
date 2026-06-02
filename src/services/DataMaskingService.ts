@@ -9,12 +9,12 @@ export class DataMaskingService {
     phone: /(\+\d{1,3}[-.\s]?)?\(?\d{1,4}\)?[-.\s]?\d{1,4}[-.\s]?\d{1,9}/g,
     ssn: /\d{3}-\d{2}-\d{4}/g,
     creditCard: /\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b/g,
-    apiKey: /(api[_-]?key|apikey|api_secret|access[_-]?token|auth[_-]?token|authentication[_-]?token|bearer)\s*[:=]\s*["']?[a-zA-Z0-9\-._~+\/]{20,}["']?/gi,
+    apiKey: /(api[_-]?key|apikey|api_secret|access[_-]?token|auth[_-]?token|authentication[_-]?token|bearer)\s*[:=]\s*["']?[a-zA-Z0-9\-._~+/]{20,}["']?/gi,
     password: /(password|passwd|pwd|pass)\s*[:=]\s*["']?[^"'\s]{6,}["']?/gi,
     jwt: /eyJ[a-zA-Z0-9_-]+\.eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+/g,
     ipAddress: /\b(?:\d{1,3}\.){3}\d{1,3}\b/g,
     uuid: /[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/gi,
-    base64: /(?:[A-Za-z0-9+\/]{4}){10,}(?:[A-Za-z0-9+\/]{2}==|[A-Za-z0-9+\/]{3}=)?/g,
+    base64: /(?:[A-Za-z0-9+/]{4}){10,}(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?/g,
   };
 
   private customPatterns: RegExp[] = [];
@@ -31,7 +31,7 @@ export class DataMaskingService {
   addCustomPattern(pattern: string): void {
     try {
       this.customPatterns.push(new RegExp(pattern, 'gi'));
-    } catch (error) {
+    } catch {
       console.error('Invalid regex pattern:', pattern);
     }
   }

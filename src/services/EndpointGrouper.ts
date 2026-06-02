@@ -176,7 +176,7 @@ export class EndpointGrouper {
     return matchCount >= 2;
   }
 
-  private detectCategory(path: string, methods: string[], requests: NetworkRequest[]): EndpointCategory {
+  private detectCategory(path: string, methods: string[], _requests: NetworkRequest[]): EndpointCategory {
     const lower = path.toLowerCase();
 
     // Auth patterns

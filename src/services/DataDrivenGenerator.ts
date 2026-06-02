@@ -1,4 +1,4 @@
-import { HAREntry, TestFramework, NetworkRequest } from '@/types';
+import { TestFramework, NetworkRequest } from '@/types';
 
 export interface TestDataSet {
   name: string;
@@ -339,13 +339,14 @@ export class DataDrivenGenerator {
         break;
 
       case 'number':
-      case 'count':
+      case 'count': {
         const numVal = field.value as number;
         variations.push(
           { name: 'Double', description: 'Doubled value', value: numVal * 2 },
           { name: 'Half', description: 'Halved value', value: Math.floor(numVal / 2) }
         );
         break;
+      }
 
       case 'boolean':
         variations.push(

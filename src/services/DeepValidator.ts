@@ -203,7 +203,7 @@ export class DeepValidator {
     return { score: Math.max(0, score), issues };
   }
 
-  private validateTestCoverage(code: string, harData: HARData): { score: number; issues: ValidationIssue[] } {
+  private validateTestCoverage(code: string, _harData: HARData): { score: number; issues: ValidationIssue[] } {
     const issues: ValidationIssue[] = [];
     let score = 10;
 
@@ -385,7 +385,7 @@ export class DeepValidator {
     return { score: Math.max(0, score), issues };
   }
 
-  private validateBusinessLogic(code: string, harData: HARData): { score: number; issues: ValidationIssue[] } {
+  private validateBusinessLogic(code: string, _harData: HARData): { score: number; issues: ValidationIssue[] } {
     const issues: ValidationIssue[] = [];
     let score = 10;
 
@@ -434,7 +434,7 @@ export class DeepValidator {
     }
 
     // Check for semicolon issues (basic check)
-    const missingSemicolons = code.match(/\n\s*[^\/\s][^;]*[^{\s;]\s*\n/g);
+    const missingSemicolons = code.match(/\n\s*[^/\s][^;]*[^{\s;]\s*\n/g);
     if (missingSemicolons && missingSemicolons.length > 5) {
       errors.push('Multiple potential missing semicolons detected');
     }
@@ -638,7 +638,7 @@ export class DeepValidator {
            code.includes('Error(');
   }
 
-  private checkNamingConsistency(code: string, framework: TestFramework): string[] {
+  private checkNamingConsistency(code: string, _framework: TestFramework): string[] {
     const issues: string[] = [];
 
     // Check for mixed test function names
@@ -699,7 +699,7 @@ export class DeepValidator {
     return code.includes('XSS') || code.includes('<script>') || code.includes('xss');
   }
 
-  private hasTimeoutConfiguration(code: string, framework: TestFramework): boolean {
+  private hasTimeoutConfiguration(code: string, _framework: TestFramework): boolean {
     const timeoutPatterns = ['timeout', 'setTimeout', 'jest.setTimeout'];
     return timeoutPatterns.some(pattern => code.includes(pattern));
   }
@@ -708,7 +708,7 @@ export class DeepValidator {
     return code.includes('response') && (code.includes('time') || code.includes('duration'));
   }
 
-  private hasResourceCleanup(code: string, framework: TestFramework): boolean {
+  private hasResourceCleanup(code: string, _framework: TestFramework): boolean {
     return code.includes('afterAll') || code.includes('afterEach') || code.includes('after(');
   }
 

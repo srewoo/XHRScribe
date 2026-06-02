@@ -1,7 +1,7 @@
 import axios, { AxiosError } from 'axios';
-import { encode } from 'gpt-tokenizer';
+import { preloadEncoder, countTokens as countTokensLazy } from '../tokenizer';
 import { HARData, GenerationOptions, GeneratedTest } from '@/types';
-import { LLMProvider } from '../LLMService';
+import { LLMProvider } from '../LLMProvider';
 import { AuthFlow, AuthFlowAnalyzer } from '../../AuthFlowAnalyzer';
 import { normalizePath } from '../../EndpointGrouper';
 import { PromptBuilder } from '../PromptBuilder';
@@ -35,6 +35,7 @@ export class OpenAIProvider implements LLMProvider {
       throw new Error('OpenAI API key not configured');
     }
 
+    await preloadEncoder(); // load the BPE ranks chunk for accurate counts
     const prompt = this.buildExhaustivePrompt(harData, options, authFlow, customAuthGuide);
     const promptTokens = this.countTokens(prompt);
     const systemPromptTokens = this.countTokens(this.getSystemPrompt());
@@ -50,26 +51,30 @@ export class OpenAIProvider implements LLMProvider {
     
     for (let attempt = 0; attempt < this.maxRetries; attempt++) {
       try {
+        const tokenBudget = Math.min(16000, Math.floor((modelLimit - totalInputTokens) * 0.95));
+        // GPT-5.x reasoning models use `max_completion_tokens` and only accept
+        // the default temperature; the classic sampling params are rejected.
+        const isGpt5 = options.model.startsWith('gpt-5');
+        const requestBody: Record<string, any> = {
+          model: options.model,
+          messages: [
+            { role: 'system', content: this.getSystemPrompt() },
+            { role: 'user', content: prompt }
+          ],
+        };
+        if (isGpt5) {
+          requestBody.max_completion_tokens = tokenBudget;
+        } else {
+          requestBody.temperature = 0.3; // consistent test generation
+          requestBody.max_tokens = tokenBudget;
+          requestBody.top_p = 0.9;
+          requestBody.frequency_penalty = 0.1;
+          requestBody.presence_penalty = 0.1;
+        }
+
         const response = await axios.post(
           `${this.baseUrl}/chat/completions`,
-          {
-            model: options.model,
-            messages: [
-              {
-                role: 'system',
-                content: this.getSystemPrompt()
-              },
-              {
-                role: 'user',
-                content: prompt
-              }
-            ],
-            temperature: 0.3, // Lower temperature for more consistent test generation
-            max_tokens: Math.min(16000, Math.floor((modelLimit - totalInputTokens) * 0.95)), // Use up to 95% of remaining tokens
-            top_p: 0.9,
-            frequency_penalty: 0.1,
-            presence_penalty: 0.1
-          },
+          requestBody,
           {
             headers: {
               'Content-Type': 'application/json',
@@ -151,8 +156,10 @@ export class OpenAIProvider implements LLMProvider {
 
   estimateCost(tokenCount: number, model?: string): number {
     const modelPricing: Record<string, { input: number; output: number }> = {
-      'gpt-4.1': { input: 0.005, output: 0.015 },
-      'gpt-4.1-mini': { input: 0.00015, output: 0.0006 },
+      'gpt-5.5': { input: 0.01, output: 0.03 },
+      'gpt-5.4-mini': { input: 0.0005, output: 0.002 },
+      'gpt-4.1': { input: 0.002, output: 0.008 },
+      'gpt-4.1-mini': { input: 0.0004, output: 0.0016 },
     };
 
     const pricing = modelPricing[model || 'gpt-4.1-mini'] || modelPricing['gpt-4.1-mini'];
@@ -165,14 +172,7 @@ export class OpenAIProvider implements LLMProvider {
   }
 
   countTokens(text: string): number {
-    try {
-      // Use gpt-tokenizer for accurate token counting
-      const tokens = encode(text);
-      return tokens.length;
-    } catch (error) {
-      // Fallback to rough estimation if encoding fails
-      return Math.ceil(text.length / 4);
-    }
+    return countTokensLazy(text);
   }
 
   private getSystemPrompt(): string {
@@ -700,10 +700,12 @@ ${pb.getQualityGateSection()}
 
   private getMaxTokens(model: string): number {
     const limits: Record<string, number> = {
-      'gpt-4.1': 128000,
-      'gpt-4.1-mini': 128000,
+      'gpt-5.5': 400000,
+      'gpt-5.4-mini': 400000,
+      'gpt-4.1': 1000000,        // 1M token context window
+      'gpt-4.1-mini': 1000000,
     };
-    return limits[model] || 128000;
+    return limits[model] || 400000;
   }
 
   private calculateQualityScore(code: string, harData: HARData): number {
@@ -921,7 +923,7 @@ ${pb.getQualityGateSection()}
       const bodyHash = this.simpleHash(bodyStr);
       return `operation_${bodyHash}`;
       
-    } catch (error) {
+    } catch {
       return null;
     }
   }

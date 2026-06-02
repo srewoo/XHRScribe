@@ -372,7 +372,7 @@ function captureConsoleOutput(): void {
           // Silent fail - extension not ready
         }
       });
-    } catch (e) {
+    } catch {
       // Silent fail
     }
     originalLog.apply(console, args);
@@ -388,7 +388,7 @@ function captureConsoleOutput(): void {
           // Silent fail
         }
       });
-    } catch (e) {
+    } catch {
       // Silent fail
     }
     originalError.apply(console, args);
@@ -404,7 +404,7 @@ function captureConsoleOutput(): void {
           // Silent fail
         }
       });
-    } catch (e) {
+    } catch {
       // Silent fail
     }
     originalWarn.apply(console, args);

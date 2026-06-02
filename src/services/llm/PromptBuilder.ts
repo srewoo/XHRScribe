@@ -25,12 +25,12 @@ export class PromptBuilder {
     // Framework-specific indicators
     const playwrightIndicator = framework === 'playwright' ? ' (YOU ARE GENERATING PLAYWRIGHT CODE)' : '';
     const cypressIndicator = framework === 'cypress' ? ' (YOU ARE GENERATING CYPRESS CODE)' : '';
-    const jestIndicator = framework === 'jest' ? ' (YOU ARE GENERATING JEST CODE)' : '';
-    const mochaIndicator = framework === 'mocha-chai' ? ' (YOU ARE GENERATING MOCHA/CHAI CODE)' : '';
-    const vitestIndicator = framework === 'vitest' ? ' (YOU ARE GENERATING VITEST CODE)' : '';
-    const supertestIndicator = framework === 'supertest' ? ' (YOU ARE GENERATING SUPERTEST CODE)' : '';
-    const puppeteerIndicator = framework === 'puppeteer' ? ' (YOU ARE GENERATING PUPPETEER CODE)' : '';
-    const postmanIndicator = framework === 'postman' ? ' (YOU ARE GENERATING POSTMAN TESTS)' : '';
+    const _jestIndicator = framework === 'jest' ? ' (YOU ARE GENERATING JEST CODE)' : '';
+    const _mochaIndicator = framework === 'mocha-chai' ? ' (YOU ARE GENERATING MOCHA/CHAI CODE)' : '';
+    const _vitestIndicator = framework === 'vitest' ? ' (YOU ARE GENERATING VITEST CODE)' : '';
+    const _supertestIndicator = framework === 'supertest' ? ' (YOU ARE GENERATING SUPERTEST CODE)' : '';
+    const _puppeteerIndicator = framework === 'puppeteer' ? ' (YOU ARE GENERATING PUPPETEER CODE)' : '';
+    const _postmanIndicator = framework === 'postman' ? ' (YOU ARE GENERATING POSTMAN TESTS)' : '';
 
     const authInstructions = this.buildAuthInstructions(authFlow, customAuthGuide);
 
@@ -951,8 +951,39 @@ This makes test output self-documenting and failures immediately understandable.
    * Auto-fix common LLM code generation errors before displaying to user.
    * Fixes: {; patterns, semicolons in objects, framework syntax mixing, duplicate imports.
    */
+  /**
+   * Strip markdown code fences (and any surrounding prose) from an LLM
+   * response. Models frequently wrap output in ```lang ... ``` despite being
+   * told not to; left in place the fences produce a syntactically broken test
+   * file. Handles: a single fenced block, multiple fenced blocks (some models
+   * split imports and tests), and an unterminated leading fence.
+   */
+  stripCodeFences(code: string): string {
+    const out = code.trim();
+
+    const fenceRegex = /```[a-zA-Z0-9_+-]*[ \t]*\r?\n([\s\S]*?)```/g;
+    const blocks: string[] = [];
+    let match: RegExpExecArray | null;
+    while ((match = fenceRegex.exec(out)) !== null) {
+      blocks.push(match[1].replace(/\s+$/, ''));
+    }
+
+    if (blocks.length > 0) {
+      // Prefer the fenced content; join multiple blocks in order.
+      return blocks.join('\n\n').trim();
+    }
+
+    // No complete fence pair — drop a leading ```lang line and a trailing ```.
+    return out
+      .replace(/^```[a-zA-Z0-9_+-]*[ \t]*\r?\n?/, '')
+      .replace(/\r?\n?```[ \t]*$/, '')
+      .trim();
+  }
+
   sanitizeGeneratedCode(code: string, framework: string): string {
-    let sanitized = code;
+    // Always strip fences first, for every framework — JSON/Postman output
+    // gets wrapped too, and a stray fence breaks the parser downstream.
+    let sanitized = this.stripCodeFences(code);
 
     // Skip sanitization for non-JS frameworks
     const isJavaScript = !['restassured', 'postman', 'karate'].includes(framework);

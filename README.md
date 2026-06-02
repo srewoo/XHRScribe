@@ -6,6 +6,39 @@
 
 XHRScribe is an intelligent Chrome extension that automatically captures network traffic during web application navigation and uses advanced AI to generate comprehensive, production-ready test suites. Built with privacy and security in mind, it supports multiple AI providers and test frameworks with enhanced capabilities for enterprise-grade testing.
 
+## 🔧 Recent Hardening Pass
+
+A correctness, privacy, and feature-completeness pass focused on closing the gap
+between advertised and actually-wired behaviour:
+
+- **Privacy choke point fixed** — request *and* response headers/bodies are now
+  masked in a single guaranteed pass at stop-recording time. Previously response
+  data could be persisted unmasked, and a request/response race could drop
+  captured responses entirely.
+- **WebSocket & SSE capture fixed** — frame-bearing WebSocket and SSE requests
+  were silently dropped from the HAR (no status code); they now survive into the
+  generated tests.
+- **MV3 lifecycle leaks fixed** — duplicate heartbeat-alarm listeners and a
+  leaking cleanup interval are gone; active sessions are snapshotted to
+  `chrome.storage.session` and recovered if the service worker restarts
+  mid-recording.
+- **Robust LLM output parsing** — generated code now has markdown fences and
+  surrounding prose reliably stripped (single block, multiple blocks, and
+  unterminated fences) before it ever reaches a test file.
+- **Validate → auto-fix → re-validate loop** — generated suites that aren't
+  production/staging-ready are run through the IntelligentAutoFixer (rule-based
+  fixes first, then AI for the remainder) and re-validated; the fix is only kept
+  if the score improves. Surfaced as an "Auto-fixed" badge in the UI.
+- **Artifact exports wired to the UI** — OpenAPI spec, GraphQL schema, `.env`
+  file, and a security-test report can now be exported per session (the
+  generators existed but had no UI trigger).
+- **Dead code removed** — orphaned `LLMService`/`AnthropicProvider`/
+  `AIProviderFactory`/`StreamingService`/`AssertionGenerator`/
+  `TestGenerationTemplates` deleted; the single live LLM path is `AIService` +
+  the four concrete providers.
+- **Test infrastructure repaired** — the AIService suite (previously unable to
+  load) now runs; full suite at 227 passing across 16 suites.
+
 ## ✨ Enhanced Features
 
 ### 🔍 **Advanced Network Capture**
@@ -16,10 +49,10 @@ XHRScribe is an intelligent Chrome extension that automatically captures network
 - Background processing with progress tracking
 
 ### 🤖 **Multi-Provider AI Integration**
-- **OpenAI**: gpt-4.1, gpt-4.1-mini, GPT-4-turbo, GPT-4, GPT-3.5-turbo
-- **Anthropic Claude**: Claude-3.5-sonnet, Claude-3-haiku, Claude-3-opus
-- **Google Gemini**: Gemini-1.5-pro, Gemini-1.5-flash, Gemini-pro
-- **Local Models**: Llama-3.1, CodeLlama, and custom models
+- **OpenAI**: GPT-5.5, GPT-5.4-mini, GPT-4.1 (1M context), GPT-4.1-mini
+- **Anthropic Claude**: Claude Opus 4.8, Claude Sonnet 4.6, Claude Haiku 4.5
+- **Google Gemini**: Gemini 3.5 Flash, Gemini 2.5 Pro, Gemini 3.1 Flash-Lite
+- **Local Models**: Llama 3.2, DeepSeek Coder (via Ollama)
 - **Cost Estimation**: Real-time token usage and cost tracking
 - **Quality Scoring**: AI-powered test quality analysis with recommendations
 

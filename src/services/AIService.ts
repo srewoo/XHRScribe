@@ -2,10 +2,10 @@ import { OpenAIProvider } from './llm/providers/OpenAIProvider';
 import { ClaudeProvider } from './llm/providers/ClaudeProvider';
 import { GeminiProvider } from './llm/providers/GeminiProvider';
 import { LocalProvider } from './llm/providers/LocalProvider';
-import { GenerationOptions, RecordingSession, GeneratedTest, Settings, HARData, HAREntry } from '@/types';
+import { GenerationOptions, RecordingSession, GeneratedTest, HARData, HAREntry } from '@/types';
 import { normalizePath, getEndpointSignature } from './EndpointGrouper';
 import { StorageService } from './StorageService';
-import { AuthFlowAnalyzer, AuthFlow } from './AuthFlowAnalyzer';
+import { AuthFlowAnalyzer } from './AuthFlowAnalyzer';
 import { Logger } from '@/services/logging/Logger';
 
 export class AIService {
@@ -118,18 +118,66 @@ export class AIService {
     // Always use individual parallel processing for better quality and speed
     const result = await this.generateTestsIndividually(session, options, excludedEndpoints, progressCallback);
 
-    // Run DeepValidator to attach validation metadata
+    // Validate → auto-fix → re-validate. DeepValidator scores the suite; if it
+    // is not yet production/staging ready (or has critical issues), run the
+    // IntelligentAutoFixer (rule-based fixes first, then AI for the remainder)
+    // and re-validate. The fix is only accepted if it improves the score.
     try {
       const { DeepValidator } = await import('./DeepValidator');
       const validator = DeepValidator.getInstance();
       const harData = this.convertSessionToHAR(session);
-      const validationResult = validator.validateTestSuite(result.code, harData, options.framework);
+      let validationResult = validator.validateTestSuite(result.code, harData, options.framework);
+
+      let autoFixApplied = false;
+      let issuesAutoFixed = 0;
+      let scoreBeforeAutoFix: number | undefined;
+
+      const notReady = !['production', 'staging'].includes(validationResult.readinessLevel);
+      const hasCritical = validationResult.detailedIssues.some(i => i.severity === 'critical');
+
+      if ((notReady || hasCritical) && validationResult.detailedIssues.length > 0) {
+        try {
+          const { IntelligentAutoFixer } = await import('./IntelligentAutoFixer');
+          const fixer = IntelligentAutoFixer.getInstance();
+          const fixResult = await fixer.autoFixWithAI(
+            result.code,
+            validationResult.detailedIssues,
+            options.framework
+          );
+
+          if (fixResult.fixedCode && fixResult.issuesFixed.length > 0) {
+            const reValidation = validator.validateTestSuite(
+              fixResult.fixedCode,
+              harData,
+              options.framework
+            );
+            // Accept the fix only if it did not regress the score.
+            if (reValidation.overallScore >= validationResult.overallScore) {
+              scoreBeforeAutoFix = validationResult.overallScore;
+              result.code = fixResult.fixedCode;
+              validationResult = reValidation;
+              autoFixApplied = true;
+              issuesAutoFixed = fixResult.issuesFixed.length;
+              result.warnings = [
+                ...(result.warnings || []),
+                `Auto-fixer resolved ${issuesAutoFixed} issue(s); score ${scoreBeforeAutoFix} → ${reValidation.overallScore}`,
+              ];
+            }
+          }
+        } catch (fixError) {
+          Logger.getInstance().warn('Auto-fixer failed, keeping original output', { error: fixError }, 'AIService');
+        }
+      }
+
       result.validation = {
         overallScore: validationResult.overallScore,
         readinessLevel: validationResult.readinessLevel,
         issueCount: validationResult.detailedIssues.length,
         criticalIssues: validationResult.detailedIssues.filter(i => i.severity === 'critical').length,
         suggestions: validationResult.improvementSuggestions.slice(0, 5),
+        autoFixApplied,
+        issuesAutoFixed,
+        scoreBeforeAutoFix,
       };
     } catch (error) {
       Logger.getInstance().warn('DeepValidator failed, skipping validation', { error }, 'AIService');
@@ -631,7 +679,7 @@ ${setupSection}${testContent}
         const url = new URL(entry.request.url);
         const endpoint = `${entry.request.method} ${url.pathname}`;
         endpoints.add(endpoint);
-      } catch (error) {
+      } catch {
         warnings.push(`Invalid URL format: ${entry.request.url}`);
         // Still add endpoint with original URL
         const endpoint = `${entry.request.method} ${entry.request.url}`;
@@ -1098,16 +1146,17 @@ ${setupSection}${testContent}
         }
         break;
         
-      case 'playwright':
+      case 'playwright': {
         // Playwright ALWAYS needs these imports when using describe/test/expect
-        const hasPlaywrightImport = code.includes('@playwright/test') || 
+        const hasPlaywrightImport = code.includes('@playwright/test') ||
                                    code.includes("from '@playwright/test'") ||
                                    code.includes("require('@playwright/test')");
-        
+
         if (!hasPlaywrightImport && (code.includes('describe(') || code.includes('test(') || code.includes('expect('))) {
           imports.push("import { test, expect } from '@playwright/test';");
         }
         break;
+      }
         
       case 'cypress':
         // Cypress provides describe/it/expect globally, but check for custom commands
@@ -1122,12 +1171,13 @@ ${setupSection}${testContent}
         }
         break;
         
-      case 'vitest':
+      case 'vitest': {
         const hasVitestImport = code.includes('vitest') || code.includes("from 'vitest'");
         if (!hasVitestImport && (code.includes('describe(') || code.includes('test(') || code.includes('expect('))) {
           imports.push("import { describe, test, expect, beforeAll, afterAll } from 'vitest';");
         }
         break;
+      }
     }
     
     if (imports.length > 0) {
@@ -1284,7 +1334,7 @@ ${setupSection}${testContent}
   }
 
   // NEW: Fix undefined variables and add proper setup
-  private fixUndefinedVariables(code: string, framework: string): string {
+  private fixUndefinedVariables(code: string, _framework: string): string {
     let fixedCode = code;
     
     // Fix BASE_URL

@@ -1,4 +1,15 @@
 import '@testing-library/jest-dom';
+import { TextEncoder, TextDecoder } from 'util';
+
+// jsdom does not provide TextEncoder/TextDecoder, which gpt-tokenizer (pulled
+// in transitively by AIService → OpenAIProvider) needs at import time. Polyfill
+// from Node's util before any module that depends on it is loaded.
+if (typeof (globalThis as any).TextEncoder === 'undefined') {
+  (globalThis as any).TextEncoder = TextEncoder;
+}
+if (typeof (globalThis as any).TextDecoder === 'undefined') {
+  (globalThis as any).TextDecoder = TextDecoder as unknown as typeof globalThis.TextDecoder;
+}
 
 // Mock Chrome API
 (globalThis as any).chrome = {

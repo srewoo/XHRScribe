@@ -1,7 +1,7 @@
 import axios, { AxiosError } from 'axios';
-import { encode } from 'gpt-tokenizer';
+import { preloadEncoder, countTokens as countTokensLazy } from '../tokenizer';
 import { HARData, GenerationOptions, GeneratedTest } from '@/types';
-import { LLMProvider } from '../LLMService';
+import { LLMProvider } from '../LLMProvider';
 import { AuthFlow, AuthFlowAnalyzer } from '../../AuthFlowAnalyzer';
 import { normalizePath } from '../../EndpointGrouper';
 import { PromptBuilder } from '../PromptBuilder';
@@ -36,6 +36,7 @@ export class GeminiProvider implements LLMProvider {
       throw new Error('Gemini API key not configured');
     }
 
+    await preloadEncoder(); // load the BPE ranks chunk for accurate counts
     const prompt = this.buildExhaustivePrompt(harData, options, authFlow, customAuthGuide);
     const promptTokens = this.countTokens(prompt);
 
@@ -200,12 +201,15 @@ export class GeminiProvider implements LLMProvider {
   }
 
   private getModelName(model: string): string {
-    const modelMap: Record<string, string> = {
+    // Internal IDs are already the real API IDs. Map legacy values forward and
+    // fall back to the current flagship flash for anything unrecognised.
+    const legacy: Record<string, string> = {
       'gemini-2-5-pro': 'gemini-2.5-pro',
       'gemini-2-5-flash': 'gemini-2.5-flash',
     };
-
-    return modelMap[model] || 'gemini-2.5-flash';
+    const known = ['gemini-3.5-flash', 'gemini-2.5-pro', 'gemini-3.1-flash-lite', 'gemini-2.5-flash'];
+    if (known.includes(model)) return model;
+    return legacy[model] || 'gemini-3.5-flash';
   }
 
   private delay(ms: number): Promise<void> {
@@ -215,11 +219,12 @@ export class GeminiProvider implements LLMProvider {
   estimateCost(tokenCount: number, model: string): number {
     // Gemini pricing as of 2024 (approximate)
     const pricing: Record<string, { input: number; output: number }> = {
-      'gemini-2-5-pro': { input: 0.00125, output: 0.00375 },
-      'gemini-2-5-flash': { input: 0.00015, output: 0.0006 },
+      'gemini-3.5-flash': { input: 0.0003, output: 0.0025 },
+      'gemini-2.5-pro': { input: 0.00125, output: 0.01 },
+      'gemini-3.1-flash-lite': { input: 0.0001, output: 0.0004 },
     };
 
-    const modelPricing = pricing[model] || pricing['gemini-2-5-flash'];
+    const modelPricing = pricing[model] || pricing['gemini-3.5-flash'];
     // Rough estimate: 60% input, 40% output
     const inputTokens = tokenCount * 0.6;
     const outputTokens = tokenCount * 0.4;
@@ -228,20 +233,14 @@ export class GeminiProvider implements LLMProvider {
   }
 
   countTokens(text: string): number {
-    try {
-      // Use gpt-tokenizer as approximation for Gemini
-      const tokens = encode(text);
-      return tokens.length;
-    } catch (error) {
-      // Fallback to rough estimation
-      return Math.ceil(text.length / 4);
-    }
+    return countTokensLazy(text);
   }
 
   private getMaxTokens(model: string): number {
     const limits: Record<string, number> = {
-      'gemini-2-5-pro': 2097152,
-      'gemini-2-5-flash': 1048576,
+      'gemini-3.5-flash': 1048576,
+      'gemini-2.5-pro': 2097152,
+      'gemini-3.1-flash-lite': 1048576,
     };
     return limits[model] || 1048576;
   }
@@ -697,7 +696,7 @@ ${pb.getQualityGateSection()}
           grouped[endpoint] = [];
         }
         grouped[endpoint].push(entry);
-      } catch (error) {
+      } catch {
         // If URL parsing fails, use the full URL
         const endpoint = entry.request.url;
         if (!grouped[endpoint]) {
@@ -1016,7 +1015,7 @@ ${pb.getQualityGateSection()}
       const bodyHash = this.simpleHash(bodyStr);
       return `operation_${bodyHash}`;
       
-    } catch (error) {
+    } catch {
       return null;
     }
   }

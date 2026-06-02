@@ -652,8 +652,6 @@ export class AuthFlowAnalyzer {
   generateAuthSetup(authFlow: AuthFlow, framework: string): string {
     if (!authFlow.loginEndpoint) return '';
 
-    const { loginEndpoint, authTokens, sessionCookies, authPattern } = authFlow;
-
     switch (framework) {
       case 'jest':
       case 'supertest':
@@ -805,7 +803,7 @@ before(() => {
       });
 
       return credentials;
-    } catch (error) {
+    } catch {
       return {};
     }
   }

@@ -59,7 +59,9 @@ export class StorageService {
       const parsed = JSON.parse(encryptedData);
       Logger.getInstance().debug('Data was not encrypted, returning as-is', null, 'StorageService');
       return parsed;
-    } catch {}
+    } catch {
+      // Not valid JSON either — fall through to the corrupted-data path below.
+    }
 
     // Data is corrupted
     Logger.getInstance().warn('Unable to decrypt data with any method', null, 'StorageService');
@@ -76,7 +78,7 @@ export class StorageService {
       }
       
       return JSON.parse(jsonString);
-    } catch (error) {
+    } catch {
       return null;
     }
   }
@@ -321,7 +323,7 @@ export class StorageService {
         delete data.settings.apiKeys;
         await chrome.storage.sync.set({ settings: data.settings });
       }
-    } catch (error) {
+    } catch {
       throw new Error('Invalid import data format');
     }
   }

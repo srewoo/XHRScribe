@@ -108,11 +108,13 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
   backgroundService.handleDebuggerEvent(source, method, params);
 });
 
-// Handle debugger detach
+// Handle debugger detach — pass the reason so the service can distinguish a
+// recoverable navigation/target-swap (re-attach) from a real teardown
+// (tab closed, or DevTools taking over the debugger).
 chrome.debugger.onDetach.addListener((source, reason) => {
   console.log('Debugger detached:', reason);
   if (source.tabId) {
-    backgroundService.handleDebuggerDetach(source.tabId);
+    backgroundService.handleDebuggerDetach(source.tabId, reason).catch(console.error);
   }
 });
 

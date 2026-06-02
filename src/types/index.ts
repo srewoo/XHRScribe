@@ -74,7 +74,7 @@ export interface HAREntry {
     headersSize: number;
     bodySize: number;
   };
-  cache: {};
+  cache: Record<string, unknown>;
   timings: {
     blocked: number;
     dns: number;
@@ -119,21 +119,25 @@ export type AIProvider =
   | 'gemini'
   | 'local';
 
+// NOTE: these identifiers are the REAL provider API model IDs and are sent
+// verbatim in each provider's request. Keep them in sync with the providers.
 export type AIModel =
   // OpenAI Models
-  | 'gpt-4.1'           // Most capable, multimodal
-  | 'gpt-4.1-mini'      // Smaller, faster, cheaper
+  | 'gpt-5.5'                    // Flagship, most capable (reasoning)
+  | 'gpt-5.4-mini'              // Fast, cheaper GPT-5.4-class
+  | 'gpt-4.1'                    // Non-reasoning, 1M context, low latency
+  | 'gpt-4.1-mini'              // Cheapest, fastest
   // Anthropic Claude Models
-  | 'claude-4-5-opus'   // Claude 4.5 Opus (Most capable)
-  | 'claude-4-5-sonnet' // Claude 4.5 Sonnet
-  | 'claude-4-sonnet'   // Claude 4 Sonnet
-  | 'claude-3-7-sonnet' // Claude 3.7 Sonnet
+  | 'claude-opus-4-8'            // Claude Opus 4.8 (most capable)
+  | 'claude-sonnet-4-6'          // Claude Sonnet 4.6 (balanced)
+  | 'claude-haiku-4-5-20251001'  // Claude Haiku 4.5 (fast & cheap)
   // Google Gemini Models
-  | 'gemini-2-5-pro'    // Gemini 2.5 Pro
-  | 'gemini-2-5-flash'  // Gemini 2.5 Flash
+  | 'gemini-3.5-flash'           // Gemini 3.5 Flash (latest flagship flash)
+  | 'gemini-2.5-pro'             // Gemini 2.5 Pro (GA pro tier)
+  | 'gemini-3.1-flash-lite'      // Gemini 3.1 Flash-Lite (cost-efficient)
   // Local Models
-  | 'llama-3.2'         // Latest Llama
-  | 'deepseek-coder'    // Code-specific;
+  | 'llama-3.2'                  // Latest Llama
+  | 'deepseek-coder';            // Code-specific
 
 export interface GenerationOptions {
   framework: TestFramework;
@@ -193,6 +197,9 @@ export interface GeneratedTest {
     issueCount: number;
     criticalIssues: number;
     suggestions: string[];
+    autoFixApplied?: boolean;
+    issuesAutoFixed?: number;
+    scoreBeforeAutoFix?: number;
   };
 }
 

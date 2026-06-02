@@ -15,8 +15,6 @@ import {
   Alert,
   Chip,
   LinearProgress,
-  IconButton,
-  CircularProgress,
   Tooltip,
   Radio,
   RadioGroup,
@@ -25,27 +23,20 @@ import {
   AccordionDetails,
   Switch,
   Slider,
-  Tabs,
-  Tab,
+  Collapse,
 } from '@mui/material';
-import {
-  Code,
-  AutoAwesome,
-  Download,
-  CheckCircle,
-  Error as ErrorIcon,
-  Info,
-  ExpandMore,
-  RocketLaunch,
-  Security,
-  Speed,
-  Api,
-  AccountTree,
-  DataObject,
-  Delete,
-  SelectAll,
-  Stop,
-} from '@mui/icons-material';
+import AutoAwesome from '@mui/icons-material/AutoAwesome';
+import Download from '@mui/icons-material/Download';
+import Info from '@mui/icons-material/Info';
+import ExpandMore from '@mui/icons-material/ExpandMore';
+import RocketLaunch from '@mui/icons-material/RocketLaunch';
+import Security from '@mui/icons-material/Security';
+import Speed from '@mui/icons-material/Speed';
+import Api from '@mui/icons-material/Api';
+import DataObject from '@mui/icons-material/DataObject';
+import Delete from '@mui/icons-material/Delete';
+import SelectAll from '@mui/icons-material/SelectAll';
+import Stop from '@mui/icons-material/Stop';
 import { RecordingSession, TestFramework, AIProvider, AIModel } from '@/types';
 import { useStore } from '@/store/useStore';
 import EndpointPreview from './EndpointPreview';
@@ -78,7 +69,7 @@ interface GenerationState {
 }
 
 export default function GeneratePanel({ sessions }: GeneratePanelProps) {
-  const { selectedSession, generateTests, cancelGeneration, deleteRequests, settings, loading, loadSettings, generatedTests } = useStore();
+  const { selectedSession, generateTests, cancelGeneration, deleteRequests, settings, loadSettings, generatedTests } = useStore();
   const [framework, setFramework] = useState<TestFramework>('jest');
   const [provider, setProvider] = useState<AIProvider>('openai');
   const [model, setModel] = useState<AIModel>('gpt-4.1-mini');
@@ -131,9 +122,24 @@ export default function GeneratePanel({ sessions }: GeneratePanelProps) {
   });
   const [parallelProgress, setParallelProgress] = useState<GenerationProgressType | null>(null);
   const [parallelResult, setParallelResult] = useState<ParallelGenerationResult | null>(null);
-  const [resultTab, setResultTab] = useState(0);
+  const [_resultTab, _setResultTab] = useState(0);
   const [securityScanning, setSecurityScanning] = useState(false);
-  const [securityResults, setSecurityResults] = useState<Array<{ testName: string; status: string; details: string; responseStatus: number }>>([]);
+  const [securityResults, setSecurityResults] = useState<Array<{
+    testName: string;
+    status: string;
+    details: string;
+    responseStatus: number;
+    severity?: string;
+    description?: string;
+    owaspReference?: string;
+    method?: string;
+    url?: string;
+    payload?: string;
+    evidence?: string;
+    confidence?: string;
+    remediation?: string;
+  }>>([]);
+  const [expandedFinding, setExpandedFinding] = useState<number | null>(null);
   const [maintenanceHints, setMaintenanceHints] = useState<{ newEndpoints: string[]; changedSchemas: string[]; removedEndpoints: string[] } | null>(null);
 
   // Load settings on mount
@@ -253,18 +259,20 @@ export default function GeneratePanel({ sessions }: GeneratePanelProps) {
   const getAllAvailableModels = (): { value: AIModel; label: string }[] => {
     return [
       // OpenAI Models
-      { value: 'gpt-4.1', label: 'GPT-4.1 (Most Capable)' },
-      { value: 'gpt-4.1-mini', label: 'GPT-4.1 Mini (Fast & Cheap)' },
+      { value: 'gpt-5.5', label: 'GPT-5.5 (Most Capable)' },
+      { value: 'gpt-5.4-mini', label: 'GPT-5.4 Mini (Fast)' },
+      { value: 'gpt-4.1', label: 'GPT-4.1 (1M context)' },
+      { value: 'gpt-4.1-mini', label: 'GPT-4.1 Mini (Cheapest)' },
 
       // Anthropic Claude Models
-      { value: 'claude-4-5-opus', label: 'Claude 4.5 Opus (Most Capable)' },
-      { value: 'claude-4-5-sonnet', label: 'Claude 4.5 Sonnet (Latest)' },
-      { value: 'claude-4-sonnet', label: 'Claude 4 Sonnet' },
-      { value: 'claude-3-7-sonnet', label: 'Claude 3.7 Sonnet' },
+      { value: 'claude-opus-4-8', label: 'Claude Opus 4.8 (Most Capable)' },
+      { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6 (Balanced)' },
+      { value: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5 (Fast & Cheap)' },
 
       // Google Gemini Models
-      { value: 'gemini-2-5-pro', label: 'Gemini 2.5 Pro' },
-      { value: 'gemini-2-5-flash', label: 'Gemini 2.5 Flash (Fast)' },
+      { value: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash (Latest)' },
+      { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
+      { value: 'gemini-3.1-flash-lite', label: 'Gemini 3.1 Flash-Lite (Cheapest)' },
 
       // Local Models
       { value: 'llama-3.2', label: 'Llama 3.2' },
@@ -514,7 +522,7 @@ export default function GeneratePanel({ sessions }: GeneratePanelProps) {
   };
 
   // Mock function removed - now using real AI generation
-  const generateMockTestCode = (session: RecordingSession, framework: string): string => {
+  const _generateMockTestCode = (session: RecordingSession, framework: string): string => {
     const firstRequest = session.requests[0];
     if (!firstRequest) return '// No requests to generate tests for';
 
@@ -875,8 +883,22 @@ ${options.includeErrorScenarios ? `
                   const suites = generator.generateSecurityTests(session);
                   const allResults: typeof securityResults = [];
                   for (const suite of suites) {
-                    const scanResult = await runner.runSuite(suite, baseUrl, (_c, _t, result) => {
-                      allResults.push({ testName: result.testName, status: result.status, details: result.details, responseStatus: result.responseStatus });
+                    const _scanResult = await runner.runSuite(suite, baseUrl, (_c, _t, result) => {
+                      allResults.push({
+                        testName: result.testName,
+                        status: result.status,
+                        details: result.details,
+                        responseStatus: result.responseStatus,
+                        severity: result.severity,
+                        description: result.description,
+                        owaspReference: result.owaspReference,
+                        method: result.method,
+                        url: result.url,
+                        payload: result.payload,
+                        evidence: result.evidence,
+                        confidence: result.confidence,
+                        remediation: result.remediation,
+                      });
                       setSecurityResults([...allResults]);
                     });
                   }
@@ -893,19 +915,74 @@ ${options.includeErrorScenarios ? `
             </Button>
             {securityScanning && <LinearProgress sx={{ mb: 1 }} />}
             {securityResults.length > 0 && (
-              <Box sx={{ maxHeight: 200, overflow: 'auto' }}>
-                {securityResults.map((r, i) => (
-                  <Box key={i} sx={{ display: 'flex', alignItems: 'center', gap: 0.5, py: 0.25, borderBottom: '1px solid', borderColor: 'divider' }}>
-                    <Chip
-                      label={r.status}
-                      size="small"
-                      color={r.status === 'vulnerable' ? 'error' : r.status === 'safe' ? 'success' : 'default'}
-                      sx={{ height: 18, fontSize: '0.6rem', minWidth: 70 }}
-                    />
-                    <Typography variant="caption" sx={{ flex: 1 }} noWrap>{r.testName}</Typography>
-                    <Typography variant="caption" color="text.secondary">{r.responseStatus || '-'}</Typography>
-                  </Box>
-                ))}
+              <Box sx={{ maxHeight: 320, overflow: 'auto' }}>
+                {securityResults.map((r, i) => {
+                  const sevColor = r.severity === 'critical' || r.severity === 'high'
+                    ? 'error'
+                    : r.severity === 'medium' ? 'warning' : 'default';
+                  const isOpen = expandedFinding === i;
+                  return (
+                    <Box key={i} sx={{ borderBottom: '1px solid', borderColor: 'divider' }}>
+                      <Box
+                        onClick={() => setExpandedFinding(isOpen ? null : i)}
+                        sx={{ display: 'flex', alignItems: 'center', gap: 0.5, py: 0.5, cursor: 'pointer', '&:hover': { bgcolor: 'action.hover' } }}
+                      >
+                        <Chip
+                          label={r.status}
+                          size="small"
+                          color={r.status === 'vulnerable' ? 'error' : r.status === 'safe' ? 'success' : 'default'}
+                          sx={{ height: 18, fontSize: '0.6rem', minWidth: 70 }}
+                        />
+                        {r.status === 'vulnerable' && r.severity && (
+                          <Chip label={r.severity} size="small" color={sevColor as any} variant="outlined" sx={{ height: 18, fontSize: '0.55rem' }} />
+                        )}
+                        <Typography variant="caption" sx={{ flex: 1 }} noWrap>{r.testName}</Typography>
+                        {r.confidence && r.status === 'vulnerable' && (
+                          <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.55rem' }}>
+                            {r.confidence} conf
+                          </Typography>
+                        )}
+                        <Typography variant="caption" color="text.secondary">{r.responseStatus || '-'}</Typography>
+                        <ExpandMore sx={{ fontSize: 16, transform: isOpen ? 'rotate(180deg)' : 'none', transition: '0.2s' }} />
+                      </Box>
+                      <Collapse in={isOpen}>
+                        <Box sx={{ pl: 1, pr: 1, pb: 1, fontSize: '0.7rem' }}>
+                          {r.description && (
+                            <Typography variant="caption" sx={{ display: 'block', mb: 0.5 }}>{r.description}</Typography>
+                          )}
+                          {(r.method || r.url) && (
+                            <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary' }}>
+                              <strong>Endpoint:</strong> {r.method} {r.url}
+                            </Typography>
+                          )}
+                          {r.payload && (
+                            <Box sx={{ my: 0.5 }}>
+                              <Typography variant="caption" sx={{ fontWeight: 600 }}>Payload sent:</Typography>
+                              <Box component="pre" sx={{ m: 0, p: 0.5, bgcolor: 'grey.100', borderRadius: 0.5, overflow: 'auto', fontSize: '0.65rem', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                                {r.payload}
+                              </Box>
+                            </Box>
+                          )}
+                          {r.evidence && (
+                            <Typography variant="caption" sx={{ display: 'block', mb: 0.5 }}>
+                              <strong>Why flagged:</strong> {r.evidence}
+                            </Typography>
+                          )}
+                          {r.owaspReference && (
+                            <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary' }}>
+                              <strong>OWASP:</strong> {r.owaspReference}
+                            </Typography>
+                          )}
+                          {r.remediation && (
+                            <Alert severity="info" sx={{ mt: 0.5, py: 0, fontSize: '0.65rem' }}>
+                              <strong>Fix:</strong> {r.remediation}
+                            </Alert>
+                          )}
+                        </Box>
+                      </Collapse>
+                    </Box>
+                  );
+                })}
               </Box>
             )}
           </AccordionDetails>

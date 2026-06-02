@@ -13,12 +13,9 @@ import {
   InputAdornment,
   Checkbox,
 } from '@mui/material';
-import {
-  ExpandMore,
-  ExpandLess,
-  Search,
-  FilterList,
-} from '@mui/icons-material';
+import ExpandMore from '@mui/icons-material/ExpandMore';
+import ExpandLess from '@mui/icons-material/ExpandLess';
+import Search from '@mui/icons-material/Search';
 import { NetworkRequest } from '@/types';
 import WebSocketDetail from './WebSocketDetail';
 import ProtobufDetail from './ProtobufDetail';

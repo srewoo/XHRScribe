@@ -78,7 +78,7 @@ export async function waitForBackgroundReady(
       if (attempts % 10 === 0) {
         console.log(`⏳ Background not ready yet, attempt ${attempts}...`);
       }
-    } catch (error) {
+    } catch {
       if (attempts % 10 === 0) {
         console.log(`⏳ Background script not responding, attempt ${attempts}...`);
       }
@@ -106,7 +106,7 @@ export async function sendMessageSafely(
       console.log('✅ Direct message successful:', message.type);
       return directResponse;
     }
-  } catch (error) {
+  } catch {
     console.log('⏳ Direct message failed, checking background readiness...');
   }
   
@@ -129,7 +129,7 @@ export async function sendMessageSafely(
 export function isExtensionContextValid(): boolean {
   try {
     return !!(chrome?.runtime?.id && !chrome.runtime.lastError);
-  } catch (error) {
+  } catch {
     return false;
   }
 }

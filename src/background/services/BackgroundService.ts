@@ -22,6 +22,10 @@ export class BackgroundService {
   private static instance: BackgroundService;
   private recordingSessions: Map<number, RecordingSession> = new Map();
   private pendingBodies: Map<number, Set<Promise<void>>> = new Map();
+  // Debounce handles for active-session snapshots (one per recording tab).
+  private snapshotTimers: Map<number, number> = new Map();
+  // Consecutive debugger re-attach attempts per tab (reset on success).
+  private reattachAttempts: Map<number, number> = new Map();
   private harProcessor: HARProcessor = new HARProcessor();
   private storageService: StorageService = StorageService.getInstance();
   private aiService: AIService = AIService.getInstance();
@@ -91,8 +95,20 @@ export class BackgroundService {
       return request;
     }
 
-    // Build masking options from settings
-    const maskingOptions = {
+    const maskingOptions = this.buildMaskingOptions(settings);
+    return this.dataMaskingService.maskRequest(request, maskingOptions);
+  }
+
+  /** Translate user privacy settings into DataMaskingService options. */
+  private buildMaskingOptions(settings: any) {
+    // Register any user-defined custom patterns (deduplicated by the service).
+    if (settings.dataMasking.customPatterns?.length > 0) {
+      settings.dataMasking.customPatterns.forEach((pattern: any) => {
+        this.dataMaskingService.addCustomPattern(pattern);
+      });
+    }
+
+    return {
       maskEmails: settings.dataMasking.maskEmails,
       maskApiKeys: settings.dataMasking.maskTokens,
       maskPasswords: settings.dataMasking.maskTokens,
@@ -103,16 +119,84 @@ export class BackgroundService {
       maskIPs: settings.dataMasking.maskPII,
       maskUUIDs: false, // Usually needed for testing
     };
+  }
 
-    // Apply custom patterns if any
-    if (settings.dataMasking.customPatterns.length > 0) {
-      settings.dataMasking.customPatterns.forEach(pattern => {
-        this.dataMaskingService.addCustomPattern(pattern);
-      });
+  /**
+   * Single, guaranteed masking pass over a completed session. Runs after all
+   * request/response data has arrived and before anything is persisted or
+   * exported. Masking applies to request + response headers and bodies, so
+   * this is the privacy choke point for the whole capture pipeline. Idempotent
+   * — safe to call once at stop.
+   */
+  private async maskSessionData(session: RecordingSession): Promise<void> {
+    const settings = await this.getSettings();
+    if (!settings.dataMasking?.enabled) {
+      return;
     }
 
-    // Apply masking
-    return this.dataMaskingService.maskRequest(request, maskingOptions);
+    const maskingOptions = this.buildMaskingOptions(settings);
+    session.requests = session.requests.map(req =>
+      this.dataMaskingService.maskRequest(req, maskingOptions)
+    );
+  }
+
+  private snapshotKey(tabId: number): string {
+    return `activeSession_${tabId}`;
+  }
+
+  /**
+   * Debounced snapshot of an active recording session to session storage. If
+   * the MV3 service worker is torn down mid-recording, the in-memory session
+   * map is lost; this lets stopRecording recover whatever was captured so far
+   * instead of throwing "No recording session found". Best-effort — failures
+   * (e.g. quota) are logged and ignored.
+   */
+  private scheduleSessionSnapshot(tabId: number): void {
+    if (this.snapshotTimers.has(tabId)) {
+      return; // a write is already pending within the debounce window
+    }
+    const timer = setTimeout(() => {
+      this.snapshotTimers.delete(tabId);
+      const session = this.recordingSessions.get(tabId);
+      if (!session) return;
+      chrome.storage.session
+        .set({ [this.snapshotKey(tabId)]: session })
+        .catch((e: unknown) =>
+          Logger.getInstance().warn('Failed to snapshot active session', { error: e }, 'BackgroundService')
+        );
+    }, 3000) as unknown as number;
+    this.snapshotTimers.set(tabId, timer);
+  }
+
+  /** Attempt to recover a recording session from its session-storage snapshot. */
+  private async recoverActiveSession(tabId: number): Promise<RecordingSession | null> {
+    try {
+      const stored = await chrome.storage.session.get(this.snapshotKey(tabId));
+      const session = stored?.[this.snapshotKey(tabId)] as RecordingSession | undefined;
+      if (session) {
+        Logger.getInstance().info(
+          `Recovered recording session for tab ${tabId} from snapshot (${session.requests?.length ?? 0} requests)`,
+          null,
+          'BackgroundService'
+        );
+        return session;
+      }
+    } catch (error) {
+      Logger.getInstance().warn('Failed to recover active session', { error }, 'BackgroundService');
+    }
+    return null;
+  }
+
+  /** Clear a session snapshot and any pending snapshot timer for a tab. */
+  private clearSessionSnapshot(tabId: number): void {
+    const timer = this.snapshotTimers.get(tabId);
+    if (timer) {
+      clearTimeout(timer);
+      this.snapshotTimers.delete(tabId);
+    }
+    chrome.storage.session
+      .remove(this.snapshotKey(tabId))
+      .catch(() => { /* best-effort cleanup */ });
   }
 
   /**
@@ -129,20 +213,23 @@ export class BackgroundService {
   ): Promise<void> {
     try {
       switch (message.type) {
-        case 'START_RECORDING':
+        case 'START_RECORDING': {
           const session = await this.startRecording(message.tabId!);
           sendResponse({ success: true, session });
           break;
+        }
 
-        case 'STOP_RECORDING':
+        case 'STOP_RECORDING': {
           const harData = await this.stopRecording(message.tabId!);
           sendResponse({ success: true, harData });
           break;
+        }
 
-        case 'GET_SESSIONS':
+        case 'GET_SESSIONS': {
           const sessions = await this.storageService.getSessions();
           sendResponse({ success: true, sessions });
           break;
+        }
 
         case 'DELETE_SESSION':
           await this.storageService.deleteSession(message.payload.sessionId);
@@ -168,17 +255,19 @@ export class BackgroundService {
           sendResponse({ success: true });
           break;
 
-        case 'GET_SETTINGS':
+        case 'GET_SETTINGS': {
           const settings = await this.storageService.getSettings();
           sendResponse({ success: true, settings });
           break;
+        }
 
-        case 'GET_STATUS':
+        case 'GET_STATUS': {
           const status = this.getStatus(message.tabId!);
           sendResponse({ success: true, status });
           break;
+        }
 
-        case 'CONTENT_SCRIPT_READY':
+        case 'CONTENT_SCRIPT_READY': {
           // Content script loaded (e.g. after navigation) — tell it if recording is active
           const senderTabId = _sender.tab?.id;
           const isTabRecording = senderTabId ? this.isRecording(senderTabId) : false;
@@ -189,13 +278,14 @@ export class BackgroundService {
             isRecording: isTabRecording,
           });
           break;
+        }
 
         case 'SAVE_SESSION':
           await this.storageService.saveSession(message.payload.session);
           sendResponse({ success: true });
           break;
 
-        case 'GENERATE_TESTS':
+        case 'GENERATE_TESTS': {
           const { sessionId, options } = message.payload;
           const allSessions = await this.storageService.getSessions();
           const targetSession = allSessions.find(s => s.id === sessionId);
@@ -255,7 +345,7 @@ export class BackgroundService {
                 type: 'GENERATION_PROGRESS',
                 payload: { current, total, stage, endpoint }
               }).catch((e: unknown) => Logger.getInstance().debug('Popup not open for progress update', { error: e }, 'BackgroundService'));
-            } catch (error) {
+            } catch {
               // Ignore messaging errors — popup may be closed
             }
           };
@@ -299,6 +389,7 @@ export class BackgroundService {
             swManager.stopActiveOperation();
           }
           break;
+        }
 
         case 'CANCEL_GENERATION':
           this.aiService.cancel();
@@ -308,11 +399,12 @@ export class BackgroundService {
           sendResponse({ success: true });
           break;
 
-        case 'EXPORT_TESTS':
+        case 'EXPORT_TESTS': {
           const { testId, format } = message.payload;
           const exportContent = await this.exportService.export(testId, format);
           sendResponse({ success: true, content: exportContent });
           break;
+        }
 
         case 'IMPORT_SESSION':
           await this.storageService.saveSession(message.payload);
@@ -421,7 +513,7 @@ export class BackgroundService {
           try {
             await chrome.debugger.detach({ tabId: target.tabId });
             console.log(`✅ Detached debugger from tab ${target.tabId}`);
-          } catch (e) {
+          } catch {
             console.log(`❌ Could not detach debugger from tab ${target.tabId}`);
           }
         }
@@ -565,10 +657,7 @@ export class BackgroundService {
     
     // Enable comprehensive network monitoring
     try {
-      await chrome.debugger.sendCommand({ tabId }, 'Network.enable', {
-        maxTotalBufferSize: 10000000,
-        maxResourceBufferSize: 5000000
-      });
+      await this.enableNetworkDomains(tabId);
       console.log('✅ Network monitoring enabled');
     } catch (error) {
       console.error('❌ Failed to enable network monitoring:', error);
@@ -576,33 +665,8 @@ export class BackgroundService {
       await chrome.debugger.detach({ tabId }).catch((e: unknown) => Logger.getInstance().warn('Failed to detach debugger', { error: e, tabId }, 'BackgroundService'));
       throw new Error('Failed to enable network monitoring. Please try again.');
     }
-    
-    // ENHANCED: Enable additional debugging domains for complete capture
-    // These are optional enhancements - failure won't prevent basic recording
-    
-    // Enable Service Worker debugging (optional)
-    try {
-      await chrome.debugger.sendCommand({ tabId }, 'ServiceWorker.enable');
-      console.log('✅ ServiceWorker debugging enabled');
-    } catch (error) {
-      console.log('ℹ️ ServiceWorker debugging not available (Chrome version may not support it)');
-    }
-    
-    // Enable background services monitoring (optional)
-    try {
-      await chrome.debugger.sendCommand({ tabId }, 'BackgroundService.startObserving', {
-        service: 'backgroundFetch'
-      });
-      await chrome.debugger.sendCommand({ tabId }, 'BackgroundService.startObserving', {
-        service: 'pushMessaging'
-      });
-      await chrome.debugger.sendCommand({ tabId }, 'BackgroundService.startObserving', {
-        service: 'backgroundSync'
-      });
-      console.log('✅ Background services monitoring enabled');
-    } catch (error) {
-      console.log('ℹ️ Background services monitoring not available');
-    }
+
+    this.reattachAttempts.delete(tabId);
 
     // Create recording session
     const session: RecordingSession = {
@@ -616,6 +680,7 @@ export class BackgroundService {
     };
 
     this.recordingSessions.set(tabId, session);
+    this.clearSessionSnapshot(tabId); // drop any stale snapshot from a prior run
     this.harProcessor.startSession(session.id);
 
     // Update extension icon
@@ -625,7 +690,19 @@ export class BackgroundService {
   }
 
   async stopRecording(tabId: number): Promise<HARData> {
-    const session = this.recordingSessions.get(tabId);
+    let session = this.recordingSessions.get(tabId);
+    if (!session) {
+      // The service worker may have been torn down and revived mid-recording,
+      // dropping the in-memory session. Try the persisted snapshot before
+      // giving up so the user does not lose what was already captured.
+      const recovered = await this.recoverActiveSession(tabId);
+      if (recovered) {
+        session = recovered;
+        this.recordingSessions.set(tabId, recovered);
+        this.harProcessor.startSession(recovered.id);
+        recovered.requests.forEach(req => this.harProcessor.addRequest(recovered.id, req));
+      }
+    }
     if (!session) {
       throw new Error('No recording session found');
     }
@@ -646,7 +723,11 @@ export class BackgroundService {
     }
     this.pendingBodies.delete(tabId);
 
-    // Get HAR data
+    // Guaranteed privacy pass: mask request + response data across the whole
+    // session before it is finalized into HAR, persisted, or exported.
+    await this.maskSessionData(session);
+
+    // Get HAR data (reads from the now-masked session.requests)
     const harData = this.harProcessor.finalize(session);
 
     // Save session
@@ -663,6 +744,8 @@ export class BackgroundService {
 
     // Clean up
     this.recordingSessions.delete(tabId);
+    this.clearSessionSnapshot(tabId);
+    this.reattachAttempts.delete(tabId);
     this.harProcessor.endSession(session.id);
 
     // Detach debugger
@@ -783,15 +866,15 @@ export class BackgroundService {
       requestBody: request.postData
     };
 
-    // Apply data masking and add to session
-    this.applyDataMasking(networkRequest).then(maskedRequest => {
-      session.requests.push(maskedRequest);
-      this.harProcessor.addRequest(session.id, maskedRequest);
-    }).catch(error => {
-      console.error('Data masking failed, using original request:', error);
-      session.requests.push(networkRequest);
-      this.harProcessor.addRequest(session.id, networkRequest);
-    });
+    // Add to session synchronously so that the response/loadingFinished
+    // events (which look the request up by id) can always find it. Masking
+    // is applied later as a single guaranteed pass in stopRecording — that
+    // is the only point at which the request, response headers AND response
+    // body are all present, so it is the only safe place to mask. Masking
+    // here (before the response arrives) left response data unmasked.
+    session.requests.push(networkRequest);
+    this.harProcessor.addRequest(session.id, networkRequest);
+    this.scheduleSessionSnapshot(session.tabId);
   }
 
   private handleResponseReceived(session: RecordingSession, params: any): void {
@@ -863,7 +946,11 @@ export class BackgroundService {
       url,
       method: 'WebSocket',
       type: 'WebSocket',
-      timestamp: Date.now()
+      timestamp: Date.now(),
+      // 101 Switching Protocols — synthetic status so this frame-bearing
+      // request survives HARProcessor's `filter(req => req.status)`. Without
+      // it, all captured WebSocket frames were silently dropped from the HAR.
+      status: 101
     };
 
     session.requests.push(networkRequest);
@@ -880,8 +967,14 @@ export class BackgroundService {
     const request = session.requests.find(r => r.id === requestId);
     if (!request) return;
 
-    // Store WebSocket frames (simplified for now)
-    if (!request.responseBody) {
+    // Ensure the request carries a status so it is not dropped from the HAR.
+    if (!request.status) {
+      request.status = 101;
+    }
+
+    // Accumulate WebSocket frames as an ordered list of {type,data,timestamp}.
+    // HARProcessor.createHAREntry serializes this array to JSON text.
+    if (!Array.isArray(request.responseBody)) {
       request.responseBody = [];
     }
     request.responseBody.push({
@@ -902,7 +995,7 @@ export class BackgroundService {
         { requestId }
       ) as any;
       return result?.body || null;
-    } catch (error) {
+    } catch {
       // Response body might not be available for all requests
       return null;
     }
@@ -1156,7 +1249,9 @@ export class BackgroundService {
         type: 'XHR', // SSE uses XHR under the hood
         timestamp: timestamp * 1000,
         requestHeaders: { 'Accept': 'text/event-stream' },
-        responseBody: []
+        responseBody: [],
+        // Synthetic 200 so the SSE stream survives HAR's status filter.
+        status: 200
       };
       session.requests.push(sseRequest);
       this.harProcessor.addRequest(session.id, sseRequest);
@@ -1180,7 +1275,7 @@ export class BackgroundService {
 
   // NEW: Service Worker network handling
   private handleServiceWorkerCreated(session: RecordingSession, params: any): void {
-    const { workerId, url, scopeURL } = params;
+    const { workerId, url, _scopeURL } = params;
     
     console.log('👷 Service Worker created:', url);
     
@@ -1209,7 +1304,7 @@ export class BackgroundService {
 
   // NEW: Data received handling for streaming requests
   private handleDataReceived(session: RecordingSession, params: any): void {
-    const { requestId, timestamp, dataLength, encodedDataLength } = params;
+    const { requestId, _timestamp, dataLength, _encodedDataLength } = params;
     
     const request = session.requests.find(r => r.id === requestId);
     if (!request) return;
@@ -1265,15 +1360,123 @@ export class BackgroundService {
         tabId, 
         title: recording ? 'XHRScribe - Recording... 🔴' : 'XHRScribe - Click to start recording' 
       });
-    } catch (error) {
+    } catch {
       // Silently continue if icon update fails - it's not critical
       console.log('Note: Icon update not available in this context');
     }
   }
 
-  handleDebuggerDetach(tabId: number): void {
-    if (this.recordingSessions.has(tabId)) {
-      this.stopRecording(tabId).catch(console.error);
+  /**
+   * Enable the CDP domains needed for capture. Network.enable is required (its
+   * failure propagates); the ServiceWorker / BackgroundService domains are
+   * best-effort enhancements. Reused on initial attach and on re-attach.
+   */
+  private async enableNetworkDomains(tabId: number): Promise<void> {
+    await chrome.debugger.sendCommand({ tabId }, 'Network.enable', {
+      maxTotalBufferSize: 10000000,
+      maxResourceBufferSize: 5000000,
+    });
+    try {
+      await chrome.debugger.sendCommand({ tabId }, 'ServiceWorker.enable');
+    } catch {
+      // Optional — older Chrome may not support it.
+    }
+    try {
+      await chrome.debugger.sendCommand({ tabId }, 'BackgroundService.startObserving', { service: 'backgroundFetch' });
+      await chrome.debugger.sendCommand({ tabId }, 'BackgroundService.startObserving', { service: 'pushMessaging' });
+      await chrome.debugger.sendCommand({ tabId }, 'BackgroundService.startObserving', { service: 'backgroundSync' });
+    } catch {
+      // Optional.
+    }
+  }
+
+  /** Re-attach the debugger and re-enable Network after a navigation-induced
+   *  detach. Retries briefly because the new renderer target may not be ready
+   *  the instant the old one is torn down. Returns true on success. */
+  private async reattachDebugger(tabId: number): Promise<boolean> {
+    const protocols = ['1.3', '1.2', '1.1'];
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        // The previous attachment is already gone, but detach defensively in
+        // case a stale one lingers; ignore the expected "not attached" error.
+        await chrome.debugger.detach({ tabId }).catch(() => { /* not attached */ });
+
+        let attached = false;
+        for (const protocol of protocols) {
+          try {
+            await chrome.debugger.attach({ tabId }, protocol);
+            attached = true;
+            break;
+          } catch {
+            // try next protocol
+          }
+        }
+        if (!attached) throw new Error('attach failed for all protocols');
+
+        await this.enableNetworkDomains(tabId);
+        Logger.getInstance().info(`Re-attached debugger after navigation (tab ${tabId})`, null, 'BackgroundService');
+        return true;
+      } catch {
+        await new Promise(resolve => setTimeout(resolve, 300 * (attempt + 1)));
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Handle a debugger detach. A login flow that redirects/reloads can cause
+   * Chrome to swap the renderer target and fire onDetach even though the tab is
+   * still open — previously this stopped the recording. We now re-attach
+   * transparently so capture survives navigations, and only finalize when the
+   * tab is genuinely closed or DevTools takes over the debugger.
+   */
+  async handleDebuggerDetach(tabId: number, reason?: string): Promise<void> {
+    if (!this.recordingSessions.has(tabId)) {
+      return; // not recording this tab (or we detached intentionally on stop)
+    }
+
+    // DevTools opened on the tab, or the user cancelled — only one debugger can
+    // attach, so re-attaching would fail/fight. Finalize what we captured.
+    if (reason === 'canceled_by_user') {
+      Logger.getInstance().warn(`Debugger taken over (DevTools?) on tab ${tabId} — stopping recording`, null, 'BackgroundService');
+      await this.stopRecording(tabId).catch((e: unknown) => Logger.getInstance().error('stopRecording after detach failed', e, 'BackgroundService'));
+      return;
+    }
+
+    // If the tab is gone, the capture is genuinely over — finalize it.
+    let tabExists = false;
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      tabExists = !!tab;
+    } catch {
+      tabExists = false;
+    }
+    if (!tabExists) {
+      await this.stopRecording(tabId).catch((e: unknown) => Logger.getInstance().error('stopRecording after tab close failed', e, 'BackgroundService'));
+      return;
+    }
+
+    // Recoverable detach (e.g. navigation/renderer swap): re-attach.
+    const attempts = (this.reattachAttempts.get(tabId) || 0) + 1;
+    this.reattachAttempts.set(tabId, attempts);
+    const MAX_REATTACHES = 5;
+    if (attempts > MAX_REATTACHES) {
+      Logger.getInstance().warn(`Gave up re-attaching debugger on tab ${tabId} after ${MAX_REATTACHES} attempts — stopping`, null, 'BackgroundService');
+      this.reattachAttempts.delete(tabId);
+      await this.stopRecording(tabId).catch((e: unknown) => Logger.getInstance().error('stopRecording after reattach exhaustion failed', e, 'BackgroundService'));
+      return;
+    }
+
+    const ok = await this.reattachDebugger(tabId);
+    if (ok) {
+      this.reattachAttempts.delete(tabId); // healthy again — reset the counter
+    } else if (this.recordingSessions.has(tabId)) {
+      // Back off and try again on the next tick; the new page may still be loading.
+      setTimeout(() => {
+        if (this.recordingSessions.has(tabId)) {
+          this.handleDebuggerDetach(tabId, reason).catch(() => { /* logged downstream */ });
+        }
+      }, 400 * attempts);
     }
   }
 

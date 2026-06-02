@@ -12,13 +12,40 @@ import {
   TextField,
   Collapse,
 } from '@mui/material';
-import {
-  CheckCircle,
-  ContentCopy,
-  Download,
-} from '@mui/icons-material';
+import CheckCircle from '@mui/icons-material/CheckCircle';
+import ContentCopy from '@mui/icons-material/ContentCopy';
+import Download from '@mui/icons-material/Download';
+import Api from '@mui/icons-material/Api';
+import AccountTree from '@mui/icons-material/AccountTree';
+import VpnKey from '@mui/icons-material/VpnKey';
+import Security from '@mui/icons-material/Security';
 import { RecordingSession, GeneratedTest } from '@/types';
 import { getEndpointSignature } from '@/services/EndpointGrouper';
+
+// Map each framework to its correct file extension + MIME type. Postman exports
+// are JSON collections (not JS), REST Assured is Java, Python frameworks are
+// .py, etc. — downloading everything as .js produced unusable files.
+const FRAMEWORK_FILE: Record<string, { ext: string; mime: string }> = {
+  jest:          { ext: 'test.js',     mime: 'text/javascript' },
+  'mocha-chai':  { ext: 'test.js',     mime: 'text/javascript' },
+  mocha:         { ext: 'test.js',     mime: 'text/javascript' },
+  supertest:     { ext: 'test.js',     mime: 'text/javascript' },
+  puppeteer:     { ext: 'test.js',     mime: 'text/javascript' },
+  pactum:        { ext: 'test.js',     mime: 'text/javascript' },
+  k6:            { ext: 'js',          mime: 'text/javascript' },
+  cypress:       { ext: 'cy.js',       mime: 'text/javascript' },
+  playwright:    { ext: 'spec.ts',     mime: 'text/typescript' },
+  vitest:        { ext: 'test.ts',     mime: 'text/typescript' },
+  postman:       { ext: 'postman.json', mime: 'application/json' },
+  restassured:   { ext: 'java',        mime: 'text/x-java-source' },
+  karate:        { ext: 'feature',     mime: 'text/plain' },
+  artillery:     { ext: 'yml',         mime: 'text/yaml' },
+  pytest:        { ext: 'py',          mime: 'text/x-python' },
+  httpx:         { ext: 'py',          mime: 'text/x-python' },
+};
+
+const fileInfoForFramework = (framework: string): { ext: string; mime: string } =>
+  FRAMEWORK_FILE[framework] || { ext: 'test.js', mime: 'text/javascript' };
 
 interface GeneratedResultsProps {
   generatedCode: string;
@@ -39,6 +66,8 @@ export default function GeneratedResults({
   const [correctionOpen, setCorrectionOpen] = useState(false);
   const [correctedCode, setCorrectedCode] = useState('');
   const [correctionSaved, setCorrectionSaved] = useState(false);
+  const [exporting, setExporting] = useState<string | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
 
   const handleCopyToClipboard = async () => {
     await navigator.clipboard.writeText(generatedCode);
@@ -46,14 +75,50 @@ export default function GeneratedResults({
     setTimeout(() => setCopySuccess(false), 2000);
   };
 
-  const handleDownload = () => {
-    const blob = new Blob([generatedCode], { type: 'text/plain' });
+  const downloadBlob = (content: string, filename: string, mime = 'text/plain') => {
+    const blob = new Blob([content], { type: mime });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `test-${session.id}-${framework}.js`;
+    a.download = filename;
     a.click();
     URL.revokeObjectURL(url);
+  };
+
+  const handleDownload = () => {
+    const { ext, mime } = fileInfoForFramework(framework);
+    downloadBlob(generatedCode, `test-${session.id}.${ext}`, mime);
+  };
+
+  // Derive companion artifacts from the same captured session. The generators
+  // already run in the background service worker; here we just trigger them and
+  // download the result. `content` covers OpenAPI/GraphQL/env; the security
+  // report returns its body under `testCode`.
+  const handleExportArtifact = async (
+    type: 'EXPORT_OPENAPI' | 'EXPORT_GRAPHQL_SCHEMA' | 'EXPORT_ENV_FILE' | 'EXPORT_SECURITY_REPORT',
+    filename: string,
+    mime = 'text/plain'
+  ) => {
+    setExporting(type);
+    setExportError(null);
+    try {
+      const response = await chrome.runtime.sendMessage({
+        type,
+        payload: { sessionId: session.id, framework },
+      });
+      if (!response?.success) {
+        throw new Error(response?.error || 'Export failed');
+      }
+      const content = response.content ?? response.testCode ?? '';
+      if (!content) {
+        throw new Error('Nothing to export for this session');
+      }
+      downloadBlob(content, filename, mime);
+    } catch (e) {
+      setExportError(e instanceof Error ? e.message : 'Export failed');
+    } finally {
+      setExporting(null);
+    }
   };
 
   if (!generatedCode) return null;
@@ -95,6 +160,60 @@ export default function GeneratedResults({
           </pre>
         </Paper>
 
+        {/* Companion artifacts derived from the same captured session */}
+        <Box sx={{ mt: 1.5 }}>
+          <Typography variant="caption" sx={{ display: 'block', mb: 0.5, color: 'text.secondary' }}>
+            Export artifacts from this session
+          </Typography>
+          <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+            <Button
+              size="small"
+              variant="outlined"
+              startIcon={<Api fontSize="small" />}
+              disabled={exporting !== null}
+              onClick={() => handleExportArtifact('EXPORT_OPENAPI', `openapi-${session.id}.json`, 'application/json')}
+            >
+              {exporting === 'EXPORT_OPENAPI' ? 'Exporting…' : 'OpenAPI Spec'}
+            </Button>
+            <Button
+              size="small"
+              variant="outlined"
+              startIcon={<AccountTree fontSize="small" />}
+              disabled={exporting !== null}
+              onClick={() => handleExportArtifact('EXPORT_GRAPHQL_SCHEMA', `schema-${session.id}.graphql`)}
+            >
+              {exporting === 'EXPORT_GRAPHQL_SCHEMA' ? 'Exporting…' : 'GraphQL Schema'}
+            </Button>
+            <Button
+              size="small"
+              variant="outlined"
+              startIcon={<VpnKey fontSize="small" />}
+              disabled={exporting !== null}
+              onClick={() => handleExportArtifact('EXPORT_ENV_FILE', `env-${session.id}.env`)}
+            >
+              {exporting === 'EXPORT_ENV_FILE' ? 'Exporting…' : '.env File'}
+            </Button>
+            <Button
+              size="small"
+              variant="outlined"
+              color="warning"
+              startIcon={<Security fontSize="small" />}
+              disabled={exporting !== null}
+              onClick={() => {
+                const { ext, mime } = fileInfoForFramework(framework);
+                handleExportArtifact('EXPORT_SECURITY_REPORT', `security-tests-${session.id}.${ext}`, mime);
+              }}
+            >
+              {exporting === 'EXPORT_SECURITY_REPORT' ? 'Exporting…' : 'Security Tests'}
+            </Button>
+          </Box>
+          {exportError && (
+            <Alert severity="error" sx={{ mt: 1, fontSize: '0.8rem' }} onClose={() => setExportError(null)}>
+              {exportError}
+            </Alert>
+          )}
+        </Box>
+
         {/* Quality Score and Metadata */}
         <Box sx={{ mt: 2 }}>
           {latestTest?.metadata?.generationMode && (
@@ -134,9 +253,9 @@ export default function GeneratedResults({
             {latestTest?.validation && (
               <>
                 <Chip
-                  label={`Validation: ${latestTest.validation.overallScore}/100`}
+                  label={`Validation: ${latestTest.validation.overallScore}/10`}
                   size="small"
-                  color={latestTest.validation.overallScore >= 70 ? 'success' : latestTest.validation.overallScore >= 40 ? 'warning' : 'error'}
+                  color={latestTest.validation.overallScore >= 7 ? 'success' : latestTest.validation.overallScore >= 4 ? 'warning' : 'error'}
                 />
                 <Chip
                   label={latestTest.validation.readinessLevel}
@@ -149,6 +268,18 @@ export default function GeneratedResults({
                     label={`${latestTest.validation.criticalIssues} critical`}
                     size="small"
                     color="error"
+                    variant="outlined"
+                  />
+                )}
+                {latestTest.validation.autoFixApplied && (
+                  <Chip
+                    label={
+                      latestTest.validation.scoreBeforeAutoFix !== undefined
+                        ? `Auto-fixed ${latestTest.validation.issuesAutoFixed ?? 0} · ${latestTest.validation.scoreBeforeAutoFix}→${latestTest.validation.overallScore}`
+                        : `Auto-fixed ${latestTest.validation.issuesAutoFixed ?? 0}`
+                    }
+                    size="small"
+                    color="success"
                     variant="outlined"
                   />
                 )}

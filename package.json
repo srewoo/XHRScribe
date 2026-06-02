@@ -1,6 +1,6 @@
 {
   "name": "xhrscribe",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "description": "Turn Traffic into Tests ",
   "main": "dist/background.js",
   "directories": {
@@ -15,8 +15,8 @@
     "test:unit": "jest --verbose",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
-    "lint": "eslint . --ext .ts,.tsx",
-    "lint:fix": "eslint . --ext .ts,.tsx --fix",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
     "type-check": "tsc --noEmit",
     "clean": "rm -rf dist package"
   },
@@ -40,7 +40,6 @@
     "gpt-tokenizer": "^3.0.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "tiktoken": "^1.0.22",
     "zustand": "^5.0.8"
   },
   "devDependencies": {

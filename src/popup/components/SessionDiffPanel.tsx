@@ -14,17 +14,13 @@ import {
   List,
   ListItem,
   ListItemText,
-  Alert,
-  Paper,
 } from '@mui/material';
-import {
-  ExpandMore,
-  CompareArrows,
-  Add,
-  Remove,
-  Edit,
-  CheckCircle,
-} from '@mui/icons-material';
+import ExpandMore from '@mui/icons-material/ExpandMore';
+import CompareArrows from '@mui/icons-material/CompareArrows';
+import Add from '@mui/icons-material/Add';
+import Remove from '@mui/icons-material/Remove';
+import Edit from '@mui/icons-material/Edit';
+import CheckCircle from '@mui/icons-material/CheckCircle';
 import { RecordingSession, SessionDiffResult, EndpointDiff } from '@/types';
 import { SessionDiffService } from '@/services/SessionDiffService';
 

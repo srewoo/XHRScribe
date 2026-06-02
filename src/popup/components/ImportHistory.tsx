@@ -10,15 +10,13 @@ import {
   IconButton,
   CircularProgress,
 } from '@mui/material';
-import {
-  InsertDriveFile,
-  CheckCircle,
-  Error as ErrorIcon,
-  Description,
-  Code,
-  Api,
-  Delete,
-} from '@mui/icons-material';
+import InsertDriveFile from '@mui/icons-material/InsertDriveFile';
+import CheckCircle from '@mui/icons-material/CheckCircle';
+import ErrorIcon from '@mui/icons-material/Error';
+import Description from '@mui/icons-material/Description';
+import Code from '@mui/icons-material/Code';
+import Api from '@mui/icons-material/Api';
+import Delete from '@mui/icons-material/Delete';
 
 interface ImportedFile {
   name: string;

@@ -22,23 +22,21 @@ import {
   IconButton,
   InputAdornment,
 } from '@mui/material';
-import {
-  Save,
-  Visibility,
-  VisibilityOff,
-  Add,
-  Delete,
-  RestartAlt,
-  Security,
-  Code,
-  FilterList,
-  AttachMoney,
-  CheckCircle,
-  Cancel,
-} from '@mui/icons-material';
+import Save from '@mui/icons-material/Save';
+import Visibility from '@mui/icons-material/Visibility';
+import VisibilityOff from '@mui/icons-material/VisibilityOff';
+import Add from '@mui/icons-material/Add';
+import Delete from '@mui/icons-material/Delete';
+import RestartAlt from '@mui/icons-material/RestartAlt';
+import Security from '@mui/icons-material/Security';
+import Code from '@mui/icons-material/Code';
+import FilterList from '@mui/icons-material/FilterList';
+import AttachMoney from '@mui/icons-material/AttachMoney';
+import CheckCircle from '@mui/icons-material/CheckCircle';
+import Cancel from '@mui/icons-material/Cancel';
 import { CircularProgress } from '@mui/material';
 import axios from 'axios';
-import { Settings, AIProvider, TestFramework, AIModel } from '@/types';
+import { Settings, AIProvider, AIModel } from '@/types';
 import { StorageService } from '@/services/StorageService';
 
 interface TabPanelProps {
@@ -152,7 +150,7 @@ export default function OptionsApp() {
     try {
       await storageService.saveSettings(updatedSettings);
       setSnackbar({ open: true, message: 'Settings saved successfully!', severity: 'success' });
-    } catch (error) {
+    } catch {
       setSnackbar({ open: true, message: 'Failed to save settings', severity: 'error' });
     }
   };
@@ -173,7 +171,7 @@ export default function OptionsApp() {
         await storageService.resetCorruptedData();
         await loadSettings();
         setSnackbar({ open: true, message: 'Corrupted data has been cleared. Please re-enter your API keys.', severity: 'success' });
-      } catch (error) {
+      } catch {
         setSnackbar({ open: true, message: 'Failed to reset data', severity: 'error' });
       }
     }
@@ -196,7 +194,7 @@ export default function OptionsApp() {
         });
       } else if (provider === 'anthropic') {
         await axios.post('https://api.anthropic.com/v1/messages', {
-          model: 'claude-3-7-sonnet-20250219',
+          model: 'claude-haiku-4-5-20251001',
           max_tokens: 1,
           messages: [{ role: 'user', content: 'hi' }],
         }, {
@@ -287,8 +285,8 @@ export default function OptionsApp() {
                     const newProvider = e.target.value as AIProvider;
                     const providerModels: Record<AIProvider, AIModel> = {
                       openai: 'gpt-4.1-mini',
-                      anthropic: 'claude-4-5-sonnet',
-                      gemini: 'gemini-2-5-flash',
+                      anthropic: 'claude-sonnet-4-6',
+                      gemini: 'gemini-3.5-flash',
                       local: 'llama-3.2',
                     };
                     setSettings({
@@ -314,18 +312,20 @@ export default function OptionsApp() {
                   label="AI Model"
                 >
                   {settings.aiProvider === 'openai' && [
-                    <MenuItem key="gpt-4.1" value="gpt-4.1">GPT-4.1 (Most Capable)</MenuItem>,
-                    <MenuItem key="gpt-4.1-mini" value="gpt-4.1-mini">GPT-4.1 Mini (Fast & Cheap)</MenuItem>,
+                    <MenuItem key="gpt-5.5" value="gpt-5.5">GPT-5.5 (Most Capable)</MenuItem>,
+                    <MenuItem key="gpt-5.4-mini" value="gpt-5.4-mini">GPT-5.4 Mini (Fast)</MenuItem>,
+                    <MenuItem key="gpt-4.1" value="gpt-4.1">GPT-4.1 (1M context)</MenuItem>,
+                    <MenuItem key="gpt-4.1-mini" value="gpt-4.1-mini">GPT-4.1 Mini (Cheapest)</MenuItem>,
                   ]}
                   {settings.aiProvider === 'anthropic' && [
-                    <MenuItem key="claude-4-5-opus" value="claude-4-5-opus">Claude 4.5 Opus (Most Capable)</MenuItem>,
-                    <MenuItem key="claude-4-5-sonnet" value="claude-4-5-sonnet">Claude 4.5 Sonnet (Latest)</MenuItem>,
-                    <MenuItem key="claude-4-sonnet" value="claude-4-sonnet">Claude 4 Sonnet</MenuItem>,
-                    <MenuItem key="claude-3-7-sonnet" value="claude-3-7-sonnet">Claude 3.7 Sonnet</MenuItem>,
+                    <MenuItem key="claude-opus-4-8" value="claude-opus-4-8">Claude Opus 4.8 (Most Capable)</MenuItem>,
+                    <MenuItem key="claude-sonnet-4-6" value="claude-sonnet-4-6">Claude Sonnet 4.6 (Balanced)</MenuItem>,
+                    <MenuItem key="claude-haiku-4-5-20251001" value="claude-haiku-4-5-20251001">Claude Haiku 4.5 (Fast & Cheap)</MenuItem>,
                   ]}
                   {settings.aiProvider === 'gemini' && [
-                    <MenuItem key="gemini-2-5-pro" value="gemini-2-5-pro">Gemini 2.5 Pro</MenuItem>,
-                    <MenuItem key="gemini-2-5-flash" value="gemini-2-5-flash">Gemini 2.5 Flash (Fast)</MenuItem>,
+                    <MenuItem key="gemini-3.5-flash" value="gemini-3.5-flash">Gemini 3.5 Flash (Latest)</MenuItem>,
+                    <MenuItem key="gemini-2.5-pro" value="gemini-2.5-pro">Gemini 2.5 Pro</MenuItem>,
+                    <MenuItem key="gemini-3.1-flash-lite" value="gemini-3.1-flash-lite">Gemini 3.1 Flash-Lite (Cheapest)</MenuItem>,
                   ]}
                   {settings.aiProvider === 'local' && [
                     <MenuItem key="llama-3.2" value="llama-3.2">Llama 3.2</MenuItem>,

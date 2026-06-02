@@ -86,7 +86,7 @@ export class ExportService {
         description: `Generated from XHRScribe recording on ${new Date(session.startTime).toLocaleString()}`,
         schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json',
       },
-      item: session.requests.map((req, index) => ({
+      item: session.requests.map((req, _index) => ({
         name: `${req.method} ${new URL(req.url).pathname}`,
         request: {
           method: req.method,
@@ -413,11 +413,19 @@ ${test.suggestions?.length ? `## Suggestions:\n${test.suggestions.map((s) => `- 
       jest: 'test.js',
       playwright: 'spec.ts',
       'mocha-chai': 'test.js',
+      mocha: 'test.js',
       cypress: 'cy.js',
       puppeteer: 'test.js',
       vitest: 'test.ts',
       supertest: 'test.js',
+      pactum: 'test.js',
+      k6: 'js',
       postman: 'postman.json',
+      restassured: 'java',
+      karate: 'feature',
+      artillery: 'yml',
+      pytest: 'py',
+      httpx: 'py',
     };
     return extensions[framework] || 'test.js';
   }

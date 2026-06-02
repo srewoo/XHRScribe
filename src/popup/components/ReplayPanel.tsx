@@ -16,13 +16,11 @@ import {
   Paper,
   Alert,
 } from '@mui/material';
-import {
-  PlayArrow,
-  Stop,
-  CheckCircle,
-  Error as ErrorIcon,
-  Warning,
-} from '@mui/icons-material';
+import PlayArrow from '@mui/icons-material/PlayArrow';
+import Stop from '@mui/icons-material/Stop';
+import CheckCircle from '@mui/icons-material/CheckCircle';
+import ErrorIcon from '@mui/icons-material/Error';
+import Warning from '@mui/icons-material/Warning';
 import { RecordingSession, ReplayConfig, ReplayResult, ReplaySessionResult } from '@/types';
 import { TrafficReplayService } from '@/services/TrafficReplayService';
 
@@ -63,7 +61,7 @@ export default function ReplayPanel({ session }: ReplayPanelProps) {
         }
       );
       setSummary(result);
-    } catch (error) {
+    } catch {
       // Cancelled or error
     } finally {
       setReplaying(false);

@@ -105,6 +105,17 @@ module.exports = (env, argv) => {
           return chunk.name !== 'background' && chunk.name !== 'content';
         },
         cacheGroups: {
+          // Keep the heavy gpt-tokenizer BPE ranks (~2.2 MB) in their own
+          // on-demand chunk. The providers import it dynamically; without this
+          // higher-priority async-only group the broad `vendor` group below
+          // would pull it back into the initial vendors.js and bloat the popup.
+          tokenizer: {
+            test: /[\\/]node_modules[\\/]gpt-tokenizer[\\/]/,
+            name: 'tokenizer',
+            priority: 25,
+            chunks: 'async',
+            reuseExistingChunk: true,
+          },
           vendor: {
             test: /[\\/]node_modules[\\/]/,
             name: 'vendors',

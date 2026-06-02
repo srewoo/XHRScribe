@@ -213,7 +213,7 @@ export class ScenarioBuilder {
   private detectAuthFlow(requests: NetworkRequest[], dependencies: DataDependency[]): TestScenario | null {
     const authPatterns = ['login', 'auth', 'signin', 'token', 'session'];
 
-    const authRequests = requests.filter((req, index) => {
+    const authRequests = requests.filter((req, _index) => {
       const url = req.url.toLowerCase();
       return authPatterns.some(pattern => url.includes(pattern)) && req.method === 'POST';
     });
@@ -268,7 +268,7 @@ export class ScenarioBuilder {
     };
   }
 
-  private detectCRUDFlows(requests: NetworkRequest[], dependencies: DataDependency[]): TestScenario[] {
+  private detectCRUDFlows(requests: NetworkRequest[], _dependencies: DataDependency[]): TestScenario[] {
     const scenarios: TestScenario[] = [];
 
     // Group requests by resource (path pattern)

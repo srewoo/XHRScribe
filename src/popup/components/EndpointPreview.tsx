@@ -13,18 +13,15 @@ import {
   Badge,
   Tooltip,
   Paper,
-  IconButton
 } from '@mui/material';
-import {
-  ExpandMore,
-  CheckCircle,
-  Warning,
-  Info,
-  Close,
-  ViewList,
-  AccountTree,
-} from '@mui/icons-material';
-import { RecordingSession, NetworkRequest, EndpointGroup } from '@/types';
+import ExpandMore from '@mui/icons-material/ExpandMore';
+import CheckCircle from '@mui/icons-material/CheckCircle';
+import Warning from '@mui/icons-material/Warning';
+import Info from '@mui/icons-material/Info';
+import Close from '@mui/icons-material/Close';
+import ViewList from '@mui/icons-material/ViewList';
+import AccountTree from '@mui/icons-material/AccountTree';
+import { RecordingSession, NetworkRequest } from '@/types';
 import { EndpointGrouper } from '@/services/EndpointGrouper';
 
 // GraphQL detection and operation extraction helpers
@@ -80,7 +77,7 @@ const extractGraphQLOperation = (request: NetworkRequest): string | null => {
     const bodyHash = simpleHash(bodyStr);
     return `operation_${bodyHash}`;
     
-  } catch (error) {
+  } catch {
     return null;
   }
 };
@@ -166,7 +163,7 @@ const EndpointPreview: React.FC<EndpointPreviewProps> = ({
             signature: signature
           });
         }
-      } catch (error) {
+      } catch {
         // Handle invalid URLs
         const signature = `${req.method}:${req.url}`;
         if (!endpointMap.has(signature)) {

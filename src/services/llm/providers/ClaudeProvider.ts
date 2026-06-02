@@ -1,7 +1,7 @@
 import axios, { AxiosError } from 'axios';
-import { encode } from 'gpt-tokenizer';
+import { preloadEncoder, countTokens as countTokensLazy } from '../tokenizer';
 import { HARData, GenerationOptions, GeneratedTest } from '@/types';
-import { LLMProvider } from '../LLMService';
+import { LLMProvider } from '../LLMProvider';
 import { AuthFlow } from '../../AuthFlowAnalyzer';
 import { normalizePath } from '../../EndpointGrouper';
 import { PromptBuilder } from '../PromptBuilder';
@@ -35,6 +35,7 @@ export class ClaudeProvider implements LLMProvider {
       throw new Error('Claude API key not configured');
     }
 
+    await preloadEncoder(); // load the BPE ranks chunk for accurate counts
     const prompt = this.buildPrompt(harData, options, authFlow, customAuthGuide);
     const promptTokens = this.countTokens(prompt);
     const systemPromptTokens = this.countTokens('You are an expert API test engineer. Generate clean, production-ready test code.');
@@ -151,13 +152,12 @@ export class ClaudeProvider implements LLMProvider {
   estimateCost(tokenCount: number, model: string): number {
     // Claude pricing as of 2024
     const pricing: Record<string, { input: number; output: number }> = {
-      'claude-4-5-opus': { input: 0.015, output: 0.075 },
-      'claude-4-5-sonnet': { input: 0.003, output: 0.015 },
-      'claude-4-sonnet': { input: 0.003, output: 0.015 },
-      'claude-3-7-sonnet': { input: 0.003, output: 0.015 },
+      'claude-opus-4-8': { input: 0.015, output: 0.075 },
+      'claude-sonnet-4-6': { input: 0.003, output: 0.015 },
+      'claude-haiku-4-5-20251001': { input: 0.0008, output: 0.004 },
     };
 
-    const modelPricing = pricing[model] || pricing['claude-4-5-sonnet'];
+    const modelPricing = pricing[model] || pricing['claude-sonnet-4-6'];
     // Rough estimate: 60% input, 40% output
     const inputTokens = tokenCount * 0.6;
     const outputTokens = tokenCount * 0.4;
@@ -166,22 +166,14 @@ export class ClaudeProvider implements LLMProvider {
   }
 
   countTokens(text: string): number {
-    try {
-      // Use gpt-tokenizer as approximation for Claude
-      const tokens = encode(text);
-      return tokens.length;
-    } catch (error) {
-      // Fallback to rough estimation
-      return Math.ceil(text.length / 4);
-    }
+    return countTokensLazy(text);
   }
 
   private getMaxTokens(model: string): number {
     const limits: Record<string, number> = {
-      'claude-4-5-opus': 200000,
-      'claude-4-5-sonnet': 200000,
-      'claude-4-sonnet': 200000,
-      'claude-3-7-sonnet': 200000,
+      'claude-opus-4-8': 200000,
+      'claude-sonnet-4-6': 200000,
+      'claude-haiku-4-5-20251001': 200000,
     };
     return limits[model] || 200000;
   }
@@ -385,7 +377,7 @@ ${pb.getQualityGateSection()}
           grouped[endpoint] = [];
         }
         grouped[endpoint].push(entry);
-      } catch (error) {
+      } catch {
         // If URL parsing fails, use the full URL
         const endpoint = entry.request.url;
         if (!grouped[endpoint]) {
@@ -642,7 +634,7 @@ ${pb.getQualityGateSection()}
       const bodyHash = this.simpleHash(bodyStr);
       return `operation_${bodyHash}`;
       
-    } catch (error) {
+    } catch {
       return null;
     }
   }

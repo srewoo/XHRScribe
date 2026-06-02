@@ -4,7 +4,6 @@ import {
   Box,
   Paper,
   Typography,
-  Button,
   IconButton,
   Tabs,
   Tab,
@@ -18,17 +17,13 @@ import {
   ListItemText,
   LinearProgress,
 } from '@mui/material';
-import {
-  PlayArrow,
-  Stop,
-  Settings,
-  Code,
-  Help,
-  Close,
-  Minimize,
-  OpenInFull,
-} from '@mui/icons-material';
-import { RecordingSession, NetworkRequest } from '@/types';
+import Settings from '@mui/icons-material/Settings';
+import Code from '@mui/icons-material/Code';
+import Help from '@mui/icons-material/Help';
+import Close from '@mui/icons-material/Close';
+import Minimize from '@mui/icons-material/Minimize';
+import OpenInFull from '@mui/icons-material/OpenInFull';
+import {  } from '@/types';
 import RecordingPanel from './components/RecordingPanel';
 import SessionList from './components/SessionList';
 import RequestList from './components/RequestList';
@@ -36,7 +31,6 @@ import GeneratePanel from './components/GeneratePanel';
 import ImportPanel from './components/ImportPanel';
 import SessionDiffPanel from './components/SessionDiffPanel';
 import { useStore } from '@/store/useStore';
-import { ErrorBoundary } from '@/components/ErrorBoundary';
 
 const pulseAnimation = keyframes`
   0% { opacity: 1; }
@@ -129,7 +123,7 @@ export default function App() {
           }
           return; // Success, exit retry loop
         }
-      } catch (error) {
+      } catch {
         console.log(`Background not ready yet (attempt ${attempt}/${maxRetries})`);
         
         if (attempt < maxRetries) {

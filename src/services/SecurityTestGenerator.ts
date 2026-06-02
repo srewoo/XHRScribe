@@ -357,7 +357,7 @@ export class SecurityTestGenerator {
     return tests;
   }
 
-  private generateRateLimitTests(request: NetworkRequest): SecurityTest[] {
+  private generateRateLimitTests(_request: NetworkRequest): SecurityTest[] {
     return [
       {
         id: 'rate-limit-standard',
@@ -382,7 +382,7 @@ export class SecurityTestGenerator {
     ];
   }
 
-  private generateCORSTests(request: NetworkRequest): SecurityTest[] {
+  private generateCORSTests(_request: NetworkRequest): SecurityTest[] {
     return [
       {
         id: 'cors-wildcard',
@@ -503,7 +503,7 @@ export class SecurityTestGenerator {
     return Math.round((totalWeight / maxPossible) * 100);
   }
 
-  private generateRecommendations(tests: SecurityTest[], request: NetworkRequest): string[] {
+  private generateRecommendations(tests: SecurityTest[], _request: NetworkRequest): string[] {
     const recommendations: string[] = [];
     const categories = new Set(tests.map(t => t.category));
 

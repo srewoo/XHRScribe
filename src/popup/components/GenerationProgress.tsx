@@ -7,10 +7,8 @@ import {
   CircularProgress,
   Fade,
 } from '@mui/material';
-import {
-  CheckCircle,
-  Info,
-} from '@mui/icons-material';
+import CheckCircle from '@mui/icons-material/CheckCircle';
+import Info from '@mui/icons-material/Info';
 
 interface GenerationState {
   isGenerating: boolean;

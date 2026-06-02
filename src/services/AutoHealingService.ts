@@ -340,7 +340,7 @@ export class AutoHealingService {
     return changes;
   }
 
-  private generateHealingSuggestions(changes: EndpointChange[], request: NetworkRequest): HealingSuggestion[] {
+  private generateHealingSuggestions(changes: EndpointChange[], _request: NetworkRequest): HealingSuggestion[] {
     const suggestions: HealingSuggestion[] = [];
 
     changes.forEach(change => {

@@ -235,17 +235,25 @@ CRITICAL: Return ONLY the corrected code, no explanations or markdown formatting
     const axios = (await import('axios')).default;
 
     if (provider === 'openai') {
+      const openaiModel = model || 'gpt-4.1-mini';
+      const isGpt5 = openaiModel.startsWith('gpt-5');
+      const body: Record<string, any> = {
+        model: openaiModel,
+        messages: [
+          { role: 'system', content: 'You are an expert test code fixer. Return ONLY corrected code, no markdown formatting.' },
+          { role: 'user', content: prompt }
+        ],
+      };
+      // GPT-5.x reasoning models reject max_tokens / custom temperature.
+      if (isGpt5) {
+        body.max_completion_tokens = 8000;
+      } else {
+        body.temperature = 0.2;
+        body.max_tokens = 8000;
+      }
       const response = await axios.post(
         'https://api.openai.com/v1/chat/completions',
-        {
-          model: model || 'gpt-4.1-mini',
-          messages: [
-            { role: 'system', content: 'You are an expert test code fixer. Return ONLY corrected code, no markdown formatting.' },
-            { role: 'user', content: prompt }
-          ],
-          temperature: 0.2,
-          max_tokens: 8000,
-        },
+        body,
         { headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` }, timeout: 60000 }
       );
       return response.data.choices[0]?.message?.content || '';
@@ -255,7 +263,7 @@ CRITICAL: Return ONLY the corrected code, no explanations or markdown formatting
       const response = await axios.post(
         'https://api.anthropic.com/v1/messages',
         {
-          model: model || 'claude-3-7-sonnet',
+          model: model || 'claude-haiku-4-5-20251001',
           max_tokens: 8000,
           messages: [{ role: 'user', content: prompt }],
           system: 'You are an expert test code fixer. Return ONLY corrected code, no markdown formatting.',
@@ -267,7 +275,7 @@ CRITICAL: Return ONLY the corrected code, no explanations or markdown formatting
 
     if (provider === 'gemini') {
       const response = await axios.post(
-        `https://generativelanguage.googleapis.com/v1beta/models/${model || 'gemini-2-5-flash'}:generateContent?key=${apiKey}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/${model || 'gemini-3.5-flash'}:generateContent?key=${apiKey}`,
         { contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.2, maxOutputTokens: 8000 } },
         { headers: { 'Content-Type': 'application/json' }, timeout: 60000 }
       );
@@ -323,7 +331,7 @@ CRITICAL: Return ONLY the corrected code, no explanations or markdown formatting
         name: 'Environment Variable Replacer',
         description: 'Replaces hardcoded values with environment variables',
         applicable: (issue) => issue.description.includes('Hardcoded value'),
-        fix: (code, issue) => this.replaceHardcodedValues(code),
+        fix: (code, _issue) => this.replaceHardcodedValues(code),
         confidence: 75
       },
       {

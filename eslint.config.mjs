@@ -3,6 +3,7 @@ import typescript from '@typescript-eslint/eslint-plugin';
 import typescriptParser from '@typescript-eslint/parser';
 import react from 'eslint-plugin-react';
 import reactHooks from 'eslint-plugin-react-hooks';
+import globals from 'globals';
 
 export default [
   js.configs.recommended,
@@ -19,36 +20,14 @@ export default [
         project: './tsconfig.json',
       },
       globals: {
+        // Browser + service-worker (MV3 background) + Node build-time globals,
+        // plus the extension-specific `chrome` namespace. Using the `globals`
+        // presets avoids hand-maintaining (and missing) entries like
+        // performance, crypto, atob/btoa, WebSocket, AbortController, etc.
+        ...globals.browser,
+        ...globals.serviceworker,
+        ...globals.node,
         chrome: 'readonly',
-        console: 'readonly',
-        document: 'readonly',
-        window: 'readonly',
-        process: 'readonly',
-        Buffer: 'readonly',
-        __dirname: 'readonly',
-        module: 'readonly',
-        require: 'readonly',
-        exports: 'readonly',
-        URL: 'readonly',
-        URLSearchParams: 'readonly',
-        fetch: 'readonly',
-        setTimeout: 'readonly',
-        clearTimeout: 'readonly',
-        setInterval: 'readonly',
-        clearInterval: 'readonly',
-        Promise: 'readonly',
-        Map: 'readonly',
-        Set: 'readonly',
-        Array: 'readonly',
-        Object: 'readonly',
-        JSON: 'readonly',
-        Math: 'readonly',
-        Date: 'readonly',
-        RegExp: 'readonly',
-        Error: 'readonly',
-        Navigator: 'readonly',
-        navigator: 'readonly',
-        Blob: 'readonly',
       },
     },
     plugins: {
@@ -100,11 +79,17 @@ export default [
       'node_modules/**',
       'package/**',
       '*.config.js',
+      '*.config.mjs',
+      'BUILD_VALIDATION.js',
       'scripts/**',
       'coverage/**',
-      '*.test.ts',
-      '*.spec.ts',
-      'setupTests.ts',
+      // Tests are excluded from tsconfig, so typed-linting cannot resolve them
+      // via parserOptions.project. They are covered by jest, not eslint.
+      '**/*.test.ts',
+      '**/*.test.tsx',
+      '**/*.spec.ts',
+      '**/__tests__/**',
+      '**/setupTests.ts',
     ],
   },
 ];

@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { HARData, GenerationOptions, GeneratedTest } from '@/types';
-import { LLMProvider } from '../LLMService';
+import { LLMProvider } from '../LLMProvider';
 import { AuthFlow } from '../../AuthFlowAnalyzer';
 import { Logger } from '@/services/logging/Logger';
 
@@ -114,7 +114,7 @@ Return ONLY the test code, no explanations:`;
     };
   }
 
-  estimateCost(tokenCount: number): number {
+  estimateCost(_tokenCount: number): number {
     return 0; // Local models are free
   }
 
@@ -153,7 +153,7 @@ describe('API Tests', () => {
   });
 `;
 
-    entries.forEach((entry, index) => {
+    entries.forEach((entry, _index) => {
       const url = new URL(entry.request.url);
       const path = url.pathname;
       const method = entry.request.method;
@@ -198,7 +198,7 @@ describe('API Tests', () => {
     return code;
   }
 
-  private generatePlaywrightTemplate(entries: any[], options: GenerationOptions): string {
+  private generatePlaywrightTemplate(entries: any[], _options: GenerationOptions): string {
     let code = `// Playwright API Tests
 import { test, expect } from '@playwright/test';
 
@@ -227,7 +227,7 @@ test.describe('API Tests', () => {
     return code;
   }
 
-  private generateMochaTemplate(entries: any[], options: GenerationOptions): string {
+  private generateMochaTemplate(entries: any[], _options: GenerationOptions): string {
     let code = `// Mocha/Chai API Tests
 const chai = require('chai');
 const chaiHttp = require('chai-http');

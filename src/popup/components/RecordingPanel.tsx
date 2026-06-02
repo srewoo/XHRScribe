@@ -7,7 +7,9 @@ import {
   Chip,
   LinearProgress,
 } from '@mui/material';
-import { PlayArrow, Stop, Timer } from '@mui/icons-material';
+import PlayArrow from '@mui/icons-material/PlayArrow';
+import Stop from '@mui/icons-material/Stop';
+import Timer from '@mui/icons-material/Timer';
 import { RecordingSession } from '@/types';
 
 interface RecordingPanelProps {

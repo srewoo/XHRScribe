@@ -157,6 +157,13 @@ export class ServiceWorkerManager {
   }
 
   private startCleanupInterval(): void {
+    // Clear any existing interval first — startPersistence can be called
+    // repeatedly, and overwriting the handle without clearing leaks timers.
+    if (this.cleanupInterval) {
+      clearInterval(this.cleanupInterval);
+      this.cleanupInterval = null;
+    }
+
     // Clean up old data every 5 minutes
     this.cleanupInterval = setInterval(() => {
       this.performCleanup();
@@ -216,7 +223,10 @@ export class ServiceWorkerManager {
       delayInMinutes: 0
     });
 
-    // Add heartbeat alarm handler
+    // Add heartbeat alarm handler. Remove first so repeated calls (every
+    // recording toggle goes through setMode → startPersistence) don't stack
+    // duplicate listeners that fire the heartbeat N times per tick.
+    chrome.alarms.onAlarm.removeListener(this.handleHeartbeatAlarm);
     chrome.alarms.onAlarm.addListener(this.handleHeartbeatAlarm);
 
     // Also use interval as backup (more reliable than alarms for short intervals)
@@ -301,7 +311,7 @@ export class ServiceWorkerManager {
               type: 'HEARTBEAT_RECOVERY',
               timestamp: Date.now()
             });
-          } catch (e) {
+          } catch {
             // Tab might not have content script, ignore
           }
         }
