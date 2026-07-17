@@ -62,22 +62,91 @@ export class Logger {
     };
   }
 
+  // Header/field names that always carry credentials, even though they don't
+  // contain the substrings key/token/secret/password (e.g. Authorization).
+  private static readonly SENSITIVE_KEY_NAMES = [
+    'key', 'token', 'secret', 'password', 'authorization', 'auth',
+    'cookie', 'credential', 'bearer', 'x-api-key', 'apikey', 'sessionid',
+    'set-cookie', 'proxy-authorization',
+  ];
+
+  // Value shapes that are credentials regardless of the field name that holds
+  // them, so a token nested in an axios error config still gets scrubbed.
+  private static readonly SENSITIVE_VALUE_PATTERNS: RegExp[] = [
+    /\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi,      // Authorization: Bearer <jwt/opaque>
+    /\bsk-[A-Za-z0-9-]{16,}\b/g,               // OpenAI-style secret keys
+    /\bAIza[A-Za-z0-9_-]{20,}\b/g,             // Google API keys
+    /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, // JWTs
+  ];
+
+  private isSensitiveKey(key: string): boolean {
+    const lower = key.toLowerCase();
+    return Logger.SENSITIVE_KEY_NAMES.some(name => lower.includes(name));
+  }
+
+  private redactValueShapes(value: string): string {
+    let out = value;
+    for (const pattern of Logger.SENSITIVE_VALUE_PATTERNS) {
+      out = out.replace(pattern, '***REDACTED***');
+    }
+    return out;
+  }
+
   private sanitizeData(data: any): any {
-    // Remove sensitive information
-    const sanitized = JSON.parse(JSON.stringify(data, (key, value) => {
-      // Remove API keys and tokens
-      if (typeof key === 'string' && (
-        key.toLowerCase().includes('key') ||
-        key.toLowerCase().includes('token') ||
-        key.toLowerCase().includes('secret') ||
-        key.toLowerCase().includes('password')
-      )) {
+    // Strip axios/fetch error internals that carry request headers (and thus
+    // Authorization / x-api-key) before serialization. Keep only safe fields.
+    const source = this.normalizeError(data);
+
+    const seen = new WeakSet();
+    const walk = (value: any, key?: string): any => {
+      if (typeof key === 'string' && this.isSensitiveKey(key)) {
         return '***REDACTED***';
       }
+      if (typeof value === 'string') {
+        return this.redactValueShapes(value);
+      }
+      if (value && typeof value === 'object') {
+        if (seen.has(value)) return '[Circular]';
+        seen.add(value);
+        if (Array.isArray(value)) {
+          return value.map(item => walk(item));
+        }
+        const out: Record<string, any> = {};
+        for (const k of Object.keys(value)) {
+          out[k] = walk(value[k], k);
+        }
+        return out;
+      }
       return value;
-    }));
+    };
 
-    return sanitized;
+    try {
+      return walk(source);
+    } catch {
+      return '[Unserializable log data]';
+    }
+  }
+
+  // Reduce an axios-like error (which nests request headers/config) to a small
+  // set of safe fields so credentials never enter the log or persisted store.
+  private normalizeError(data: any): any {
+    if (!data || typeof data !== 'object') return data;
+    const isAxiosError = data.isAxiosError === true || (data.config && data.request);
+    if (isAxiosError) {
+      return {
+        message: data.message,
+        code: data.code,
+        status: data.response?.status,
+        statusText: data.response?.statusText,
+        // response body may echo inputs but never the request auth headers
+        responseData: data.response?.data,
+        url: typeof data.config?.url === 'string'
+          ? data.config.url.split('?')[0]
+          : undefined,
+        method: data.config?.method,
+      };
+    }
+    return data;
   }
 
   private addLog(entry: LogEntry) {

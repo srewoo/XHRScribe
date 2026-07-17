@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "XHRScribe - AI-Powered API Test Generator",
-  "version": "3.1.0",
-  "description": "Turn traffic into tests",
+  "name": "XHRScribe - AI API Test Generator",
+  "version": "3.2.0",
+  "description": "Generate API tests from network traffic. Capture XHR, Fetch & GraphQL and export Jest, Playwright, Cypress & Postman tests.",
   "permissions": [
     "debugger",
     "storage",

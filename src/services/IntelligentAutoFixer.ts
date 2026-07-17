@@ -275,9 +275,9 @@ CRITICAL: Return ONLY the corrected code, no explanations or markdown formatting
 
     if (provider === 'gemini') {
       const response = await axios.post(
-        `https://generativelanguage.googleapis.com/v1beta/models/${model || 'gemini-3.5-flash'}:generateContent?key=${apiKey}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/${model || 'gemini-2.5-flash'}:generateContent`,
         { contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.2, maxOutputTokens: 8000 } },
-        { headers: { 'Content-Type': 'application/json' }, timeout: 60000 }
+        { headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey }, timeout: 60000 }
       );
       return response.data.candidates?.[0]?.content?.parts?.[0]?.text || '';
     }
@@ -361,7 +361,7 @@ CRITICAL: Return ONLY the corrected code, no explanations or markdown formatting
         name: 'Security Test Adder',
         description: 'Adds missing security tests',
         applicable: (issue) => issue.type === 'security' && issue.description.includes('Missing'),
-        fix: (code, issue) => this.addSecurityTests(code, issue),
+        fix: (code, issue, framework) => this.addSecurityTests(code, issue, framework),
         confidence: 65
       },
 
@@ -577,45 +577,65 @@ beforeAll(async () => {
       .replace(/"key":\s*"[^"]+"/g, '"key": process.env.API_KEY');
   }
 
-  private addSecurityTests(code: string, issue: ValidationIssue): string {
+  private addSecurityTests(code: string, issue: ValidationIssue, framework: TestFramework): string {
     if (issue.description.includes('SQL injection')) {
-      return this.addSQLInjectionTest(code);
+      return this.addSecurityTest(code, framework, 'SQL injection', "' OR '1'='1");
     }
     if (issue.description.includes('XSS')) {
-      return this.addXSSTest(code);
+      return this.addSecurityTest(code, framework, 'XSS', '<script>alert("xss")</script>');
     }
     return code;
   }
 
-  private addSQLInjectionTest(code: string): string {
-    const sqlInjectionTest = `
-    test('should prevent SQL injection attacks', async ({ request }) => {
-      const sqlInjectionPayload = "' OR '1'='1";
-      const response = await request.post('/api/endpoint', {
-        data: { input: sqlInjectionPayload },
-        headers: { 'Authorization': \`Bearer \${authToken}\` }
-      });
-      
-      expect(response.status()).toBe(400); // Should reject malicious input
-    });`;
+  /**
+   * Emit a framework-correct security test. We only synthesise a test for
+   * frameworks whose HTTP-call + assertion syntax we can produce faithfully;
+   * for anything else we return the code UNCHANGED rather than inject broken
+   * Playwright snippets that won't run (the previous behaviour).
+   */
+  private addSecurityTest(
+    code: string,
+    framework: TestFramework,
+    kind: string,
+    payload: string
+  ): string {
+    const title = `should reject ${kind} payloads`;
+    const p = JSON.stringify(payload);
+    let testCode: string | null = null;
 
-    // Insert before the last closing brace of the last describe block
-    return this.insertTestInLastDescribe(code, sqlInjectionTest);
-  }
+    switch (framework) {
+      case 'playwright':
+        testCode = `
+  test('${title}', async ({ request }) => {
+    const response = await request.post('/api/endpoint', { data: { input: ${p} } });
+    expect(response.status()).toBeGreaterThanOrEqual(400);
+  });`;
+        break;
+      case 'jest':
+      case 'vitest':
+      case 'supertest':
+      case 'mocha':
+      case 'mocha-chai':
+        testCode = `
+  it('${title}', async () => {
+    const response = await request(baseURL).post('/api/endpoint').send({ input: ${p} });
+    expect(response.status).toBeGreaterThanOrEqual(400);
+  });`;
+        break;
+      case 'cypress':
+        testCode = `
+  it('${title}', () => {
+    cy.request({ method: 'POST', url: '/api/endpoint', body: { input: ${p} }, failOnStatusCode: false })
+      .its('status').should('be.gte', 400);
+  });`;
+        break;
+      default:
+        // pytest, k6, artillery, karate, restassured, pactum, httpx, puppeteer,
+        // postman: we can't emit faithful syntax here, so don't fabricate it.
+        return code;
+    }
 
-  private addXSSTest(code: string): string {
-    const xssTest = `
-    test('should prevent XSS attacks', async ({ request }) => {
-      const xssPayload = '<script>alert("xss")</script>';
-      const response = await request.post('/api/endpoint', {
-        data: { input: xssPayload },
-        headers: { 'Authorization': \`Bearer \${authToken}\` }
-      });
-      
-      expect(response.status()).toBe(400); // Should reject malicious input
-    });`;
-
-    return this.insertTestInLastDescribe(code, xssTest);
+    return this.insertTestInLastDescribe(code, testCode);
   }
 
   private addTimeoutConfiguration(code: string, framework: TestFramework): string {

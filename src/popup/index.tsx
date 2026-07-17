@@ -1,18 +1,15 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import { ThemeProvider } from '@mui/material/styles';
-import CssBaseline from '@mui/material/CssBaseline';
 import App from './App';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
-import theme from '@/theme';
+import { ThemedProvider } from '@/components/ThemedProvider';
 
 const root = ReactDOM.createRoot(document.getElementById('root') as HTMLElement);
 
 root.render(
-  <ThemeProvider theme={theme}>
-    <CssBaseline />
+  <ThemedProvider>
     <ErrorBoundary>
       <App />
     </ErrorBoundary>
-  </ThemeProvider>
+  </ThemedProvider>
 );

@@ -7,6 +7,11 @@ import { ServiceWorkerManager } from './services/ServiceWorkerManager';
 const backgroundService = BackgroundService.getInstance();
 const serviceWorkerManager = ServiceWorkerManager.getInstance();
 
+// MV3 re-runs this top-level script on every service-worker wake. Rehydrate any
+// in-flight recording sessions from their snapshots BEFORE debugger events start
+// arriving, so a mid-recording restart doesn't drop captured requests.
+void backgroundService.rehydrateActiveSessions();
+
 console.log('📦 Services instantiated');
 
 // Initialize background script

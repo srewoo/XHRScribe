@@ -47,10 +47,24 @@ interface TabPanelProps {
 function TabPanel(props: TabPanelProps) {
   const { children, value, index, ...other } = props;
   return (
-    <div hidden={value !== index} {...other}>
+    <div
+      role="tabpanel"
+      hidden={value !== index}
+      id={`xhrscribe-tabpanel-${index}`}
+      aria-labelledby={`xhrscribe-tab-${index}`}
+      {...other}
+    >
       {value === index && <Box sx={{ pt: 2 }}>{children}</Box>}
     </div>
   );
+}
+
+// ARIA wiring for a tab button so screen readers link it to its panel.
+function a11yTabProps(index: number) {
+  return {
+    id: `xhrscribe-tab-${index}`,
+    'aria-controls': `xhrscribe-tabpanel-${index}`,
+  };
 }
 
 export default function App() {
@@ -217,18 +231,19 @@ export default function App() {
           </Box>
           <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center' }}>
             <Tooltip title="Help & Support">
-              <IconButton size="small" onClick={handleHelpMenuOpen} sx={{ color: 'white' }}>
+              <IconButton size="small" aria-label="Help & Support" onClick={handleHelpMenuOpen} sx={{ color: 'white' }}>
                 <Help sx={{ fontSize: 18 }} />
               </IconButton>
             </Tooltip>
             <Tooltip title="Settings">
-              <IconButton size="small" onClick={handleOpenOptions} sx={{ color: 'white' }}>
+              <IconButton size="small" aria-label="Settings" onClick={handleOpenOptions} sx={{ color: 'white' }}>
                 <Settings sx={{ fontSize: 18 }} />
               </IconButton>
             </Tooltip>
             <Tooltip title={isMaximized ? 'Restore' : 'Maximize'}>
               <IconButton
                 size="small"
+                aria-label={isMaximized ? 'Restore' : 'Maximize'}
                 onClick={() => { setIsMaximized(!isMaximized); sendPanelMessage('XHRSCRIBE_MAXIMIZE'); }}
                 sx={{ color: 'white' }}
               >
@@ -236,12 +251,12 @@ export default function App() {
               </IconButton>
             </Tooltip>
             <Tooltip title="Minimize">
-              <IconButton size="small" onClick={() => sendPanelMessage('XHRSCRIBE_MINIMIZE')} sx={{ color: 'white' }}>
+              <IconButton size="small" aria-label="Minimize" onClick={() => sendPanelMessage('XHRSCRIBE_MINIMIZE')} sx={{ color: 'white' }}>
                 <Minimize sx={{ fontSize: 15 }} />
               </IconButton>
             </Tooltip>
             <Tooltip title="Close">
-              <IconButton size="small" onClick={() => sendPanelMessage('XHRSCRIBE_CLOSE')} sx={{ color: 'white' }}>
+              <IconButton size="small" aria-label="Close" onClick={() => sendPanelMessage('XHRSCRIBE_CLOSE')} sx={{ color: 'white' }}>
                 <Close sx={{ fontSize: 15 }} />
               </IconButton>
             </Tooltip>
@@ -271,12 +286,12 @@ export default function App() {
 
         {/* Tabs */}
         <Box sx={{ borderBottom: 1, borderColor: 'divider', mt: 2 }}>
-          <Tabs value={tabValue} onChange={handleTabChange}>
-            <Tab label="Current" disabled={!recording && !currentSession} />
-            <Tab label={`Sessions (${sessions.length})`} />
-            <Tab label="Import" />
-            <Tab label="Generate" disabled={sessions.length === 0} />
-            <Tab label="Diff" disabled={sessions.length < 2} />
+          <Tabs value={tabValue} onChange={handleTabChange} aria-label="XHRScribe sections">
+            <Tab label="Current" disabled={!recording && !currentSession} {...a11yTabProps(0)} />
+            <Tab label={`Sessions (${sessions.length})`} {...a11yTabProps(1)} />
+            <Tab label="Import" {...a11yTabProps(2)} />
+            <Tab label="Generate" disabled={sessions.length === 0} {...a11yTabProps(3)} />
+            <Tab label="Diff" disabled={sessions.length < 2} {...a11yTabProps(4)} />
           </Tabs>
         </Box>
 

@@ -1,7 +1,7 @@
 {
   "name": "xhrscribe",
-  "version": "3.1.0",
-  "description": "Turn Traffic into Tests ",
+  "version": "3.2.0",
+  "description": "Generate API tests from network traffic. Capture XHR, Fetch & GraphQL and export Jest, Playwright, Cypress & Postman tests.",
   "main": "dist/background.js",
   "directories": {
     "doc": "docs"
@@ -9,8 +9,10 @@
   "scripts": {
     "dev": "webpack --mode=development --watch",
     "build": "node scripts/build-extension.js",
+    "postbuild": "node BUILD_VALIDATION.js",
     "build:webpack": "webpack --mode=production",
     "package": "node scripts/build-extension.js",
+    "validate": "node BUILD_VALIDATION.js",
     "test": "jest",
     "test:unit": "jest --verbose",
     "test:watch": "jest --watch",

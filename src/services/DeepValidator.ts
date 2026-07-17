@@ -415,28 +415,65 @@ export class DeepValidator {
     return { score: Math.max(0, score), issues };
   }
 
+  /**
+   * Remove string/template/regex literals and comments so bracket counting
+   * doesn't misfire on braces or parens that appear inside string content
+   * (e.g. a SQL payload "') OR 1=1 --" or a comment). Not a full parser, but
+   * eliminates the dominant false-positive source of the naive count.
+   */
+  private stripLiteralsAndComments(code: string): string {
+    let out = '';
+    let i = 0;
+    const n = code.length;
+    while (i < n) {
+      const c = code[i];
+      const next = code[i + 1];
+      // Line comment
+      if (c === '/' && next === '/') {
+        i += 2;
+        while (i < n && code[i] !== '\n') i++;
+        continue;
+      }
+      // Block comment
+      if (c === '/' && next === '*') {
+        i += 2;
+        while (i < n && !(code[i] === '*' && code[i + 1] === '/')) i++;
+        i += 2;
+        continue;
+      }
+      // String / template literals
+      if (c === '"' || c === "'" || c === '`') {
+        const quote = c;
+        i++;
+        while (i < n) {
+          if (code[i] === '\\') { i += 2; continue; }
+          if (code[i] === quote) { i++; break; }
+          i++;
+        }
+        continue;
+      }
+      out += c;
+      i++;
+    }
+    return out;
+  }
+
   // Helper methods for validation checks
   private checkBasicSyntax(code: string): string[] {
     const errors: string[] = [];
+    // Count brackets only over code with literals/comments removed.
+    const stripped = this.stripLiteralsAndComments(code);
 
-    // Check for unmatched braces
-    const openBraces = (code.match(/\{/g) || []).length;
-    const closeBraces = (code.match(/\}/g) || []).length;
+    const openBraces = (stripped.match(/\{/g) || []).length;
+    const closeBraces = (stripped.match(/\}/g) || []).length;
     if (openBraces !== closeBraces) {
       errors.push(`Unmatched braces: ${openBraces} opening, ${closeBraces} closing`);
     }
 
-    // Check for unmatched parentheses
-    const openParens = (code.match(/\(/g) || []).length;
-    const closeParens = (code.match(/\)/g) || []).length;
+    const openParens = (stripped.match(/\(/g) || []).length;
+    const closeParens = (stripped.match(/\)/g) || []).length;
     if (openParens !== closeParens) {
       errors.push(`Unmatched parentheses: ${openParens} opening, ${closeParens} closing`);
-    }
-
-    // Check for semicolon issues (basic check)
-    const missingSemicolons = code.match(/\n\s*[^/\s][^;]*[^{\s;]\s*\n/g);
-    if (missingSemicolons && missingSemicolons.length > 5) {
-      errors.push('Multiple potential missing semicolons detected');
     }
 
     return errors;
@@ -562,45 +599,58 @@ export class DeepValidator {
     }, 0);
   }
 
-  private countEdgeCaseTests(code: string): number {
-    const edgePatterns = [
-      /edge.*case/gi,
-      /boundary/gi,
-      /empty.*value/gi,
-      /null.*value/gi,
-      /maximum/gi,
-      /minimum/gi
-    ];
+  /**
+   * Extract the title strings from actual test declarations
+   * (it/test/describe/context('...') or ("...") or (`...`)). These heuristics
+   * are deliberately STRUCTURAL — we count test blocks whose title matches a
+   * concern, not raw keyword occurrences anywhere in the file, so a comment or
+   * an unrelated string can no longer inflate a category count.
+   */
+  private extractTestTitles(code: string): string[] {
+    const titles: string[] = [];
+    const re = /\b(?:it|test|describe|context)\s*\(\s*(['"`])((?:\\.|(?!\1).)*)\1/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(code)) !== null) {
+      titles.push(m[2]);
+    }
+    return titles;
+  }
 
-    return edgePatterns.reduce((count, pattern) => {
-      return count + (code.match(pattern) || []).length;
-    }, 0);
+  private countTitlesMatching(code: string, patterns: RegExp[]): number {
+    const titles = this.extractTestTitles(code);
+    return titles.filter(title => patterns.some(p => p.test(title))).length;
+  }
+
+  private countEdgeCaseTests(code: string): number {
+    return this.countTitlesMatching(code, [
+      /edge.?case/i,
+      /boundary/i,
+      /empty/i,
+      /\bnull\b/i,
+      /maximum|minimum|max\b|min\b/i,
+    ]);
   }
 
   private countSecurityTests(code: string): number {
-    const securityPatterns = [
-      /injection/gi,
-      /xss/gi,
-      /security/gi,
-      /authentication.*bypass/gi
-    ];
-
-    return securityPatterns.reduce((count, pattern) => {
-      return count + (code.match(pattern) || []).length;
-    }, 0);
+    // A security test is one whose title names the concern AND (or) whose body
+    // carries a real attack payload. We count matching test titles; payload
+    // detection is handled by hasSQLInjectionTests / hasXSSTests below.
+    return this.countTitlesMatching(code, [
+      /injection/i,
+      /\bxss\b|cross.?site/i,
+      /security|vulnerab/i,
+      /auth(entication)?.*(bypass|fail)/i,
+      /unauthor/i,
+    ]);
   }
 
   private countPerformanceTests(code: string): number {
-    const perfPatterns = [
-      /performance/gi,
-      /response.*time/gi,
-      /timeout/gi,
-      /load.*test/gi
-    ];
-
-    return perfPatterns.reduce((count, pattern) => {
-      return count + (code.match(pattern) || []).length;
-    }, 0);
+    return this.countTitlesMatching(code, [
+      /performance/i,
+      /response.?time|latency/i,
+      /timeout/i,
+      /load.?test|throughput/i,
+    ]);
   }
 
   private hasErrorCodeTest(code: string, errorCode: string): boolean {
@@ -692,11 +742,30 @@ export class DeepValidator {
   }
 
   private hasSQLInjectionTests(code: string): boolean {
-    return code.includes('SQL') || code.includes('injection') || code.includes("' OR '1'='1");
+    // Require an actual injection payload, not just the word "SQL". A test that
+    // merely mentions SQL isn't an injection test.
+    const payloads = [
+      /'\s*OR\s*'?1'?\s*=\s*'?1/i,   // ' OR '1'='1
+      /;\s*DROP\s+TABLE/i,
+      /UNION\s+SELECT/i,
+      /--\s*$/m,                       // trailing SQL comment
+      /'\s*--/,                        // ' --
+      /\bOR\s+1\s*=\s*1\b/i,
+    ];
+    return payloads.some(p => p.test(code));
   }
 
   private hasXSSTests(code: string): boolean {
-    return code.includes('XSS') || code.includes('<script>') || code.includes('xss');
+    // Require an actual XSS payload, not just the word "XSS".
+    const payloads = [
+      /<script\b/i,
+      /<img[^>]+onerror\s*=/i,
+      /javascript:/i,
+      /onerror\s*=/i,
+      /<svg[^>]+onload/i,
+      /alert\s*\(\s*['"`]?xss/i,
+    ];
+    return payloads.some(p => p.test(code));
   }
 
   private hasTimeoutConfiguration(code: string, _framework: TestFramework): boolean {
@@ -717,15 +786,11 @@ export class DeepValidator {
   }
 
   private countBusinessRuleTests(code: string): number {
-    const businessPatterns = [
-      /business.*logic/gi,
-      /business.*rule/gi,
-      /domain.*logic/gi
-    ];
-
-    return businessPatterns.reduce((count, pattern) => {
-      return count + (code.match(pattern) || []).length;
-    }, 0);
+    return this.countTitlesMatching(code, [
+      /business.*(logic|rule)/i,
+      /domain.*logic/i,
+      /validation|invariant|constraint/i,
+    ]);
   }
 
   private calculateOverallScore(breakdown: DeepValidationResult['breakdown']): number {

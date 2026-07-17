@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Container,
   Paper,
@@ -21,6 +21,11 @@ import {
   Chip,
   IconButton,
   InputAdornment,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogContentText,
+  DialogActions,
 } from '@mui/material';
 import Save from '@mui/icons-material/Save';
 import Visibility from '@mui/icons-material/Visibility';
@@ -48,10 +53,23 @@ interface TabPanelProps {
 function TabPanel(props: TabPanelProps) {
   const { children, value, index, ...other } = props;
   return (
-    <div hidden={value !== index} {...other}>
+    <div
+      role="tabpanel"
+      hidden={value !== index}
+      id={`xhrscribe-options-tabpanel-${index}`}
+      aria-labelledby={`xhrscribe-options-tab-${index}`}
+      {...other}
+    >
       {value === index && <Box sx={{ pt: 3 }}>{children}</Box>}
     </div>
   );
+}
+
+function a11yTabProps(index: number) {
+  return {
+    id: `xhrscribe-options-tab-${index}`,
+    'aria-controls': `xhrscribe-options-tabpanel-${index}`,
+  };
 }
 
 export default function OptionsApp() {
@@ -62,6 +80,17 @@ export default function OptionsApp() {
     openai: 'idle', anthropic: 'idle', gemini: 'idle'
   });
   const [snackbar, setSnackbar] = useState({ open: false, message: '', severity: 'success' as 'success' | 'error' });
+  // Promise-based confirm dialog (replaces window.confirm() — plan.md 6.2).
+  const [confirmState, setConfirmState] = useState<{ title: string; message: string; confirmLabel: string } | null>(null);
+  const confirmResolveRef = useRef<((v: boolean) => void) | null>(null);
+  const askConfirm = (opts: { title: string; message: string; confirmLabel: string }) =>
+    new Promise<boolean>((resolve) => { confirmResolveRef.current = resolve; setConfirmState(opts); });
+  const resolveConfirm = (v: boolean) => {
+    setConfirmState(null);
+    const r = confirmResolveRef.current;
+    confirmResolveRef.current = null;
+    r?.(v);
+  };
   const [customPattern, setCustomPattern] = useState('');
   const [includeDomainsText, setIncludeDomainsText] = useState<string>('');
   const [excludeDomainsText, setExcludeDomainsText] = useState<string>('');
@@ -76,14 +105,13 @@ export default function OptionsApp() {
     try {
       const savedSettings = await storageService.getSettings();
       if (savedSettings) {
-        console.log('Loaded settings:', savedSettings);
+        // NOTE: never log `savedSettings` — it contains decrypted API keys.
         setSettings(savedSettings);
         setIncludeDomainsText(savedSettings.filtering.includeDomains.join(', '));
         setExcludeDomainsText(savedSettings.filtering.excludeDomains.join(', '));
       } else {
         // Set defaults
         const defaults = getDefaultSettings();
-        console.log('Using default settings:', defaults);
         setSettings(defaults);
         setIncludeDomainsText(defaults.filtering.includeDomains.join(', '));
         setExcludeDomainsText(defaults.filtering.excludeDomains.join(', '));
@@ -98,7 +126,6 @@ export default function OptionsApp() {
       });
       // Use defaults
       const defaults = getDefaultSettings();
-      console.log('Using default settings after error:', defaults);
       setSettings(defaults);
       setIncludeDomainsText(defaults.filtering.includeDomains.join(', '));
       setExcludeDomainsText(defaults.filtering.excludeDomains.join(', '));
@@ -156,7 +183,7 @@ export default function OptionsApp() {
   };
 
   const handleReset = async () => {
-    if (window.confirm('Are you sure you want to reset all settings to defaults?')) {
+    if (await askConfirm({ title: 'Reset settings', message: 'Are you sure you want to reset all settings to defaults?', confirmLabel: 'Reset' })) {
       const defaults = getDefaultSettings();
       setSettings(defaults);
       setIncludeDomainsText(defaults.filtering.includeDomains.join(', '));
@@ -166,7 +193,7 @@ export default function OptionsApp() {
   };
 
   const handleResetCorruptedData = async () => {
-    if (window.confirm('This will clear all encrypted data (API keys and sessions) to fix corruption issues. Continue?')) {
+    if (await askConfirm({ title: 'Clear encrypted data', message: 'This will clear all encrypted data (API keys and sessions) to fix corruption issues. Continue?', confirmLabel: 'Clear data' })) {
       try {
         await storageService.resetCorruptedData();
         await loadSettings();
@@ -207,7 +234,8 @@ export default function OptionsApp() {
           timeout: 10000,
         });
       } else if (provider === 'gemini') {
-        await axios.get(`https://generativelanguage.googleapis.com/v1/models?key=${key}`, {
+        await axios.get('https://generativelanguage.googleapis.com/v1/models', {
+          headers: { 'x-goog-api-key': key },
           timeout: 10000,
         });
       }
@@ -261,11 +289,11 @@ export default function OptionsApp() {
 
         {/* Tabs */}
         <Box sx={{ borderBottom: 1, borderColor: 'divider' }}>
-          <Tabs value={tabValue} onChange={(e, v) => setTabValue(v)}>
-            <Tab icon={<Code />} label="API Keys" />
-            <Tab icon={<Security />} label="Privacy" />
-            <Tab icon={<FilterList />} label="Filtering" />
-            <Tab icon={<AttachMoney />} label="Advanced" />
+          <Tabs value={tabValue} onChange={(e, v) => setTabValue(v)} aria-label="Settings sections">
+            <Tab icon={<Code />} label="API Keys" {...a11yTabProps(0)} />
+            <Tab icon={<Security />} label="Privacy" {...a11yTabProps(1)} />
+            <Tab icon={<FilterList />} label="Filtering" {...a11yTabProps(2)} />
+            <Tab icon={<AttachMoney />} label="Advanced" {...a11yTabProps(3)} />
           </Tabs>
         </Box>
 
@@ -286,7 +314,7 @@ export default function OptionsApp() {
                     const providerModels: Record<AIProvider, AIModel> = {
                       openai: 'gpt-4.1-mini',
                       anthropic: 'claude-sonnet-4-6',
-                      gemini: 'gemini-3.5-flash',
+                      gemini: 'gemini-2.5-flash',
                       local: 'llama-3.2',
                     };
                     setSettings({
@@ -312,8 +340,8 @@ export default function OptionsApp() {
                   label="AI Model"
                 >
                   {settings.aiProvider === 'openai' && [
-                    <MenuItem key="gpt-5.5" value="gpt-5.5">GPT-5.5 (Most Capable)</MenuItem>,
-                    <MenuItem key="gpt-5.4-mini" value="gpt-5.4-mini">GPT-5.4 Mini (Fast)</MenuItem>,
+                    <MenuItem key="gpt-4o" value="gpt-4o">GPT-4o (Most Capable)</MenuItem>,
+                    <MenuItem key="gpt-4o-mini" value="gpt-4o-mini">GPT-4o Mini (Fast)</MenuItem>,
                     <MenuItem key="gpt-4.1" value="gpt-4.1">GPT-4.1 (1M context)</MenuItem>,
                     <MenuItem key="gpt-4.1-mini" value="gpt-4.1-mini">GPT-4.1 Mini (Cheapest)</MenuItem>,
                   ]}
@@ -323,9 +351,9 @@ export default function OptionsApp() {
                     <MenuItem key="claude-haiku-4-5-20251001" value="claude-haiku-4-5-20251001">Claude Haiku 4.5 (Fast & Cheap)</MenuItem>,
                   ]}
                   {settings.aiProvider === 'gemini' && [
-                    <MenuItem key="gemini-3.5-flash" value="gemini-3.5-flash">Gemini 3.5 Flash (Latest)</MenuItem>,
+                    <MenuItem key="gemini-2.5-flash" value="gemini-2.5-flash">Gemini 2.5 Flash (Latest)</MenuItem>,
                     <MenuItem key="gemini-2.5-pro" value="gemini-2.5-pro">Gemini 2.5 Pro</MenuItem>,
-                    <MenuItem key="gemini-3.1-flash-lite" value="gemini-3.1-flash-lite">Gemini 3.1 Flash-Lite (Cheapest)</MenuItem>,
+                    <MenuItem key="gemini-2.0-flash" value="gemini-2.0-flash">Gemini 2.0 Flash (Cheapest)</MenuItem>,
                   ]}
                   {settings.aiProvider === 'local' && [
                     <MenuItem key="llama-3.2" value="llama-3.2">Llama 3.2</MenuItem>,
@@ -419,7 +447,11 @@ export default function OptionsApp() {
             })}
 
             <Alert severity="info" sx={{ mt: 2 }}>
-              API keys are encrypted and stored securely. Never share your API keys.
+              API keys are encrypted at rest in Chrome&apos;s extension storage and are
+              sent only to the provider you select. Because the extension must be
+              able to decrypt them to make requests, this protects against casual
+              inspection but is not a defence against malware with access to this
+              profile. Never share your API keys, and prefer scoped/revocable keys.
             </Alert>
 
           </TabPanel>
@@ -726,6 +758,18 @@ export default function OptionsApp() {
           {snackbar.message}
         </Alert>
       </Snackbar>
+
+      {/* Confirm dialog — replaces window.confirm() (plan.md 6.2) */}
+      <Dialog open={confirmState !== null} onClose={() => resolveConfirm(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>{confirmState?.title}</DialogTitle>
+        <DialogContent>
+          <DialogContentText sx={{ whiteSpace: 'pre-line' }}>{confirmState?.message}</DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => resolveConfirm(false)}>Cancel</Button>
+          <Button variant="contained" color="warning" onClick={() => resolveConfirm(true)}>{confirmState?.confirmLabel}</Button>
+        </DialogActions>
+      </Dialog>
 
       {/* Footer with Help and Privacy Links */}
       <Box sx={{ mt: 4, pt: 3, borderTop: 1, borderColor: 'divider' }}>

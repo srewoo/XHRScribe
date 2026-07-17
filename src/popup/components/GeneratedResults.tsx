@@ -19,6 +19,7 @@ import Api from '@mui/icons-material/Api';
 import AccountTree from '@mui/icons-material/AccountTree';
 import VpnKey from '@mui/icons-material/VpnKey';
 import Security from '@mui/icons-material/Security';
+import { CodeBlock } from './CodeBlock';
 import { RecordingSession, GeneratedTest } from '@/types';
 import { getEndpointSignature } from '@/services/EndpointGrouper';
 
@@ -154,11 +155,7 @@ export default function GeneratedResults({
           </Box>
         </Box>
 
-        <Paper variant="outlined" sx={{ p: 1, bgcolor: 'grey.50', maxHeight: 300, overflow: 'auto' }}>
-          <pre style={{ margin: 0, fontSize: 11, fontFamily: 'monospace' }}>
-            {generatedCode}
-          </pre>
-        </Paper>
+        <CodeBlock code={generatedCode} maxHeight={300} />
 
         {/* Companion artifacts derived from the same captured session */}
         <Box sx={{ mt: 1.5 }}>
@@ -226,7 +223,7 @@ export default function GeneratedResults({
 
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
             <Chip
-              label={`Quality Score: ${latestTest?.qualityScore || 8}/10`}
+              label={`Quality Score: ${latestTest?.qualityScore ?? 0}/10`}
               color={hasWarnings ? 'warning' : 'success'}
               size="small"
             />

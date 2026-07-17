@@ -17,6 +17,7 @@ if (typeof (globalThis as any).TextDecoder === 'undefined') {
     sendMessage: jest.fn(),
     onMessage: {
       addListener: jest.fn(),
+      removeListener: jest.fn(),
     },
     onInstalled: {
       addListener: jest.fn(),
@@ -38,6 +39,15 @@ if (typeof (globalThis as any).TextDecoder === 'undefined') {
       get: jest.fn(),
       set: jest.fn(),
       clear: jest.fn(),
+    },
+    session: {
+      get: jest.fn().mockResolvedValue({}),
+      set: jest.fn().mockResolvedValue(undefined),
+      remove: jest.fn().mockResolvedValue(undefined),
+    },
+    onChanged: {
+      addListener: jest.fn(),
+      removeListener: jest.fn(),
     },
   },
   tabs: {

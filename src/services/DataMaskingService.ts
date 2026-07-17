@@ -6,7 +6,9 @@ export class DataMaskingService {
   // Patterns for sensitive data detection
   private patterns = {
     email: /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g,
-    phone: /(\+\d{1,3}[-.\s]?)?\(?\d{1,4}\)?[-.\s]?\d{1,4}[-.\s]?\d{1,9}/g,
+    // Require phone-like structure with separators so plain numeric IDs
+    // (order numbers, timestamps) aren't over-masked.
+    phone: /(?:\+\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]\d{3}[-.\s]\d{4}\b/g,
     ssn: /\d{3}-\d{2}-\d{4}/g,
     creditCard: /\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b/g,
     apiKey: /(api[_-]?key|apikey|api_secret|access[_-]?token|auth[_-]?token|authentication[_-]?token|bearer)\s*[:=]\s*["']?[a-zA-Z0-9\-._~+/]{20,}["']?/gi,
@@ -14,7 +16,9 @@ export class DataMaskingService {
     jwt: /eyJ[a-zA-Z0-9_-]+\.eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+/g,
     ipAddress: /\b(?:\d{1,3}\.){3}\d{1,3}\b/g,
     uuid: /[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/gi,
-    base64: /(?:[A-Za-z0-9+/]{4}){10,}(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?/g,
+    // Well-known opaque secret formats that carry no surrounding key= context
+    // (so the apiKey pattern above misses them). Conservative, low false-positive.
+    opaqueSecret: /\b(sk-[a-zA-Z0-9]{20,}|sk-proj-[a-zA-Z0-9_-]{20,}|sk-ant-[a-zA-Z0-9_-]{20,}|ghp_[a-zA-Z0-9]{36}|gho_[a-zA-Z0-9]{36}|github_pat_[a-zA-Z0-9_]{50,}|xox[baprs]-[a-zA-Z0-9-]{10,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|glpat-[a-zA-Z0-9_-]{20})\b/g,
   };
 
   private customPatterns: RegExp[] = [];
@@ -67,7 +71,7 @@ export class DataMaskingService {
   private maskUrl(url: string, options?: MaskingOptions): string {
     try {
       const urlObj = new URL(url);
-      
+
       // Mask query parameters
       const params = new URLSearchParams(urlObj.search);
       const maskedParams = new URLSearchParams();
@@ -81,6 +85,23 @@ export class DataMaskingService {
       });
 
       urlObj.search = maskedParams.toString();
+
+      // Mask PII embedded in path segments (e.g. /users/john@example.com,
+      // /accounts/123-45-6789) — decode per segment so pattern matching sees
+      // the raw value, then re-encode. Previously only the query was masked.
+      if (urlObj.pathname && urlObj.pathname !== '/') {
+        urlObj.pathname = urlObj.pathname
+          .split('/')
+          .map(seg => {
+            if (!seg) return seg;
+            let decoded = seg;
+            try { decoded = decodeURIComponent(seg); } catch { /* keep raw */ }
+            const masked = this.maskSensitiveData(decoded, options);
+            return masked === decoded ? seg : encodeURIComponent(masked);
+          })
+          .join('/');
+      }
+
       return urlObj.toString();
     } catch {
       return this.maskSensitiveData(url, options);
@@ -96,8 +117,8 @@ export class DataMaskingService {
     Object.entries(headers).forEach(([key, value]) => {
       const keyLower = key.toLowerCase();
       
-      // Always mask authorization headers
-      if (keyLower.includes('auth') || keyLower.includes('token') || keyLower === 'cookie') {
+      // Always mask authorization headers (incl. Set-Cookie, X-Api-Key, etc.)
+      if (keyLower.includes('auth') || keyLower.includes('token') || keyLower.includes('cookie') || keyLower.includes('api-key') || keyLower.includes('apikey')) {
         maskedHeaders[key] = '***MASKED***';
       } else if (this.isSensitiveKey(key)) {
         maskedHeaders[key] = '***MASKED***';
@@ -177,6 +198,11 @@ export class DataMaskingService {
       masked = masked.replace(this.patterns.jwt, '***JWT***');
     }
 
+    // Well-known secret token formats are always masked when token masking is on.
+    if (options?.maskApiKeys !== false) {
+      masked = masked.replace(this.patterns.opaqueSecret, '***SECRET***');
+    }
+
     if (options?.maskIPs !== false) {
       masked = masked.replace(this.patterns.ipAddress, (match) => {
         // Don't mask localhost
@@ -238,6 +264,7 @@ export class DataMaskingService {
       { pattern: this.patterns.password, type: 'password' },
       { pattern: this.patterns.jwt, type: 'jwt' },
       { pattern: this.patterns.uuid, type: 'uuid' },
+      { pattern: this.patterns.opaqueSecret, type: 'secret' },
     ];
 
     checks.forEach(({ pattern, type }) => {

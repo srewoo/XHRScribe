@@ -444,7 +444,7 @@ export class AuthFlowAnalyzer {
     return undefined;
   }
 
-  private detectGrantType(requests: NetworkRequest[]): AuthFlow['oauthFlow']['grantType'] {
+  private detectGrantType(requests: NetworkRequest[]): NonNullable<AuthFlow['oauthFlow']>['grantType'] {
     for (const request of requests) {
       const body = request.requestBody;
       if (body && typeof body === 'string') {

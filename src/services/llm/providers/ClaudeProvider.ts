@@ -6,6 +6,12 @@ import { AuthFlow } from '../../AuthFlowAnalyzer';
 import { normalizePath } from '../../EndpointGrouper';
 import { PromptBuilder } from '../PromptBuilder';
 import { Logger } from '../../logging/Logger';
+import { UNTRUSTED_DATA_INSTRUCTION, wrapUntrusted } from '../promptSafety';
+import { isGraphQLEndpoint, extractGraphQLOperation, getModelTokenLimit } from '../providerShared';
+
+const SYSTEM_PROMPT =
+  'You are an expert API test engineer. Generate clean, production-ready test code. ' +
+  UNTRUSTED_DATA_INSTRUCTION;
 
 interface ClaudeErrorResponse {
   error?: {
@@ -38,7 +44,7 @@ export class ClaudeProvider implements LLMProvider {
     await preloadEncoder(); // load the BPE ranks chunk for accurate counts
     const prompt = this.buildPrompt(harData, options, authFlow, customAuthGuide);
     const promptTokens = this.countTokens(prompt);
-    const systemPromptTokens = this.countTokens('You are an expert API test engineer. Generate clean, production-ready test code.');
+    const systemPromptTokens = this.countTokens(SYSTEM_PROMPT);
     const totalInputTokens = promptTokens + systemPromptTokens;
 
     // Check token limits before making API call - leave more room for complete responses
@@ -61,7 +67,7 @@ export class ClaudeProvider implements LLMProvider {
                 content: prompt,
               },
             ],
-            system: 'You are an expert API test engineer. Generate clean, production-ready test code.',
+            system: SYSTEM_PROMPT,
             max_tokens: Math.min(32000, Math.floor((modelLimit - totalInputTokens) * 0.95)), // Use up to 95% of remaining tokens
             temperature: 0.7,
           },
@@ -77,7 +83,13 @@ export class ClaudeProvider implements LLMProvider {
           }
         );
 
-        const rawCode = response.data.content[0].text;
+        // Validate the response shape before use — a malformed/blocked reply
+        // would otherwise throw a cryptic "cannot read property 'text'" (plan.md 3.2).
+        const block = response.data?.content?.[0];
+        const rawCode = typeof block?.text === 'string' ? block.text : '';
+        if (!rawCode) {
+          throw new Error('Claude returned an unexpected or empty response (no text content).');
+        }
         const generatedCode = PromptBuilder.getInstance().sanitizeGeneratedCode(rawCode, options.framework);
         const completionTokens = this.countTokens(generatedCode);
         const totalTokens = totalInputTokens + completionTokens;
@@ -150,11 +162,11 @@ export class ClaudeProvider implements LLMProvider {
   }
 
   estimateCost(tokenCount: number, model: string): number {
-    // Claude pricing as of 2024
+    // Anthropic list pricing, USD per 1K tokens (input / output).
     const pricing: Record<string, { input: number; output: number }> = {
-      'claude-opus-4-8': { input: 0.015, output: 0.075 },
-      'claude-sonnet-4-6': { input: 0.003, output: 0.015 },
-      'claude-haiku-4-5-20251001': { input: 0.0008, output: 0.004 },
+      'claude-opus-4-8': { input: 0.005, output: 0.025 },       // $5 / $25 per 1M
+      'claude-sonnet-4-6': { input: 0.003, output: 0.015 },     // $3 / $15 per 1M
+      'claude-haiku-4-5-20251001': { input: 0.001, output: 0.005 }, // $1 / $5 per 1M
     };
 
     const modelPricing = pricing[model] || pricing['claude-sonnet-4-6'];
@@ -170,39 +182,21 @@ export class ClaudeProvider implements LLMProvider {
   }
 
   private getMaxTokens(model: string): number {
-    const limits: Record<string, number> = {
-      'claude-opus-4-8': 200000,
-      'claude-sonnet-4-6': 200000,
-      'claude-haiku-4-5-20251001': 200000,
-    };
-    return limits[model] || 200000;
+    return getModelTokenLimit(model, 200000);
   }
 
   private buildPrompt(harData: HARData, options: GenerationOptions, authFlow?: AuthFlow, customAuthGuide?: string): string {
     const framework = options.framework;
     const entries = harData.entries; // Process ALL entries
 
-    let prompt = `🔥🔥🔥 NUCLEAR ALERT - NO INCOMPLETE RESPONSES ALLOWED 🔥🔥🔥
+    const casesPerEndpoint = options.testCoverage === 'minimal' ? '1-2' : options.testCoverage === 'exhaustive' ? '8-12' : '3-5';
+    let prompt = `Generate complete, production-ready ${framework} test code for all ${entries.length} endpoint(s) below.
 
-I AM PAYING FOR COMPLETE TEST GENERATION. INCOMPLETE RESPONSES WILL BE REJECTED.
-
-YOU MUST GENERATE COMPLETE, FULLY-IMPLEMENTED ${framework} TEST CODE FOR ALL ${entries.length} ENDPOINTS.
-
-🚫 ABSOLUTELY FORBIDDEN - INSTANT REJECTION:
-❌ "Continue adding more endpoint tests..." 
-❌ "Follow the same pattern for remaining endpoints"
-❌ "Add more tests here" or "TODO: implement more tests"
-❌ "Similar tests can be added for other endpoints"
-❌ "You can add more tests..." or "Additional tests..."
-❌ "Repeat for other endpoints" or "...and so on"
-❌ Any variation of "continue", "add more", "follow pattern"
-❌ Stopping after generating only some endpoints
-
-🔥 MANDATORY REQUIREMENTS:
-✅ GENERATE ACTUAL WORKING CODE FOR ALL ${entries.length} ENDPOINTS
-✅ Each endpoint gets a complete test suite with ${options.testCoverage === 'minimal' ? '1-2' : options.testCoverage === 'exhaustive' ? '8-12' : '3-5'} real test cases
-✅ NO placeholder comments, NO template suggestions
-✅ Production-ready, runnable code that I can use immediately
+Requirements:
+- Write fully-implemented test cases for every endpoint — do not stop partway through.
+- Give each endpoint ${casesPerEndpoint} real, runnable test cases.
+- Do not emit placeholder comments, TODOs, or "follow the same pattern for the rest" shortcuts — write the actual code for each endpoint.
+- The output must run as-is with no further editing.
 
 `;
     
@@ -316,7 +310,7 @@ ${entry.request.cookies && entry.request.cookies.length > 0
   : 'No cookies'}
 
 📦 REQUEST BODY:
-${requestBody ? requestBody.substring(0, 1500) : 'No request body'}
+${requestBody ? wrapUntrusted(requestBody.substring(0, 1500)) : 'No request body'}
 
 📥 RESPONSE DETAILS:
 Expected Status: ${statusCode}
@@ -330,7 +324,7 @@ ${entry.response.cookies && entry.response.cookies.length > 0
   : 'No response cookies'}
 
 📦 RESPONSE BODY:
-${responseBody ? responseBody.substring(0, 1500) : 'No response'}
+${responseBody ? wrapUntrusted(responseBody.substring(0, 1500)) : 'No response'}
 
 🚨 MANDATORY: Generate ALL these test types:
 - 1 Happy path test (valid request → ${statusCode})
@@ -581,71 +575,14 @@ ${pb.getQualityGateSection()}
     return suggestions;
   }
 
+  // GraphQL detection / operation extraction / hashing are shared verbatim
+  // across all providers — see providerShared.ts. These thin wrappers keep the
+  // existing `this.*` call sites working while removing the duplicated logic.
   private isGraphQLEndpoint(pathname: string, request: any): boolean {
-    return pathname.includes('graphql') || pathname.includes('gql') || 
-           (request.postData?.text && this.looksLikeGraphQL(request.postData.text));
-  }
-
-  private looksLikeGraphQL(requestBody: any): boolean {
-    if (!requestBody) return false;
-    
-    try {
-      const bodyStr = typeof requestBody === 'string' ? requestBody : JSON.stringify(requestBody);
-      const body = typeof requestBody === 'object' ? requestBody : JSON.parse(bodyStr);
-      
-      // Check for GraphQL query patterns
-      return !!(body.query || body.operationName || body.variables || 
-                bodyStr.includes('query ') || bodyStr.includes('mutation ') || 
-                bodyStr.includes('subscription '));
-    } catch {
-      return false;
-    }
+    return isGraphQLEndpoint(pathname, request);
   }
 
   private extractGraphQLOperation(request: any): string | null {
-    const requestBody = request.postData?.text;
-    if (!requestBody) return null;
-    
-    try {
-      const bodyStr = typeof requestBody === 'string' ? requestBody : JSON.stringify(requestBody);
-      const body = typeof requestBody === 'object' ? requestBody : JSON.parse(bodyStr);
-      
-      // Priority 1: Use operationName if available
-      if (body.operationName && typeof body.operationName === 'string') {
-        return body.operationName;
-      }
-      
-      // Priority 2: Extract operation name from query string
-      if (body.query && typeof body.query === 'string') {
-        const queryMatch = body.query.match(/(?:query|mutation|subscription)\s+([a-zA-Z][a-zA-Z0-9_]*)/);
-        if (queryMatch && queryMatch[1]) {
-          return queryMatch[1];
-        }
-        
-        // Priority 3: Use operation type + hash for unnamed operations
-        const operationType = body.query.trim().match(/^(query|mutation|subscription)/);
-        if (operationType) {
-          const queryHash = this.simpleHash(body.query);
-          return `${operationType[1]}_${queryHash}`;
-        }
-      }
-      
-      // Priority 4: Fallback to request body hash
-      const bodyHash = this.simpleHash(bodyStr);
-      return `operation_${bodyHash}`;
-      
-    } catch {
-      return null;
-    }
-  }
-
-  private simpleHash(str: string): string {
-    let hash = 0;
-    for (let i = 0; i < str.length; i++) {
-      const char = str.charCodeAt(i);
-      hash = ((hash << 5) - hash) + char;
-      hash = hash & hash; // Convert to 32-bit integer
-    }
-    return Math.abs(hash).toString(16).substring(0, 8);
+    return extractGraphQLOperation(request);
   }
 }

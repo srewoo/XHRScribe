@@ -7,6 +7,7 @@ import {
   Chip,
   Typography,
   IconButton,
+  Button,
   Collapse,
   Paper,
   TextField,
@@ -27,9 +28,16 @@ interface RequestListProps {
   onToggleSelect?: (id: string) => void;
 }
 
+// Render only this many rows at once; a session can hold thousands of requests
+// and mounting them all janks the popup. Rows are expandable (variable height)
+// so a fixed-size virtual list is unsuitable — we window by render cap instead
+// and let the user reveal more on demand. (plan.md 6.1)
+const RENDER_CAP = 150;
+
 export default function RequestList({ requests, selectionMode, selectedIds, onToggleSelect }: RequestListProps) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [filter, setFilter] = useState('');
+  const [visibleCount, setVisibleCount] = useState(RENDER_CAP);
 
   const getMethodColor = (method: string) => {
     const colors: Record<string, any> = {
@@ -76,6 +84,12 @@ export default function RequestList({ requests, selectionMode, selectedIds, onTo
     );
   });
 
+  // Reset the render window whenever the filter changes.
+  React.useEffect(() => { setVisibleCount(RENDER_CAP); }, [filter]);
+
+  const visibleRequests = filteredRequests.slice(0, visibleCount);
+  const hiddenCount = filteredRequests.length - visibleRequests.length;
+
   const toggleExpand = (id: string) => {
     setExpandedId(expandedId === id ? null : id);
   };
@@ -111,7 +125,7 @@ export default function RequestList({ requests, selectionMode, selectedIds, onTo
 
       {/* Request List */}
       <List sx={{ py: 0 }}>
-        {filteredRequests.map((request) => (
+        {visibleRequests.map((request) => (
           <Paper key={request.id} elevation={1} sx={{ mb: 1 }}>
             <ListItem
               onClick={() => selectionMode ? onToggleSelect?.(request.id) : toggleExpand(request.id)}
@@ -273,6 +287,17 @@ export default function RequestList({ requests, selectionMode, selectedIds, onTo
           </Paper>
         ))}
       </List>
+
+      {hiddenCount > 0 && (
+        <Box sx={{ textAlign: 'center', py: 1 }}>
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
+            Showing {visibleRequests.length} of {filteredRequests.length} requests
+          </Typography>
+          <Button size="small" onClick={() => setVisibleCount((c) => c + RENDER_CAP)}>
+            Show {Math.min(hiddenCount, RENDER_CAP)} more
+          </Button>
+        </Box>
+      )}
     </Box>
   );
 }

@@ -7,6 +7,8 @@ import { normalizePath, getEndpointSignature } from './EndpointGrouper';
 import { StorageService } from './StorageService';
 import { AuthFlowAnalyzer } from './AuthFlowAnalyzer';
 import { Logger } from '@/services/logging/Logger';
+import { RateLimiter } from '@/services/rateLimit/RateLimiter';
+import { countTokens as countTokensLazy } from '@/services/llm/tokenizer';
 
 export class AIService {
   private static instance: AIService;
@@ -102,6 +104,32 @@ export class AIService {
   async generateTests(session: RecordingSession, options: GenerationOptions, excludedEndpoints?: Set<string>, progressCallback?: (current: number, total: number, stage: string, endpoint?: string) => void): Promise<GeneratedTest> {
     this.abortController = new AbortController();
 
+    // Return a cached suite when the same session + options were generated
+    // recently and caching is enabled — avoids paying for identical LLM calls.
+    const { CacheService } = await import('@/services/cache/CacheService');
+    const cache = CacheService.getInstance();
+    let cacheKey: string | null = null;
+    let cachingEnabled = false;
+    try {
+      const cfg = await this.storageService.getSettings();
+      cachingEnabled = cfg?.advanced?.cacheResponses !== false;
+      if (cachingEnabled) {
+        // Load any entries persisted by a previous service-worker lifetime.
+        await cache.hydrate();
+        cacheKey = CacheService.generateKey(session.id, {
+          options,
+          excluded: excludedEndpoints ? Array.from(excludedEndpoints).sort() : [],
+        });
+        const cached = cache.get(cacheKey) as GeneratedTest | null;
+        if (cached) {
+          this.abortController = null;
+          return { ...cached, warnings: [...(cached.warnings || []), 'Served from cache'] };
+        }
+      }
+    } catch {
+      // Cache is best-effort; fall through to a live generation.
+    }
+
     // Load learned correction patterns and append to custom prompt
     try {
       const { CorrectionTracker } = await import('./CorrectionTracker');
@@ -183,6 +211,10 @@ export class AIService {
       Logger.getInstance().warn('DeepValidator failed, skipping validation', { error }, 'AIService');
     }
 
+    if (cachingEnabled && cacheKey) {
+      cache.set(cacheKey, result);
+    }
+
     this.abortController = null;
     return result;
   }
@@ -239,11 +271,14 @@ export class AIService {
 
       // Get the appropriate provider
       const provider = this.getProvider(apiSettings, options.provider);
+      // Alternate providers to try if the primary fails on an endpoint.
+      const fallbackTypes = this.getFallbackProviderTypes(apiSettings, options.provider);
 
       // Generate tests for each endpoint individually
       const individualTests: string[] = [];
       const warnings: string[] = [];
-      let qualityScore = 10;
+      const successScores: number[] = [];
+      const failedEndpoints: string[] = [];
 
       // Process endpoints in parallel batches
       const batchSize = 5; // Process 5 endpoints at a time
@@ -272,6 +307,10 @@ export class AIService {
               // Create single-endpoint HAR data
               const singleEndpointHAR = this.createSingleEndpointHAR(endpoint);
 
+              // Throttle to the provider's requests-per-minute budget before
+              // issuing the real API call (client-side rate limiting).
+              await RateLimiter.getInstance().waitForSlot(options.provider);
+
               // Generate tests for this specific endpoint
               const endpointTest = await provider.generateTests(singleEndpointHAR, {
                 ...options,
@@ -286,7 +325,8 @@ export class AIService {
                 endpoint: endpointName,
                 code: endpointTest.code,
                 qualityScore: endpointTest.qualityScore,
-                warnings: endpointTest.warnings || []
+                warnings: endpointTest.warnings || [],
+                failed: false
               };
             } catch (error: any) {
               const errorDetail = error.response
@@ -302,13 +342,42 @@ export class AIService {
                 continue;
               }
 
-              // All retries exhausted
-              Logger.getInstance().error(`All ${maxRetries + 1} attempts failed for ${endpointName}`, null, 'AIService');
+              // All retries exhausted on the primary provider. Fall back to any
+              // other configured provider (cheap-first) before giving up.
+              // (plan.md 3.5)
+              Logger.getInstance().error(`All ${maxRetries + 1} attempts failed for ${endpointName} on ${options.provider}`, null, 'AIService');
+              for (const fbType of fallbackTypes) {
+                if (this.abortController?.signal.aborted) break;
+                try {
+                  const fbProvider = this.getProvider(apiSettings, fbType);
+                  await RateLimiter.getInstance().waitForSlot(fbType);
+                  const fbHAR = this.createSingleEndpointHAR(endpoint);
+                  const fbTest = await fbProvider.generateTests(
+                    fbHAR,
+                    { ...options, provider: fbType, complexity: 'intermediate' },
+                    authFlow,
+                    customAuthGuide,
+                    this.abortController?.signal
+                  );
+                  Logger.getInstance().warn(`Fallback provider ${fbType} generated ${endpointName} after ${options.provider} failed`, null, 'AIService');
+                  return {
+                    endpoint: endpointName,
+                    code: fbTest.code,
+                    qualityScore: fbTest.qualityScore,
+                    warnings: [...(fbTest.warnings || []), `Generated via fallback provider "${fbType}" after "${options.provider}" failed.`],
+                    failed: false
+                  };
+                } catch (fbError: any) {
+                  Logger.getInstance().warn(`Fallback provider ${fbType} also failed for ${endpointName}: ${fbError?.message || fbError}`, null, 'AIService');
+                }
+              }
+
               return {
                 endpoint: endpointName,
                 code: `// Failed to generate tests for ${endpointName} after ${maxRetries + 1} attempts\n// Error: ${error.message}`,
                 qualityScore: 0,
-                warnings: [`Failed to generate tests after ${maxRetries + 1} attempts: ${error.message}`]
+                warnings: [`Failed to generate tests after ${maxRetries + 1} attempts${fallbackTypes.length ? ` (and ${fallbackTypes.length} fallback provider(s))` : ''}: ${error.message}`],
+                failed: true
               };
             }
           }
@@ -318,7 +387,8 @@ export class AIService {
             endpoint: endpointName,
             code: `// Failed to generate tests for ${endpointName}`,
             qualityScore: 0,
-            warnings: ['Generation failed']
+            warnings: ['Generation failed'],
+            failed: true
           };
         });
 
@@ -327,8 +397,12 @@ export class AIService {
         // Collect results
         batchResults.forEach(result => {
           individualTests.push(result.code);
-          qualityScore = Math.min(qualityScore, result.qualityScore);
           warnings.push(...result.warnings);
+          if (result.failed) {
+            failedEndpoints.push(result.endpoint);
+          } else {
+            successScores.push(result.qualityScore);
+          }
         });
       }
 
@@ -339,19 +413,42 @@ export class AIService {
       const estimatedTokens = this.estimateTokens(mergedTestCode);
       const estimatedCost = provider.estimateCost(estimatedTokens, options.model);
 
-      console.log(`✅ Individual processing complete: ${uniqueEndpoints.length} endpoints processed`);
+      const succeeded = successScores.length;
+      const failed = failedEndpoints.length;
+      console.log(`Individual processing complete: ${succeeded}/${uniqueEndpoints.length} endpoints succeeded, ${failed} failed`);
+
+      // Honest quality score: the average of the endpoints that ACTUALLY
+      // generated. Failed endpoints are excluded from the average (they're
+      // reported separately) but drag nothing artificially upward — there is no
+      // floor. If nothing succeeded, the score is 0.
+      const qualityScore = succeeded > 0
+        ? Math.round((successScores.reduce((a, b) => a + b, 0) / succeeded) * 10) / 10
+        : 0;
+
+      // Surface failures prominently at the top of the warnings list.
+      const summaryWarnings: string[] = [];
+      if (failed > 0) {
+        summaryWarnings.push(
+          `⚠️ ${failed} of ${uniqueEndpoints.length} endpoint(s) failed to generate and are marked with "// Failed" comments: ${failedEndpoints.join(', ')}`
+        );
+      }
+      summaryWarnings.push(
+        `Generated ${succeeded}/${uniqueEndpoints.length} endpoints via individual processing.`
+      );
 
       return {
         id: `test-${Date.now()}`,
         framework: options.framework,
         code: mergedTestCode,
-        qualityScore: Math.max(8, qualityScore), // Individual processing gets bonus points
+        qualityScore,
         estimatedTokens: estimatedTokens,
         estimatedCost: estimatedCost,
-        warnings: warnings.length > 0 ? [
-          `Individual endpoint processing used for guaranteed completeness`,
-          ...warnings
-        ] : [`Individual endpoint processing used for guaranteed completeness`]
+        warnings: [...summaryWarnings, ...warnings],
+        metadata: {
+          generationMode: 'individual',
+          endpointsProcessed: succeeded,
+          failedEndpoints,
+        },
       };
 
     } catch (error) {
@@ -619,8 +716,21 @@ ${setupSection}${testContent}
   }
 
   private estimateTokens(text: string): number {
-    // Simple token estimation (roughly 4 characters per token)
-    return Math.ceil(text.length / 4);
+    // Use the real tokenizer (lazy-loaded) so the surfaced cost estimate is
+    // accurate rather than a chars/4 approximation.
+    return countTokensLazy(text);
+  }
+
+  /**
+   * Ordered list of alternate cloud providers to try when the primary fails,
+   * cheapest first, restricted to providers the user has an API key for and
+   * excluding the primary. The local provider is intentionally excluded — it
+   * requires a running Ollama and would silently change output character.
+   */
+  private getFallbackProviderTypes(settings: any, primary: string): string[] {
+    const cheapFirst = ['gemini', 'openai', 'anthropic'];
+    const keys = settings?.apiKeys || {};
+    return cheapFirst.filter(t => t !== primary && !!keys[t]);
   }
 
   private getProvider(settings: any, providerType: string): any {
@@ -666,921 +776,11 @@ ${setupSection}${testContent}
     return providerInstance;
   }
 
-  private validateHARCompleteness(harData: HARData): {
-    isComplete: boolean;
-    warnings: string[];
-    endpoints: string[];
-  } {
-    const warnings: string[] = [];
-    const endpoints = new Set<string>();
-    
-    harData.entries.forEach(entry => {
-      try {
-        const url = new URL(entry.request.url);
-        const endpoint = `${entry.request.method} ${url.pathname}`;
-        endpoints.add(endpoint);
-      } catch {
-        warnings.push(`Invalid URL format: ${entry.request.url}`);
-        // Still add endpoint with original URL
-        const endpoint = `${entry.request.method} ${entry.request.url}`;
-        endpoints.add(endpoint);
-      }
-    });
-    
-    return {
-      isComplete: warnings.length === 0,
-      warnings,
-      endpoints: Array.from(endpoints)
-    };
-  }
-
-  private checkForPlaceholders(testCode: string): {
-    found: boolean;
-    placeholders: string[];
-  } {
-    const placeholderPatterns = [
-      // Original patterns
-      /\/\/\s*continue\s+adding\s+more.*test/gi,
-      /\/\/\s*add\s+more\s+test/gi,
-      /\/\/\s*repeat\s+for\s+other\s+endpoint/gi,
-      /\/\/\s*similar.*test.*can.*be.*add/gi,
-      /\/\/\s*you.*can.*add.*more/gi,
-      /\/\/\s*additional.*test/gi,
-      /\/\/\s*follow.*same.*pattern/gi,
-      /\/\/\s*implement.*more.*test/gi,
-      /\/\/\s*todo.*implement/gi,
-      /\/\/\s*todo.*add/gi,
-      /\/\/\s*and\s+so\s+on/gi,
-      /\/\/\s*etc\.?/gi,
-      /\/\/\s*\.\.\./gi, // Just "..."
-      /continue\s+this\s+pattern/gi,
-      /follow.*same.*structure/gi,
-      /similar.*test.*can.*be.*added/gi,
-      /you.*can.*add.*more.*test/gi,
-      /remaining.*endpoint.*follow/gi,
-      /additional.*test.*can.*be.*implement/gi
-    ];
-
-    const found: string[] = [];
-    placeholderPatterns.forEach(pattern => {
-      const matches = testCode.match(pattern);
-      if (matches) {
-        found.push(...matches);
-      }
-    });
-
-    return {
-      found: found.length > 0,
-      placeholders: found
-    };
-  }
-
-  private countDescribeBlocks(testCode: string): number {
-    const describePatterns = [
-      /describe\s*\(/g,
-      /test\.describe\s*\(/g,
-      /suite\s*\(/g,
-    ];
-    
-    let totalCount = 0;
-    describePatterns.forEach(pattern => {
-      const matches = testCode.match(pattern) || [];
-      totalCount += matches.length;
-    });
-    
-    return totalCount;
-  }
-
-  private validateTestCoverage(testCode: string, expectedEndpoints: string[]): {
-    coveredEndpoints: string[];
-    missingEndpoints: string[];
-    coveragePercentage: number;
-  } {
-    const coveredEndpoints: string[] = [];
-    const missingEndpoints: string[] = [];
-    
-    expectedEndpoints.forEach(endpoint => {
-      // Extract method and path from endpoint string (e.g., "GET /api/users")
-      const [method, path] = endpoint.split(' ');
-      
-      // Check if test code contains tests for this endpoint
-      const patterns = [
-        new RegExp(`${method}.*${path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'i'),
-        new RegExp(`${path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}.*${method}`, 'i'),
-        new RegExp(endpoint.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i')
-      ];
-
-      const hasCoverage = patterns.some(pattern => pattern.test(testCode));
-      
-      if (hasCoverage) {
-        coveredEndpoints.push(endpoint);
-      } else {
-        missingEndpoints.push(endpoint);
-      }
-    });
-    
-    const coveragePercentage = expectedEndpoints.length > 0 
-      ? (coveredEndpoints.length / expectedEndpoints.length) * 100 
-      : 100;
-
-    return {
-      coveredEndpoints,
-      missingEndpoints,
-      coveragePercentage
-    };
-  }
-
-  // Enhancement 1: Syntax & Runtime Error Detection
-  private validateSyntax(code: string, framework: string): {
-    isValid: boolean;
-    errors: string[];
-    fixes: string[];
-  } {
-    const errors: string[] = [];
-    const fixes: string[] = [];
-    
-    // Check brace balance
-    const braceBalance = this.checkBraceBalance(code);
-    if (!braceBalance.balanced) {
-      errors.push(`Unbalanced braces: ${braceBalance.error}`);
-      fixes.push('Fix brace matching - ensure every opening brace has a closing brace');
-    }
-    
-    // Check parentheses balance
-    const parenBalance = this.checkParenthesesBalance(code);
-    if (!parenBalance.balanced) {
-      errors.push(`Unbalanced parentheses: ${parenBalance.error}`);
-      fixes.push('Fix parentheses matching');
-    }
-    
-    // Framework-specific validation
-    switch (framework) {
-      case 'jest':
-        if (!code.includes('test(') && !code.includes('it(')) {
-          errors.push('No test functions found - Jest requires test() or it() functions');
-          fixes.push('Add test() or it() functions with proper test cases');
-        }
-        if (code.includes('describe(') && !code.includes('test(') && !code.includes('it(')) {
-          errors.push('describe() block found but no test functions inside');
-          fixes.push('Add test() functions inside describe() blocks');
-        }
-        break;
-      case 'playwright':
-        if (!code.includes('test(')) {
-          errors.push('No Playwright test() functions found');
-          fixes.push('Add test() functions for Playwright');
-        }
-        break;
-      case 'cypress':
-        if (!code.includes('it(') && !code.includes('cy.')) {
-          errors.push('No Cypress test functions or commands found');
-          fixes.push('Add it() functions with cy. commands');
-        }
-        break;
-    }
-    
-    // Check for async/await consistency
-    const asyncIssues = this.checkAsyncAwaitConsistency(code);
-    if (asyncIssues.length > 0) {
-      errors.push(...asyncIssues.map(issue => `Async/await issue: ${issue}`));
-      fixes.push('Fix async/await usage - ensure test functions are async when using await');
-    }
-    
-    // Check for common syntax errors
-    const commonErrors = this.checkCommonSyntaxErrors(code);
-    errors.push(...commonErrors);
-    
-    return { isValid: errors.length === 0, errors, fixes };
-  }
-
-  private checkBraceBalance(code: string): { balanced: boolean; error?: string } {
-    let braceCount = 0;
-    let line = 1;
-    
-    for (let i = 0; i < code.length; i++) {
-      if (code[i] === '\n') line++;
-      if (code[i] === '{') braceCount++;
-      if (code[i] === '}') {
-        braceCount--;
-        if (braceCount < 0) {
-          return { balanced: false, error: `Extra closing brace at line ${line}` };
-        }
-      }
-    }
-    
-    if (braceCount > 0) {
-      return { balanced: false, error: `${braceCount} unclosed opening braces` };
-    }
-    
-    return { balanced: true };
-  }
-
-  private checkParenthesesBalance(code: string): { balanced: boolean; error?: string } {
-    let parenCount = 0;
-    let line = 1;
-    
-    for (let i = 0; i < code.length; i++) {
-      if (code[i] === '\n') line++;
-      if (code[i] === '(') parenCount++;
-      if (code[i] === ')') {
-        parenCount--;
-        if (parenCount < 0) {
-          return { balanced: false, error: `Extra closing parenthesis at line ${line}` };
-        }
-      }
-    }
-    
-    if (parenCount > 0) {
-      return { balanced: false, error: `${parenCount} unclosed opening parentheses` };
-    }
-    
-    return { balanced: true };
-  }
-
-  private checkAsyncAwaitConsistency(code: string): string[] {
-    const issues: string[] = [];
-    const lines = code.split('\n');
-    
-    lines.forEach((line, index) => {
-      // Check for test functions with await but no async
-      if ((line.includes('test(') || line.includes('it(')) && !line.includes('async')) {
-        const testBlock = this.extractTestBlock(lines, index);
-        if (testBlock.includes('await')) {
-          issues.push(`Test at line ${index + 1} uses await but function is not async`);
-        }
-      }
-      
-      // Check for async functions without await
-      if ((line.includes('test(') || line.includes('it(')) && line.includes('async')) {
-        const testBlock = this.extractTestBlock(lines, index);
-        if (!testBlock.includes('await')) {
-          issues.push(`Async test at line ${index + 1} doesn't use await (consider removing async)`);
-        }
-      }
-    });
-    
-    return issues;
-  }
-
-  private extractTestBlock(lines: string[], startIndex: number): string {
-    let braceCount = 0;
-    let testBlock = '';
-    let started = false;
-    
-    for (let i = startIndex; i < lines.length; i++) {
-      const line = lines[i];
-      testBlock += line + '\n';
-      
-      for (const char of line) {
-        if (char === '{') {
-          braceCount++;
-          started = true;
-        }
-        if (char === '}') {
-          braceCount--;
-          if (started && braceCount === 0) {
-            return testBlock;
-          }
-        }
-      }
-    }
-    
-    return testBlock;
-  }
-
-  private checkCommonSyntaxErrors(code: string): string[] {
-    const errors: string[] = [];
-    
-    // Check for missing semicolons in critical places
-    if (code.includes('const ') || code.includes('let ') || code.includes('var ')) {
-      const variableDeclarations = code.match(/(const|let|var)\s+\w+\s*=\s*[^;]+(?!\s*;)/g);
-      if (variableDeclarations) {
-        errors.push('Missing semicolons in variable declarations');
-      }
-    }
-    
-    // Check for incomplete function calls
-    const incompleteCalls = code.match(/\w+\(\s*$/gm);
-    if (incompleteCalls) {
-      errors.push('Incomplete function calls detected');
-    }
-    
-    // Check for mismatched quotes
-    const singleQuotes = (code.match(/'/g) || []).length;
-    const doubleQuotes = (code.match(/"/g) || []).length;
-    const backticks = (code.match(/`/g) || []).length;
-    
-    if (singleQuotes % 2 !== 0) {
-      errors.push('Unmatched single quotes');
-    }
-    if (doubleQuotes % 2 !== 0) {
-      errors.push('Unmatched double quotes');
-    }
-    if (backticks % 2 !== 0) {
-      errors.push('Unmatched backticks');
-    }
-    
-    // Check for incorrect property access with hyphens
-    const invalidPropertyAccess = code.match(/\w+\.[a-zA-Z0-9_]*-[a-zA-Z0-9_]*/g);
-    if (invalidPropertyAccess) {
-      errors.push(`Invalid property access: ${invalidPropertyAccess.join(', ')} - use bracket notation for hyphenated properties`);
-    }
-    
-    // Check for missing closing braces for describe blocks
-    const describeCount = (code.match(/describe\s*\(/g) || []).length;
-    const describeClosingCount = (code.match(/^\s*\}\s*\)?\s*;?\s*$/gm) || []).length;
-    
-    if (describeCount > describeClosingCount) {
-      errors.push(`Missing ${describeCount - describeClosingCount} closing braces for describe blocks`);
-    }
-    
-    // Check for mixed test function names (it vs test in Playwright)
-    if (code.includes('{ request }') && code.includes('it(') && code.includes('test(')) {
-      errors.push('Mixed test function names detected - use consistent "test()" for Playwright');
-    }
-    
-    // Check for missing imports in framework files
-    if (code.includes('describe(') || code.includes('test(') || code.includes('expect(')) {
-      const hasPlaywrightImport = code.includes('@playwright/test');
-      const hasJestImport = code.includes('jest') || code.includes('@jest');
-      const hasCypressImport = code.includes('cypress');
-      const hasVitestImport = code.includes('vitest');
-      
-      if (!hasPlaywrightImport && !hasJestImport && !hasCypressImport && !hasVitestImport) {
-        if (code.includes('{ request }')) {
-          errors.push('Missing Playwright import - requires: import { test, expect } from \'@playwright/test\';');
-        } else {
-          errors.push('Missing test framework imports - cannot find framework-specific imports');
-        }
-      }
-    }
-    
-    return errors;
-  }
 
   private delay(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
-  // Enhancement 3: Code Auto-Fixing Pipeline
-  private autoFixCommonIssues(code: string, framework: string): string {
-    console.log('🔧 Auto-fixing common issues in generated code...');
-    
-    let fixedCode = code;
-    
-    // Step 1: Remove all placeholder comments
-    fixedCode = this.removePlaceholderComments(fixedCode);
-    
-    // Step 2: Fix test structure inconsistencies (it vs test)
-    fixedCode = this.fixTestStructure(fixedCode, framework);
-    
-    // Step 3: Fix undefined variables and add proper setup
-    fixedCode = this.fixUndefinedVariables(fixedCode, framework);
-    
-    // Step 4: Fix TypeScript syntax in JavaScript files
-    fixedCode = this.fixTypeScriptSyntax(fixedCode);
-    
-    // Step 5: Fix improper nesting of describe blocks
-    fixedCode = this.fixDescribeBlockNesting(fixedCode);
-    
-    // Step 6: Fix syntax issues
-    fixedCode = this.fixSyntaxIssues(fixedCode);
-    
-    // Step 7: Add missing imports
-    fixedCode = this.addMissingImports(fixedCode, framework);
-    
-    // Step 8: Fix async/await issues
-    fixedCode = this.fixAsyncAwaitIssues(fixedCode);
-    
-    // Step 9: Fix inconsistent request handling
-    fixedCode = this.fixRequestHandling(fixedCode, framework);
-    
-    // Step 10: Fix assertions and error handling
-    fixedCode = this.fixAssertions(fixedCode, framework);
-    
-    // Step 11: Fix incomplete describe blocks
-    fixedCode = this.fixIncompleteDescribeBlocks(fixedCode);
-    
-    // Step 12: Add environment variable usage
-    fixedCode = this.addEnvironmentVariables(fixedCode);
-    
-    // Step 13: Fix specific generated code issues (comprehensive fix)
-    fixedCode = this.fixSpecificGeneratedCodeIssues(fixedCode);
-    
-    // Step 14: Clean up formatting
-    fixedCode = this.cleanupFormatting(fixedCode);
-    
-    console.log('✅ Auto-fixing completed');
-    return fixedCode;
-  }
-
-  private removePlaceholderComments(code: string): string {
-    // Remove all types of placeholder comments
-    const placeholderPatterns = [
-      /\/\/\s*(continue|add more|follow.*pattern|TODO:|FIXME:|\.\.\.|\.\.\.).*$/gmi,
-      /\/\*\s*(continue|add more|follow.*pattern|TODO:|FIXME:)[\s\S]*?\*\//gmi,
-      /\/\/\s*similar.*test.*can.*be.*add.*$/gmi,
-      /\/\/\s*you.*can.*add.*more.*test.*$/gmi,
-      /\/\/\s*repeat.*for.*other.*endpoint.*$/gmi,
-      /\/\/\s*implement.*more.*test.*$/gmi,
-      /\/\/\s*additional.*test.*can.*be.*implement.*$/gmi,
-      /\/\/\s*and\s+so\s+on.*$/gmi,
-      /\/\/\s*etc\.?.*$/gmi
-    ];
-    
-    let cleanedCode = code;
-    placeholderPatterns.forEach(pattern => {
-      cleanedCode = cleanedCode.replace(pattern, '');
-    });
-    
-    // Remove empty lines that were left behind
-    cleanedCode = cleanedCode.replace(/\n\s*\n\s*\n/g, '\n\n');
-    
-    return cleanedCode;
-  }
-
-  private fixSyntaxIssues(code: string): string {
-    let fixedCode = code;
-    
-    // Fix unmatched braces (basic attempt)
-    const openBraces = (fixedCode.match(/\{/g) || []).length;
-    const closeBraces = (fixedCode.match(/\}/g) || []).length;
-    
-    if (openBraces > closeBraces) {
-      const missing = openBraces - closeBraces;
-      fixedCode += '\n' + '}'.repeat(missing);
-    }
-    
-    // Fix common semicolon issues
-    fixedCode = fixedCode.replace(/(\w+\s*=\s*[^;]+)(\n)/g, '$1;$2');
-    
-    // Fix incomplete function calls
-    fixedCode = fixedCode.replace(/(\w+\()\s*$/gm, '$1);');
-    
-    // Fix incorrect property access (e.g., responseBody.x-token -> responseBody['x-token'])
-    fixedCode = fixedCode.replace(/(\w+)\.([a-zA-Z0-9_-]*-[a-zA-Z0-9_-]+)/g, '$1[\'$2\']');
-    
-    // Standardize test function names (convert 'it' to 'test' for Playwright)
-    if (fixedCode.includes('{ request }')) {
-      // This is Playwright, standardize to 'test'
-      fixedCode = fixedCode.replace(/\bit\s*\(/g, 'test(');
-    }
-    
-    // Fix template literal syntax in environment variables
-    fixedCode = fixedCode.replace(/"\$\{([^}]+)\}"/g, '`${$1}`');
-    
-    return fixedCode;
-  }
-
-  private addMissingImports(code: string, framework: string): string {
-    const imports = [];
-    
-    // Check what's needed and add imports based on framework and usage
-    switch (framework) {
-      case 'jest':
-        if (code.includes('axios') && !code.includes('require(\'axios\')') && !code.includes('import axios')) {
-          imports.push('const axios = require(\'axios\');');
-        }
-        if (code.includes('supertest') && !code.includes('require(\'supertest\')')) {
-          imports.push('const request = require(\'supertest\');');
-        }
-        break;
-        
-      case 'playwright': {
-        // Playwright ALWAYS needs these imports when using describe/test/expect
-        const hasPlaywrightImport = code.includes('@playwright/test') ||
-                                   code.includes("from '@playwright/test'") ||
-                                   code.includes("require('@playwright/test')");
-
-        if (!hasPlaywrightImport && (code.includes('describe(') || code.includes('test(') || code.includes('expect('))) {
-          imports.push("import { test, expect } from '@playwright/test';");
-        }
-        break;
-      }
-        
-      case 'cypress':
-        // Cypress provides describe/it/expect globally, but check for custom commands
-        if (code.includes('cy.') && !code.includes('cypress')) {
-          imports.push('/// <reference types="cypress" />');
-        }
-        break;
-        
-      case 'mocha':
-        if (code.includes('expect(') && !code.includes('chai') && !code.includes('expect')) {
-          imports.push("const { expect } = require('chai');");
-        }
-        break;
-        
-      case 'vitest': {
-        const hasVitestImport = code.includes('vitest') || code.includes("from 'vitest'");
-        if (!hasVitestImport && (code.includes('describe(') || code.includes('test(') || code.includes('expect('))) {
-          imports.push("import { describe, test, expect, beforeAll, afterAll } from 'vitest';");
-        }
-        break;
-      }
-    }
-    
-    if (imports.length > 0) {
-      console.log(`🔧 Auto-fixing: Adding missing imports for ${framework}:`, imports);
-      return imports.join('\n') + '\n\n' + code;
-    }
-    
-    return code;
-  }
-
-  private fixAsyncAwaitIssues(code: string): string {
-    let fixedCode = code;
-    
-    // Find test functions that use await but aren't async
-    const testFunctionRegex = /(test|it)\s*\(\s*['"`]([^'"`]+)['"`]\s*,\s*(?!async)\s*\(([^)]*)\)\s*=>\s*\{/g;
-    
-    fixedCode = fixedCode.replace(testFunctionRegex, (match, testType, testName, params) => {
-      // Check if the test body contains await
-      const testBodyStart = match.length;
-      const restOfCode = fixedCode.substring(fixedCode.indexOf(match) + testBodyStart);
-      const testBodyEnd = this.findMatchingBrace(restOfCode);
-      const testBody = restOfCode.substring(0, testBodyEnd);
-      
-      if (testBody.includes('await')) {
-        return `${testType}('${testName}', async (${params}) => {`;
-      }
-      
-      return match;
-    });
-    
-    return fixedCode;
-  }
-
-  private findMatchingBrace(code: string): number {
-    let braceCount = 1;
-    let i = 0;
-    
-    while (i < code.length && braceCount > 0) {
-      if (code[i] === '{') braceCount++;
-      if (code[i] === '}') braceCount--;
-      i++;
-    }
-    
-    return i;
-  }
-
-  private fixIncompleteDescribeBlocks(code: string): string {
-    let fixedCode = code;
-    
-    // Find describe blocks that might be incomplete
-    const describeRegex = /describe\s*\(\s*['"`]([^'"`]+)['"`]\s*,\s*\(\)\s*=>\s*\{\s*$/gm;
-    
-    fixedCode = fixedCode.replace(describeRegex, (match, testName) => {
-      return `describe('${testName}', () => {
-  test('should handle basic functionality', async () => {
-    // Basic test implementation
-    expect(true).toBeTruthy();
-  });`;
-    });
-    
-    // Fix missing closing braces by checking the last few lines
-    const lines = fixedCode.split('\n');
-    const lastNonEmptyLine = lines.filter(line => line.trim()).pop() || '';
-    
-    // If the last line doesn't end with }); or similar, add proper closing
-    if (!lastNonEmptyLine.match(/^\s*\}\s*\)?\s*;?\s*$/)) {
-      // Count unclosed describe blocks and add appropriate closing braces
-      const describeCount = (fixedCode.match(/describe\s*\(/g) || []).length;
-      const closingBraceCount = (fixedCode.match(/^\s*\}\s*\)?\s*;?\s*$/gm) || []).length;
-      
-      if (describeCount > closingBraceCount) {
-        const missingClosing = describeCount - closingBraceCount;
-        for (let i = 0; i < missingClosing; i++) {
-          fixedCode += '\n});';
-        }
-      }
-    }
-    
-    return fixedCode;
-  }
-
-  private addEnvironmentVariables(code: string): string {
-    let fixedCode = code;
-    
-    // Replace hardcoded URLs with environment variables
-    fixedCode = fixedCode.replace(
-      /(https?:\/\/[^'"`\s]+)/g, 
-      (match) => {
-        if (match.includes('localhost') || match.includes('127.0.0.1')) {
-          return '${process.env.API_BASE_URL || \'' + match + '\'}';
-        }
-        return match;
-      }
-    );
-    
-    // Add environment variable setup if not present
-    if (code.includes('username') && code.includes('password') && !code.includes('process.env.TEST_')) {
-      fixedCode = fixedCode.replace(
-        /username:\s*['"`][^'"`]*['"`]/g,
-        'username: process.env.TEST_USERNAME || \'testuser\''
-      );
-      fixedCode = fixedCode.replace(
-        /password:\s*['"`][^'"`]*['"`]/g,
-        'password: process.env.TEST_PASSWORD || \'testpass\''
-      );
-    }
-    
-    return fixedCode;
-  }
-
-  private cleanupFormatting(code: string): string {
-    let cleanedCode = code;
-    
-    // Remove excessive empty lines
-    cleanedCode = cleanedCode.replace(/\n{3,}/g, '\n\n');
-    
-    // Fix indentation issues (basic)
-    const lines = cleanedCode.split('\n');
-    let indentLevel = 0;
-    const indentedLines = lines.map(line => {
-      const trimmedLine = line.trim();
-      
-      if (trimmedLine === '') return '';
-      
-      // Decrease indent for closing braces
-      if (trimmedLine.startsWith('}')) {
-        indentLevel = Math.max(0, indentLevel - 1);
-      }
-      
-      const indentedLine = '  '.repeat(indentLevel) + trimmedLine;
-      
-      // Increase indent for opening braces
-      if (trimmedLine.includes('{') && !trimmedLine.includes('}')) {
-        indentLevel++;
-      }
-      
-      return indentedLine;
-    });
-    
-    return indentedLines.join('\n');
-  }
-
-  // NEW: Fix test structure inconsistencies (it vs test)
-  private fixTestStructure(code: string, framework: string): string {
-    if (framework === 'playwright') {
-      // Playwright uses test(), not it()
-      code = code.replace(/\bit\s*\(/g, 'test(');
-      console.log('🔧 Fixed test structure: converted it() to test() for Playwright');
-    } else if (framework === 'mocha' || framework === 'jest') {
-      // Mocha/Jest can use either, but let's standardize on test()
-      code = code.replace(/\bit\s*\(/g, 'test(');
-    }
-    return code;
-  }
-
-  // NEW: Fix undefined variables and add proper setup
-  private fixUndefinedVariables(code: string, _framework: string): string {
-    let fixedCode = code;
-    
-    // Fix BASE_URL
-    if (code.includes('BASE_URL') && !code.includes('const BASE_URL') && !code.includes('let BASE_URL')) {
-      const baseUrlDeclaration = "const BASE_URL = process.env.BASE_URL || 'https://api.example.com';\n";
-      fixedCode = this.addToTopOfFile(fixedCode, baseUrlDeclaration);
-    }
-    
-    // Fix AUTH_URL
-    if (code.includes('AUTH_URL') && !code.includes('const AUTH_URL') && !code.includes('let AUTH_URL')) {
-      const authUrlDeclaration = "const AUTH_URL = process.env.AUTH_URL || BASE_URL + '/auth';\n";
-      fixedCode = this.addToTopOfFile(fixedCode, authUrlDeclaration);
-    }
-    
-    // Fix API_URL
-    if (code.includes('API_URL') && !code.includes('const API_URL') && !code.includes('let API_URL')) {
-      const apiUrlDeclaration = "const API_URL = process.env.API_URL || BASE_URL;\n";
-      fixedCode = this.addToTopOfFile(fixedCode, apiUrlDeclaration);
-    }
-    
-    // Fix TEST_USERNAME and TEST_PASSWORD
-    if (code.includes('TEST_USERNAME') && !code.includes('process.env.TEST_USERNAME')) {
-      fixedCode = fixedCode.replace(/TEST_USERNAME/g, "process.env.TEST_USERNAME || 'test@example.com'");
-    }
-    if (code.includes('TEST_PASSWORD') && !code.includes('process.env.TEST_PASSWORD')) {
-      fixedCode = fixedCode.replace(/TEST_PASSWORD/g, "process.env.TEST_PASSWORD || 'testpassword'");
-    }
-    
-    console.log('🔧 Fixed undefined variables and added proper setup');
-    return fixedCode;
-  }
-
-  // NEW: Fix TypeScript syntax in JavaScript files
-  private fixTypeScriptSyntax(code: string): string {
-    // Remove TypeScript type annotations
-    let fixedCode = code;
-    
-    // Fix variable type annotations like: let authToken: string;
-    fixedCode = fixedCode.replace(/:\s*string\s*;/g, ';');
-    fixedCode = fixedCode.replace(/:\s*number\s*;/g, ';');
-    fixedCode = fixedCode.replace(/:\s*boolean\s*;/g, ';');
-    fixedCode = fixedCode.replace(/:\s*any\s*;/g, ';');
-    fixedCode = fixedCode.replace(/:\s*object\s*;/g, ';');
-    
-    // Fix function parameter type annotations
-    fixedCode = fixedCode.replace(/\(([^)]*?):\s*[A-Za-z][A-Za-z0-9]*\s*\)/g, '($1)');
-    
-    console.log('🔧 Fixed TypeScript syntax for JavaScript file');
-    return fixedCode;
-  }
-
-  // NEW: Fix improper nesting of describe blocks
-  private fixDescribeBlockNesting(code: string): string {
-    let fixedCode = code;
-    
-    // Remove nested describe blocks that should be at the same level
-    // Pattern: describe('API Test Suite - Complete Coverage', () => { describe('API Test Suite', () => {
-    fixedCode = fixedCode.replace(
-      /describe\s*\(\s*['"`]API Test Suite[^'"`]*['"`]\s*,\s*\(\)\s*=>\s*\{\s*describe\s*\(\s*['"`]API Test Suite[^'"`]*['"`]/g,
-      "describe('API Test Suite - Complete Coverage', () => {\n  // Authentication setup and endpoint tests"
-    );
-    
-    // Remove duplicate top-level describe blocks
-    const lines = fixedCode.split('\n');
-    const cleanedLines: string[] = [];
-    let seenMainDescribe = false;
-    let braceLevel = 0;
-    let skipUntilClosing = false;
-    
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      
-      // Track opening of main describe block
-      if (line.includes("describe('API Test Suite") && !seenMainDescribe) {
-        cleanedLines.push(line);
-        seenMainDescribe = true;
-        braceLevel = 1;
-      }
-      // Skip duplicate main describe blocks
-      else if (line.includes("describe('API Test Suite") && seenMainDescribe) {
-        skipUntilClosing = true;
-        braceLevel = 1;
-        continue;
-      }
-      // Handle content inside describe blocks
-      else if (skipUntilClosing) {
-        braceLevel += (line.match(/\{/g) || []).length;
-        braceLevel -= (line.match(/\}/g) || []).length;
-        
-        // If it's not a closing brace of the skipped describe, include the content
-        if (braceLevel > 0 || !line.trim().match(/^}\s*\)?\s*;?\s*$/)) {
-          if (!line.includes("describe('API Test Suite")) {
-            cleanedLines.push(line);
-          }
-        }
-        
-        // Reset when we exit the skipped describe block
-        if (braceLevel === 0) {
-          skipUntilClosing = false;
-        }
-      }
-      // Normal content
-      else {
-        cleanedLines.push(line);
-      }
-    }
-    
-    fixedCode = cleanedLines.join('\n');
-    
-    console.log('🔧 Fixed describe block nesting');
-    return fixedCode;
-  }
-
-  // NEW: Fix inconsistent request handling
-  private fixRequestHandling(code: string, framework: string): string {
-    let fixedCode = code;
-    
-    if (framework === 'playwright') {
-      // Standardize on ({ request }) parameter pattern
-      fixedCode = fixedCode.replace(/test\.request/g, 'request');
-      
-      // Ensure all test functions have proper request parameter
-      fixedCode = fixedCode.replace(/test\s*\(\s*['"`]([^'"`]+)['"`]\s*,\s*async\s*\(\s*\)\s*=>/g, 
-        "test('$1', async ({ request }) =>");
-      
-      // Fix cases where request parameter is missing
-      fixedCode = fixedCode.replace(/test\s*\(\s*['"`]([^'"`]+)['"`]\s*,\s*async\s*\(\s*\{\s*\}\s*\)\s*=>/g, 
-        "test('$1', async ({ request }) =>");
-    }
-    
-    console.log('🔧 Fixed inconsistent request handling');
-    return fixedCode;
-  }
-
-  // NEW: Fix assertions and error handling
-  private fixAssertions(code: string, framework: string): string {
-    let fixedCode = code;
-    
-    // Fix unreliable assertions like expect(response.status()).not.toBe(200)
-    fixedCode = fixedCode.replace(/expect\(response\.status\(\)\)\.not\.toBe\(200\)/g, 
-      'expect(response.status()).toBeGreaterThanOrEqual(400)');
-    
-    // Standardize error property checking - choose the most common one in the code
-    const errorOccurrences = (fixedCode.match(/\.toHaveProperty\('error'\)/g) || []).length;
-    const errorCodeOccurrences = (fixedCode.match(/\.toHaveProperty\('errorCode'\)/g) || []).length;
-    
-    if (errorOccurrences > errorCodeOccurrences) {
-      // Standardize on 'error'
-      fixedCode = fixedCode.replace(/\.toHaveProperty\('errorCode'[^)]*\)/g, ".toHaveProperty('error')");
-    } else if (errorCodeOccurrences > 0) {
-      // Standardize on 'errorCode' 
-      fixedCode = fixedCode.replace(/\.toHaveProperty\('error'\)/g, ".toHaveProperty('errorCode')");
-    }
-    
-    // Add proper error response validation
-    fixedCode = fixedCode.replace(/expect\(responseBody\)\.toHaveProperty\('error'\);/g, 
-      "expect(responseBody).toHaveProperty('error');\n      expect(responseBody.error).toBeTruthy();");
-    
-    // Add safer response body parsing (but not for every occurrence - only when missing)
-    if (framework === 'playwright' && !fixedCode.includes('contentType')) {
-      fixedCode = fixedCode.replace(
-        /const responseBody = await response\.json\(\);/g, 
-        `const contentType = response.headers()['content-type'] || '';
-      const responseBody = contentType.includes('application/json') 
-        ? await response.json() 
-        : await response.text();`
-      );
-    }
-    
-    console.log('🔧 Fixed assertions and error handling');
-    return fixedCode;
-  }
-
-  // Helper method to add content to the top of the file (after imports)
-  private addToTopOfFile(code: string, content: string): string {
-    const lines = code.split('\n');
-    let insertIndex = 0;
-    
-    // Find the end of imports/requires
-    for (let i = 0; i < lines.length; i++) {
-      if (lines[i].includes('import ') || lines[i].includes('require(') || lines[i].includes('///')) {
-        insertIndex = i + 1;
-      } else if (lines[i].trim() === '') {
-        continue;
-      } else {
-        break;
-      }
-    }
-    
-    lines.splice(insertIndex, 0, '', content);
-    return lines.join('\n');
-  }
-
-  // COMPREHENSIVE: Fix the exact patterns found in user's generated code
-  private fixSpecificGeneratedCodeIssues(code: string): string {
-    let fixedCode = code;
-    
-    // 1. Add missing imports and variable declarations at the top
-    if (!fixedCode.includes('const { test, expect }') && !fixedCode.includes('import { test, expect }')) {
-      fixedCode = `const { test, expect } = require('@playwright/test');
-
-const BASE_URL = process.env.BASE_URL || 'https://api.example.com';
-const TEST_USERNAME = process.env.TEST_USERNAME || 'test@example.com';
-const TEST_PASSWORD = process.env.TEST_PASSWORD || 'testpassword';
-let authToken;
-
-${fixedCode}`;
-    }
-
-    // 2. Fix nested describe structure - flatten improperly nested describes
-    // Remove cases where describe blocks are inside other describe blocks when they should be siblings
-    fixedCode = fixedCode.replace(
-      /(\s*)\}\s*\n\s*\/\/\s*Endpoint\s+\d+\s+tests\s*\n\s*describe\s*\(/g,
-      '$1});\n\n  // Endpoint tests\n  describe('
-    );
-
-    // 3. Convert all it() to test() consistently
-    fixedCode = fixedCode.replace(/\bit\s*\(/g, 'test(');
-
-    // 4. Fix missing closing braces - ensure proper structure
-    const openDescribes = (fixedCode.match(/describe\s*\(/g) || []).length;
-    const closeDescribes = (fixedCode.match(/\}\s*\);\s*$/gm) || []).length;
-    
-    if (openDescribes > closeDescribes) {
-      const missing = openDescribes - closeDescribes;
-      for (let i = 0; i < missing; i++) {
-        fixedCode += '\n});';
-      }
-    }
-
-    // 5. Fix authentication setup placement - move to top level
-    const authSetupMatch = fixedCode.match(/(test\.beforeAll[\s\S]*?authToken[\s\S]*?\}\);)/);
-    if (authSetupMatch) {
-      const authSetup = authSetupMatch[1];
-      // Remove from current location
-      fixedCode = fixedCode.replace(authSetupMatch[1], '');
-      // Add after main describe opening
-      fixedCode = fixedCode.replace(
-        /(describe\s*\(\s*['"`]API Test Suite[^'"`]*['"`]\s*,\s*\(\)\s*=>\s*\{)/,
-        `$1\n  // Authentication setup\n  ${authSetup}\n`
-      );
-    }
-
-    console.log('🔧 Fixed specific generated code issues');
-    return fixedCode;
-  }
 
   private isGraphQLEndpoint(pathname: string, request: any): boolean {
     return pathname.includes('graphql') || pathname.includes('gql') || 

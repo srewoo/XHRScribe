@@ -58,6 +58,43 @@ export interface SecurityScanResult {
   vulnerableCount: number;
   safeCount: number;
   errorCount: number;
+  skippedCount: number;
+}
+
+export interface SecurityRunOptions {
+  // The caller MUST confirm the user is authorized to actively scan this
+  // target. This runner fires real (potentially state-changing) requests from
+  // the user's authenticated browser context, so we refuse to run without it.
+  authorized: boolean;
+  // Off by default: destructive payloads (DROP/DELETE/TRUNCATE, time-delay,
+  // shutdown) are skipped unless the user explicitly opts in.
+  allowDestructive?: boolean;
+}
+
+// Payloads that could mutate or degrade the target if the endpoint is
+// vulnerable. Skipped unless allowDestructive is set.
+const DESTRUCTIVE_PAYLOAD = /\b(drop\s+table|truncate\s+table|delete\s+from|shutdown|waitfor\s+delay|benchmark\s*\(|pg_sleep|sleep\s*\(|rm\s+-rf|;\s*drop)\b/i;
+
+// SSRF guard: refuse to fire attack payloads at loopback, private, link-local,
+// or cloud-metadata hosts. The scanner runs from the user's authenticated
+// browser context, so an internal target would let it attack the local network.
+const CLOUD_METADATA_HOSTS = new Set(['169.254.169.254', 'metadata.google.internal', 'metadata']);
+function isBlockedHost(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, ''); // strip IPv6 brackets
+  if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || host.endsWith('.internal')) return true;
+  if (CLOUD_METADATA_HOSTS.has(host)) return true;
+  // IPv6 loopback / unique-local / link-local
+  if (host === '::1' || host.startsWith('fc') || host.startsWith('fd') || host.startsWith('fe80')) return true;
+  // IPv4 ranges
+  const m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (m) {
+    const [a, b] = [Number(m[1]), Number(m[2])];
+    if (a === 127 || a === 10 || a === 0) return true;                 // loopback / private / this-network
+    if (a === 169 && b === 254) return true;                           // link-local (incl. metadata)
+    if (a === 172 && b >= 16 && b <= 31) return true;                  // private
+    if (a === 192 && b === 168) return true;                           // private
+  }
+  return false;
 }
 
 export class SecurityTestRunner {
@@ -76,15 +113,48 @@ export class SecurityTestRunner {
   async runSuite(
     suite: SecurityTestSuite,
     baseUrl: string,
+    options: SecurityRunOptions,
     onProgress?: (current: number, total: number, result: SecurityTestResult) => void
   ): Promise<SecurityScanResult> {
+    if (!options?.authorized) {
+      throw new Error(
+        'Active security scanning is disabled: the caller must confirm the user is authorized to scan this target.'
+      );
+    }
+    // Only scan http(s) targets — never file:, chrome:, data:, etc.
+    const targetForCheck = (() => {
+      try { return new URL(suite.endpoint); } catch { /* relative */ }
+      try { return new URL(baseUrl); } catch { return null; }
+    })();
+    if (targetForCheck && !/^https?:$/.test(targetForCheck.protocol)) {
+      throw new Error(`Refusing to scan non-http(s) target: ${targetForCheck.protocol}`);
+    }
+    if (targetForCheck && isBlockedHost(targetForCheck.hostname)) {
+      throw new Error(
+        `Refusing to scan internal/loopback host: ${targetForCheck.hostname}. Active scanning is only allowed against external targets.`
+      );
+    }
+
     this.abortController = new AbortController();
     const results: SecurityTestResult[] = [];
+    let skippedCount = 0;
 
     for (let i = 0; i < suite.tests.length; i++) {
       if (this.abortController?.signal.aborted) break;
 
       const test = suite.tests[i];
+
+      // Skip destructive payloads unless the user explicitly opted in.
+      if (!options.allowDestructive && DESTRUCTIVE_PAYLOAD.test(this.payloadValue(test.payload))) {
+        skippedCount++;
+        Logger.getInstance().info(
+          `Skipped destructive security payload (non-destructive mode): ${test.name}`,
+          null,
+          'SecurityTestRunner'
+        );
+        continue;
+      }
+
       const result = await this.executeTest(test, suite.endpoint, suite.method, baseUrl);
       results.push(result);
 
@@ -105,6 +175,7 @@ export class SecurityTestRunner {
       vulnerableCount: results.filter(r => r.status === 'vulnerable').length,
       safeCount: results.filter(r => r.status === 'safe').length,
       errorCount: results.filter(r => r.status === 'error').length,
+      skippedCount,
     };
   }
 
@@ -123,6 +194,22 @@ export class SecurityTestRunner {
     } catch {
       url = `${baseUrl.replace(/\/$/, '')}${endpoint}`;
     }
+
+    // Defense in depth: block internal targets even if the per-test URL differs
+    // from the suite endpoint validated in runSuite().
+    try {
+      if (isBlockedHost(new URL(url).hostname)) {
+        return {
+          testId: test.id,
+          testName: test.name,
+          category: test.category,
+          status: 'error',
+          responseStatus: 0,
+          responseTime: 0,
+          details: 'Skipped: internal/loopback target blocked by SSRF guard',
+        };
+      }
+    } catch { /* if URL is unparseable, fetch below will reject it */ }
 
     try {
       const fetchOptions: RequestInit = {
@@ -266,12 +353,14 @@ export class SecurityTestRunner {
     if (statusCode >= 300 && statusCode < 400) {
       return { status: 'safe', confidence: 'low', evidence: `Redirect (HTTP ${statusCode}); payload not processed inline.` };
     }
-    // 2xx with no stronger signal — weak. Accepted but unconfirmed.
+    // 2xx with no reflected payload, DB error, or timing signal is NOT evidence
+    // of a vulnerability — many endpoints legitimately return 200 for any input.
+    // Report as safe/inconclusive rather than manufacturing a false positive.
     if (statusCode >= 200 && statusCode < 300) {
       return {
-        status: 'vulnerable',
+        status: 'safe',
         confidence: 'low',
-        evidence: `Endpoint accepted the payload and returned HTTP ${statusCode} without rejecting it. Weak signal — confirm manually whether the payload was actually processed/stored.`,
+        evidence: `Endpoint returned HTTP ${statusCode} with no vulnerability signal (no reflected payload, DB error, or abnormal timing). Not flagged; confirm manually if the payload could be processed/stored asynchronously.`,
       };
     }
     return { status: 'safe', confidence: 'low', evidence: `HTTP ${statusCode}.` };

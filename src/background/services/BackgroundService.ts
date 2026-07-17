@@ -10,13 +10,11 @@ import { StorageService } from '@/services/StorageService';
 import { AIService } from '@/services/AIService';
 import { ExportService } from '@/services/ExportService';
 import { ParallelGenerationOrchestrator } from '@/services/ParallelGenerationOrchestrator';
-import { SchemaExtractor } from '@/services/SchemaExtractor';
-import { GraphQLSchemaInference } from '@/services/GraphQLSchemaInference';
-import { EnvironmentExtractor } from '@/services/EnvironmentExtractor';
-import { SecurityTestGenerator } from '@/services/SecurityTestGenerator';
 import { DataMaskingService } from '@/services/DataMaskingService';
+import { ExportController } from './ExportController';
 import { ServiceWorkerManager } from './ServiceWorkerManager';
 import { Logger } from '@/services/logging/Logger';
+import { isApiRequest, passesUserFilters } from './RequestClassifier';
 
 export class BackgroundService {
   private static instance: BackgroundService;
@@ -30,8 +28,23 @@ export class BackgroundService {
   private storageService: StorageService = StorageService.getInstance();
   private aiService: AIService = AIService.getInstance();
   private exportService: ExportService = ExportService.getInstance();
+  private exportController: ExportController = ExportController.getInstance();
   private dataMaskingService: DataMaskingService = DataMaskingService.getInstance();
   private cachedSettings: Settings | null = null;
+
+  // Upper bound on retained WebSocket/SSE frames per request, so a long-lived
+  // stream can't grow the in-memory session (and its 3s snapshot) without bound.
+  private static readonly MAX_STREAM_FRAMES = 2000;
+  // Hard cap on requests captured per recording session — bounds memory and the
+  // periodic session snapshot on long recordings.
+  private static readonly MAX_SESSION_REQUESTS = 5000;
+  // Session ids we've already warned about hitting the cap (warn once each).
+  private sessionCapWarned: Set<string> = new Set();
+
+  // Tabs whose startRecording() is in flight but not yet in recordingSessions.
+  // Closes the TOCTOU window between the has()-guard and the map population,
+  // where two rapid START_RECORDING messages could both attach the debugger.
+  private startingTabs: Set<number> = new Set();
 
   private constructor() {}
 
@@ -81,7 +94,9 @@ export class BackgroundService {
     if (!this.cachedSettings) {
       this.cachedSettings = await this.storageService.getSettings();
     }
-    return this.cachedSettings;
+    // getSettings() can return null (nothing stored yet / decrypt failure);
+    // fall back to defaults so callers always get a usable Settings object.
+    return this.cachedSettings ?? this.storageService.getDefaultSettings();
   }
 
   /**
@@ -500,48 +515,51 @@ export class BackgroundService {
     try {
       const targets = await chrome.debugger.getTargets();
       const attachedTargets = targets.filter(t => t.attached);
-      
-      console.log(`🔍 Analyzing debugger landscape: ${attachedTargets.length} total debuggers`);
-      
-      // Check for debuggers on the specific tab
+
+      // Non-destructive (plan.md 4.5): we no longer pre-emptively force-detach
+      // debuggers belonging to OTHER extensions / DevTools. That was hostile and
+      // racy. If the target tab already has a debugger, the attach loop below
+      // handles reclaiming our own stale debugger; a genuine third-party
+      // conflict surfaces as a clear attach error instead of us stealing the tab.
       const tabDebuggers = attachedTargets.filter(t => t.tabId === tabId);
       if (tabDebuggers.length > 0) {
-        console.log(`⚠️  Found ${tabDebuggers.length} debugger(s) on target tab`);
-        
-        // Try to detach existing debuggers from this tab
-        for (const target of tabDebuggers) {
-          try {
-            await chrome.debugger.detach({ tabId: target.tabId });
-            console.log(`✅ Detached debugger from tab ${target.tabId}`);
-          } catch {
-            console.log(`❌ Could not detach debugger from tab ${target.tabId}`);
-          }
-        }
-        
-        // Wait for detachment to process
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        return true;
+        Logger.getInstance().warn(
+          `Existing debugger detected on target tab ${tabId}; will attempt to reclaim during attach.`,
+          null,
+          'BackgroundService'
+        );
       }
-      
-      // Check for global debugger conflicts (too many active debuggers)
+
+      // Too many active debuggers browser-wide — advise the user rather than act.
       if (attachedTargets.length > 10) {
-        console.log(`⚠️  High debugger usage detected (${attachedTargets.length} active)`);
-        return false; // Suggest user action
+        Logger.getInstance().warn(`High debugger usage detected (${attachedTargets.length} active)`, null, 'BackgroundService');
+        return false;
       }
-      
+
       return true;
     } catch (error) {
-      console.log('Could not analyze debugger conflicts:', error);
+      Logger.getInstance().warn('Could not analyze debugger conflicts', error, 'BackgroundService');
       return true; // Proceed anyway
     }
   }
 
   async startRecording(tabId: number): Promise<RecordingSession> {
-    // Check if already recording
-    if (this.recordingSessions.has(tabId)) {
+    // Check if already recording, or a start is already in flight for this tab.
+    if (this.recordingSessions.has(tabId) || this.startingTabs.has(tabId)) {
       throw new Error('Already recording on this tab');
     }
+    // Reserve the tab synchronously before any await so a concurrent
+    // START_RECORDING can't pass the guard and double-attach the debugger.
+    this.startingTabs.add(tabId);
 
+    try {
+      return await this.startRecordingInner(tabId);
+    } finally {
+      this.startingTabs.delete(tabId);
+    }
+  }
+
+  private async startRecordingInner(tabId: number): Promise<RecordingSession> {
     // Get tab info
     const tab = await chrome.tabs.get(tabId);
     
@@ -561,11 +579,14 @@ export class BackgroundService {
       throw new Error('Cannot record on browser internal pages. Please navigate to a website (http:// or https://)');
     }
     
-    console.log(`Starting recording on: ${tab.url}`);
-    console.log(`Tab status - loaded: ${tab.status}, title: ${tab.title}`);
-    
+    // Prefetch settings BEFORE any capture event can fire. The capture path
+    // reads this.cachedSettings synchronously (passesUserFilters); if it were
+    // still null when the first request arrives, the user's include/exclude
+    // filters would silently no-op. (plan.md 4.2)
+    await this.getSettings();
+
     // Pre-flight debugger conflict resolution
-    console.log('🔧 Resolving debugger conflicts...');
+    Logger.getInstance().info(`Starting recording on ${tab.url}`, null, 'BackgroundService');
     const conflictResolved = await this.resolveDebuggerConflicts(tabId);
     if (!conflictResolved) {
       throw new Error('Too many active debuggers detected. Please:\n1. Close other debugging tools\n2. Disable debugging extensions\n3. Restart Chrome if needed');
@@ -761,6 +782,40 @@ export class BackgroundService {
     return harData;
   }
 
+  private rehydrated = false;
+  private rehydrating: Promise<void> | null = null;
+
+  /**
+   * Repopulate the in-memory recording-session map from session-storage
+   * snapshots after a service-worker restart. Without this, a CDP event that
+   * wakes the SW mid-recording finds no session and silently drops every
+   * event until stopRecording. Idempotent; safe to call on wake.
+   */
+  async rehydrateActiveSessions(): Promise<void> {
+    if (this.rehydrating) return this.rehydrating;
+    this.rehydrating = (async () => {
+      try {
+        const all = await chrome.storage.session.get(null);
+        for (const [key, value] of Object.entries(all || {})) {
+          if (!key.startsWith('activeSession_')) continue;
+          const tabId = Number(key.slice('activeSession_'.length));
+          if (!Number.isFinite(tabId) || this.recordingSessions.has(tabId)) continue;
+          this.recordingSessions.set(tabId, value as RecordingSession);
+          Logger.getInstance().info(
+            `Rehydrated recording session for tab ${tabId} after SW restart`,
+            null,
+            'BackgroundService'
+          );
+        }
+      } catch (error) {
+        Logger.getInstance().warn('Failed to rehydrate active sessions', { error }, 'BackgroundService');
+      } finally {
+        this.rehydrated = true;
+      }
+    })();
+    return this.rehydrating;
+  }
+
   handleDebuggerEvent(
     source: chrome.debugger.Debuggee,
     method: string,
@@ -769,7 +824,12 @@ export class BackgroundService {
     if (!source.tabId) return;
 
     const session = this.recordingSessions.get(source.tabId);
-    if (!session) return;
+    if (!session) {
+      // The SW may have restarted and lost the in-memory map. Kick off a
+      // one-time rehydration so subsequent events for this tab are captured.
+      if (!this.rehydrated) void this.rehydrateActiveSessions();
+      return;
+    }
 
     // Process ALL network events for comprehensive capture
     switch (method) {
@@ -780,6 +840,16 @@ export class BackgroundService {
 
       case 'Network.responseReceived':
         this.handleResponseReceived(session, params);
+        break;
+
+      // The base request/response events omit the real cookies and several
+      // security headers; the *ExtraInfo events carry them. Merge them in.
+      case 'Network.requestWillBeSentExtraInfo':
+        this.handleRequestExtraInfo(session, params);
+        break;
+
+      case 'Network.responseReceivedExtraInfo':
+        this.handleResponseExtraInfo(session, params);
         break;
 
       case 'Network.loadingFinished':
@@ -841,20 +911,26 @@ export class BackgroundService {
   private handleRequestWillBeSent(session: RecordingSession, params: any): void {
     const { requestId, request, timestamp, type, initiator } = params;
 
-    // Enhanced debugging for authentication requests
-    if (request.url.includes('/wapi/') || request.url.includes('/auth')) {
-      console.log('🔍 Potential auth request detected:', {
-        url: request.url,
-        method: request.method,
-        type,
-        cookies: request.headers?.cookie ? 'Present' : 'None',
-        headers: Object.keys(request.headers || {}),
-        isApiRequest: this.isApiRequest(request.url, type, request, initiator)
-      });
-    }
-
     // Check if it's an API request with enhanced detection
-    if (!this.isApiRequest(request.url, type, request, initiator)) return;
+    if (!isApiRequest(request.url, type, request, initiator)) return;
+
+    // Apply the user's capture filters (include/exclude domains, allowed types).
+    if (!passesUserFilters(request.url, this.getRequestType(request, initiator), this.cachedSettings?.filtering)) return;
+
+    // Cap per-session capture so a long recording on a busy SPA can't grow
+    // memory (and the periodic session snapshot) without bound. Once at the
+    // cap we stop adding new requests and warn once.
+    if (session.requests.length >= BackgroundService.MAX_SESSION_REQUESTS) {
+      if (!this.sessionCapWarned.has(session.id)) {
+        this.sessionCapWarned.add(session.id);
+        Logger.getInstance().warn(
+          `Session ${session.id} hit the ${BackgroundService.MAX_SESSION_REQUESTS}-request capture cap; further requests are dropped.`,
+          null,
+          'BackgroundService'
+        );
+      }
+      return;
+    }
 
     const networkRequest: NetworkRequest = {
       id: requestId,
@@ -896,6 +972,27 @@ export class BackgroundService {
 
     // Update in HAR processor
     this.harProcessor.updateResponse(session.id, requestId, response);
+  }
+
+  // Merge the real request headers (including Cookie) that the base
+  // requestWillBeSent event hides. Best-effort: only enriches an
+  // already-captured request; masking of these headers happens later at stop.
+  private handleRequestExtraInfo(session: RecordingSession, params: any): void {
+    const { requestId, headers } = params;
+    if (!requestId || !headers) return;
+    const request = session.requests.find(r => r.id === requestId);
+    if (!request) return;
+    request.requestHeaders = { ...(request.requestHeaders || {}), ...headers };
+  }
+
+  // Merge the real response headers (including Set-Cookie + security headers)
+  // that the base responseReceived event hides.
+  private handleResponseExtraInfo(session: RecordingSession, params: any): void {
+    const { requestId, headers } = params;
+    if (!requestId || !headers) return;
+    const request = session.requests.find(r => r.id === requestId);
+    if (!request) return;
+    request.responseHeaders = { ...(request.responseHeaders || {}), ...headers };
   }
 
   private handleLoadingFinished(session: RecordingSession, params: any): void {
@@ -977,6 +1074,11 @@ export class BackgroundService {
     if (!Array.isArray(request.responseBody)) {
       request.responseBody = [];
     }
+    // Cap retained frames so a long-lived socket can't grow memory without
+    // bound; keep the most recent frames (drop the oldest).
+    if (request.responseBody.length >= BackgroundService.MAX_STREAM_FRAMES) {
+      request.responseBody.shift();
+    }
     request.responseBody.push({
       type: method.includes('Sent') ? 'sent' : 'received',
       data: response.payloadData,
@@ -994,208 +1096,30 @@ export class BackgroundService {
         'Network.getResponseBody',
         { requestId }
       ) as any;
-      return result?.body || null;
+      if (!result?.body) return null;
+      // CDP returns binary/gzipped bodies base64-encoded. Decode them so we
+      // don't hand corrupted (base64) text to masking and the LLM; fall back to
+      // the raw value if decoding fails.
+      if (result.base64Encoded) {
+        try {
+          return atob(result.body);
+        } catch {
+          return result.body;
+        }
+      }
+      return result.body;
     } catch {
       // Response body might not be available for all requests
       return null;
     }
   }
 
-  private isApiRequest(url: string, type: string, request?: any, initiator?: any): boolean {
-    // Filter out static resources
-    const staticExtensions = ['.css', '.js', '.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico', '.woff', '.woff2', '.ttf', '.map', '.wasm', '.webp', '.avif'];
-    const urlLower = url.toLowerCase();
-
-    if (staticExtensions.some(ext => urlLower.includes(ext))) {
-      return false;
-    }
-
-    // Filter out known non-API patterns (analytics, tracking, ads)
-    const excludePatterns = [
-      '/collect', '/track', '/analytics', '/metrics', '/beacon',
-      '/pixel', '/impression', '/adserver', '/ads/', '/gtag/',
-      '/ga/', '/gtm.js', 'google-analytics', 'googletagmanager',
-      'facebook.com/tr', 'doubleclick.net', '/pagead/',
-      'hotjar', 'fullstory', 'segment.io', 'mixpanel',
-      'sentry.io/api', 'bugsnag', 'newrelic', 'datadog',
-      '/favicon', '/_next/static', '/_nuxt/static'
-    ];
-
-    if (excludePatterns.some(pattern => urlLower.includes(pattern))) {
-      return false;
-    }
-
-    // XHR or Fetch type is the primary signal - these are almost always API calls
-    const isXhrOrFetch = type === 'XHR' || type === 'Fetch';
-
-    // Strong API URL patterns (high confidence)
-    const strongApiPatterns = [
-      '/api/', '/wapi/', '/webapi/', '/v1/', '/v2/', '/v3/', '/v4/', '/v5/',
-      '/graphql', '/rest/', '/rpc/', '/grpc/',
-      '/auth/', '/login', '/logout', '/signin', '/signout',
-      '/token', '/oauth', '/sso',
-    ];
-
-    const hasStrongApiPattern = strongApiPatterns.some(pattern => urlLower.includes(pattern));
-
-    // Content-Type based API detection (strong signal)
-    const isApiContentType = this.hasApiContentType(request?.headers || {});
-
-    // API subdomains (strong signal)
-    const strongDomainPatterns = ['api.', 'gateway.', 'backend.', 'rest.'];
-    const hasApiDomain = strongDomainPatterns.some(pattern => urlLower.includes(pattern));
-
-    // Decision logic: require at least one strong signal
-    // XHR/Fetch alone is sufficient (browser explicitly marked it as such)
-    if (isXhrOrFetch) return true;
-
-    // Strong URL pattern is sufficient
-    if (hasStrongApiPattern) return true;
-
-    // API content-type is sufficient
-    if (isApiContentType) return true;
-
-    // API domain is sufficient
-    if (hasApiDomain) return true;
-
-    // Weaker signals: require combination of two or more
-    const isNonGetMethod = request?.method && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method);
-    const isAuthRelated = this.isAuthenticationRelated(url, request);
-    const isSpaApiCall = this.isSinglePageAppApiCall(initiator, url);
-
-    // Weak URL patterns (need second signal to qualify)
-    const weakApiPatterns = [
-      '.json', '.xml', '/data/', '/service/',
-      '/search', '/filter', '/query',
-      '/upload', '/download', '/export', '/import',
-      '/webhook', '/events', '/stream',
-    ];
-    const hasWeakApiPattern = weakApiPatterns.some(pattern => urlLower.includes(pattern));
-
-    // Require at least two weak signals
-    const weakSignalCount = [isNonGetMethod, isAuthRelated, isSpaApiCall, hasWeakApiPattern]
-      .filter(Boolean).length;
-
-    return weakSignalCount >= 2;
-  }
-
-  // NEW: Content-Type based API detection
-  private hasApiContentType(headers: Record<string, string>): boolean {
-    const contentType = headers['content-type'] || headers['Content-Type'] || '';
-    const acceptHeader = headers['accept'] || headers['Accept'] || '';
-    
-    const apiContentTypes = [
-      'application/json', 'application/xml', 'application/x-www-form-urlencoded',
-      'multipart/form-data', 'application/protobuf', 'application/msgpack',
-      'application/grpc', 'application/x-protobuf', 'application/octet-stream'
-    ];
-    
-    const apiAcceptTypes = [
-      'application/json', 'application/xml', 'text/xml',
-      'application/hal+json', 'application/vnd.api+json'
-    ];
-    
-    return apiContentTypes.some(type => contentType.includes(type)) ||
-           apiAcceptTypes.some(type => acceptHeader.includes(type));
-  }
-
-  // NEW: Single Page Application API call detection
-  private isSinglePageAppApiCall(initiator: any, url: string): boolean {
-    if (!initiator) return false;
-    
-    // Check if request originated from JavaScript in a SPA context
-    const isSpaInitiator = initiator.type === 'script' || initiator.type === 'fetch';
-    
-    // Check for common SPA frameworks patterns in URLs
-    const spaPatterns = [
-      '_next/', '_nuxt/', '__webpack', '__vite', '/_app/',
-      '/api/', '/trpc/', '/graphql', '/_server/'
-    ];
-    
-    const hasSpaPattern = spaPatterns.some(pattern => url.includes(pattern));
-    
-    // Check for AJAX-like headers (common in SPAs)
-    const hasAjaxHeaders = initiator?.stack && 
-      typeof initiator.stack === 'string' &&
-      (initiator.stack.includes('XMLHttpRequest') || 
-       initiator.stack.includes('fetch') ||
-       initiator.stack.includes('axios'));
-    
-    return isSpaInitiator && (hasSpaPattern || hasAjaxHeaders);
-  }
-
-  // NEW: Authentication-specific request detection
-  private isAuthenticationRelated(url: string, request?: any): boolean {
-    // Check for authentication-related URL patterns
-    const authUrlPatterns = [
-      '/auth', '/login', '/logout', '/signin', '/signout',
-      '/token', '/refresh', '/session', '/user', '/profile',
-      '/oauth', '/sso', '/saml', '/oidc', '/jwt'
-    ];
-    
-    const hasAuthUrlPattern = authUrlPatterns.some(pattern => 
-      url.toLowerCase().includes(pattern)
-    );
-    
-    // Check for authentication headers
-    const headers = request?.headers || {};
-    const hasAuthHeaders = this.hasAuthenticationHeaders(headers);
-    
-    // Check for authentication cookies
-    const hasAuthCookies = this.hasAuthenticationCookies(headers);
-    
-    // Check for authentication query parameters
-    const hasAuthQueryParams = this.hasAuthenticationQueryParams(url);
-    
-    return hasAuthUrlPattern || hasAuthHeaders || hasAuthCookies || hasAuthQueryParams;
-  }
-
-  private hasAuthenticationHeaders(headers: Record<string, string>): boolean {
-    const authHeaderNames = [
-      'authorization', 'x-auth-token', 'x-access-token', 'x-api-key',
-      'x-session-id', 'x-csrf-token', 'x-xsrf-token'
-    ];
-    
-    return authHeaderNames.some(headerName => 
-      Object.keys(headers).some(key => key.toLowerCase() === headerName)
-    );
-  }
-
-  private hasAuthenticationCookies(headers: Record<string, string>): boolean {
-    const cookieHeader = headers['cookie'] || headers['Cookie'] || '';
-    
-    // Look for common authentication cookie patterns
-    const authCookiePatterns = [
-      'session', 'auth', 'token', 'login', 'userid', 'companyid',
-      '_csrf', 'PLAY_SESSION', 'connect.sid'
-    ];
-    
-    return authCookiePatterns.some(pattern => 
-      cookieHeader.toLowerCase().includes(pattern.toLowerCase())
-    );
-  }
-
-  private hasAuthenticationQueryParams(url: string): boolean {
-    try {
-      const urlObj = new URL(url);
-      const authQueryParams = [
-        'token', 'auth', 'session', 'userid', 'companyid',
-        'access_token', 'refresh_token', 'api_key'
-      ];
-      
-      return authQueryParams.some(param => urlObj.searchParams.has(param));
-    } catch {
-      // If URL parsing fails, check string patterns
-      const authParamPatterns = [
-        'token=', 'auth=', 'session=', 'userid=', 'access_token=', 'api_key='
-      ];
-      
-      return authParamPatterns.some(pattern => 
-        url.toLowerCase().includes(pattern)
-      );
-    }
-  }
-
+  /**
+   * Apply the user-configured capture filters (settings.filtering). Runs
+   * synchronously against the cached settings during capture; if settings
+   * haven't been cached yet the request is allowed through (masking still
+   * happens later at stop-recording).
+   */
   // NEW: Enhanced WebSocket handshake handling
   private handleWebSocketHandshake(session: RecordingSession, params: any): void {
     const { requestId, request, timestamp } = params;
@@ -1263,6 +1187,10 @@ export class BackgroundService {
     }
     
     if (Array.isArray(sseRequest.responseBody)) {
+      // Cap retained SSE events (drop oldest) to bound memory on long streams.
+      if (sseRequest.responseBody.length >= BackgroundService.MAX_STREAM_FRAMES) {
+        sseRequest.responseBody.shift();
+      }
       sseRequest.responseBody.push({
         timestamp: timestamp * 1000,
         eventName,
@@ -1274,21 +1202,11 @@ export class BackgroundService {
   }
 
   // NEW: Service Worker network handling
-  private handleServiceWorkerCreated(session: RecordingSession, params: any): void {
-    const { workerId, url, _scopeURL } = params;
-    
-    console.log('👷 Service Worker created:', url);
-    
-    // Enable network domain for this service worker
-    try {
-      chrome.debugger.sendCommand(
-        { tabId: session.tabId },
-        'ServiceWorker.deliverPushMessage',
-        { origin: new URL(url).origin, registrationId: workerId }
-      );
-    } catch (error) {
-      console.warn('Failed to enable Service Worker network monitoring:', error);
-    }
+  private handleServiceWorkerCreated(_session: RecordingSession, params: any): void {
+    // Informational only. Service-worker network traffic is already captured via
+    // Network.enable on the target; the previous ServiceWorker.deliverPushMessage
+    // call did NOT enable monitoring (it delivers a push message) and was removed.
+    console.log('👷 Service Worker created:', params?.url);
   }
 
   private handleServiceWorkerDestroyed(session: RecordingSession, params: any): void {
@@ -1608,113 +1526,30 @@ export class BackgroundService {
     }
   }
 
-  private async handleExportOpenAPI(
-    message: BackgroundMessage,
-    sendResponse: (response?: any) => void
-  ): Promise<void> {
-    const { sessionId } = message.payload;
-    const session = await this.getSessionOrFail(sessionId, sendResponse);
+  // Export handlers delegate to ExportController (plan.md 3.6). BackgroundService
+  // keeps session resolution + message plumbing; the extraction logic lives in
+  // the controller.
+  private async handleExportOpenAPI(message: BackgroundMessage, sendResponse: (response?: any) => void): Promise<void> {
+    const session = await this.getSessionOrFail(message.payload.sessionId, sendResponse);
     if (!session) return;
-
-    try {
-      const extractor = SchemaExtractor.getInstance();
-      const spec = extractor.extractOpenAPISpec(session);
-      const json = extractor.exportAsJSON(spec);
-
-      sendResponse({ success: true, content: json, spec });
-    } catch (error) {
-      sendResponse({
-        success: false,
-        error: error instanceof Error ? error.message : 'OpenAPI export failed'
-      });
-    }
+    sendResponse(this.exportController.openAPI(session));
   }
 
-  private async handleExportGraphQL(
-    message: BackgroundMessage,
-    sendResponse: (response?: any) => void
-  ): Promise<void> {
-    const { sessionId } = message.payload;
-    const session = await this.getSessionOrFail(sessionId, sendResponse);
+  private async handleExportGraphQL(message: BackgroundMessage, sendResponse: (response?: any) => void): Promise<void> {
+    const session = await this.getSessionOrFail(message.payload.sessionId, sendResponse);
     if (!session) return;
-
-    try {
-      const inferrer = GraphQLSchemaInference.getInstance();
-      const schema = inferrer.inferSchema(session);
-
-      sendResponse({
-        success: true,
-        content: schema.sdl,
-        schema
-      });
-    } catch (error) {
-      sendResponse({
-        success: false,
-        error: error instanceof Error ? error.message : 'GraphQL schema export failed'
-      });
-    }
+    sendResponse(this.exportController.graphQL(session));
   }
 
-  private async handleExportEnvFile(
-    message: BackgroundMessage,
-    sendResponse: (response?: any) => void
-  ): Promise<void> {
-    const { sessionId } = message.payload;
-    const session = await this.getSessionOrFail(sessionId, sendResponse);
+  private async handleExportEnvFile(message: BackgroundMessage, sendResponse: (response?: any) => void): Promise<void> {
+    const session = await this.getSessionOrFail(message.payload.sessionId, sendResponse);
     if (!session) return;
-
-    try {
-      const extractor = EnvironmentExtractor.getInstance();
-      const result = extractor.extractVariables(session);
-
-      sendResponse({
-        success: true,
-        content: result.envFile,
-        variables: result.variables,
-        environments: result.environments
-      });
-    } catch (error) {
-      sendResponse({
-        success: false,
-        error: error instanceof Error ? error.message : 'Environment extraction failed'
-      });
-    }
+    sendResponse(this.exportController.envFile(session));
   }
 
-  private async handleExportSecurityReport(
-    message: BackgroundMessage,
-    sendResponse: (response?: any) => void
-  ): Promise<void> {
-    const { sessionId, framework } = message.payload;
-    const session = await this.getSessionOrFail(sessionId, sendResponse);
+  private async handleExportSecurityReport(message: BackgroundMessage, sendResponse: (response?: any) => void): Promise<void> {
+    const session = await this.getSessionOrFail(message.payload.sessionId, sendResponse);
     if (!session) return;
-
-    try {
-      const generator = SecurityTestGenerator.getInstance();
-      const suites = generator.generateSecurityTests(session);
-
-      // Generate test code for each suite
-      const testCodes = suites.map(suite =>
-        generator.generateSecurityTestCode(suite, framework || 'jest')
-      );
-
-      // Calculate overall risk
-      const overallRisk = suites.length > 0
-        ? Math.round(suites.reduce((sum, s) => sum + s.riskScore, 0) / suites.length)
-        : 0;
-
-      sendResponse({
-        success: true,
-        suites,
-        testCode: testCodes.join('\n\n'),
-        overallRisk,
-        totalTests: suites.reduce((sum, s) => sum + s.tests.length, 0)
-      });
-    } catch (error) {
-      sendResponse({
-        success: false,
-        error: error instanceof Error ? error.message : 'Security report generation failed'
-      });
-    }
+    sendResponse(this.exportController.securityReport(session, message.payload.framework));
   }
 }

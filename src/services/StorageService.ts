@@ -5,11 +5,16 @@ import { Logger } from '@/services/logging/Logger';
 export class StorageService {
   private static instance: StorageService;
   private encryptionKey: string;
+  // Resolves once the persistent key is loaded. Every encrypt/decrypt awaits
+  // this so we never round-trip data under the throwaway bootstrap key (which
+  // produced ciphertext that could never be decrypted after init resolved).
+  private readonly ready: Promise<void>;
 
   private constructor() {
-    // Initialize with a temporary key, will be replaced async
+    // Bootstrap value only used before `ready` resolves; no I/O happens until
+    // callers await ensureReady(), so this is never used to encrypt real data.
     this.encryptionKey = 'temp-key';
-    this.initializeEncryptionKey();
+    this.ready = this.initializeEncryptionKey();
   }
 
   static getInstance(): StorageService {
@@ -17,6 +22,10 @@ export class StorageService {
       StorageService.instance = new StorageService();
     }
     return StorageService.instance;
+  }
+
+  private ensureReady(): Promise<void> {
+    return this.ready;
   }
 
   private async initializeEncryptionKey(): Promise<void> {
@@ -54,10 +63,13 @@ export class StorageService {
     const result = this.tryDecrypt(encryptedData, this.encryptionKey);
     if (result !== null) return result;
 
-    // Try without encryption (backward compatibility)
+    // Legacy migration path ONLY: data written by pre-encryption builds is raw
+    // JSON. We accept it once so upgrading users don't lose data, but we log a
+    // warning (not debug) because trusting unencrypted storage is a downgrade —
+    // the value is re-encrypted on the next write.
     try {
       const parsed = JSON.parse(encryptedData);
-      Logger.getInstance().debug('Data was not encrypted, returning as-is', null, 'StorageService');
+      Logger.getInstance().warn('Found unencrypted legacy data; will re-encrypt on next write', null, 'StorageService');
       return parsed;
     } catch {
       // Not valid JSON either — fall through to the corrupted-data path below.
@@ -90,6 +102,7 @@ export class StorageService {
 
   // Save recording session with quota check
   async saveSession(session: RecordingSession): Promise<void> {
+    await this.ensureReady();
     // Check storage quota before saving
     const usage = await this.getStorageUsage();
     const usageRatio = usage.used / usage.total;
@@ -137,6 +150,7 @@ export class StorageService {
 
   // Get all recording sessions
   async getSessions(): Promise<RecordingSession[]> {
+    await this.ensureReady();
     const result = await chrome.storage.local.get('sessions');
     if (result.sessions) {
       const decrypted = this.decrypt(result.sessions);
@@ -178,45 +192,61 @@ export class StorageService {
 
   // Save settings
   async saveSettings(settings: Settings): Promise<void> {
+    await this.ensureReady();
     // Encrypt API keys separately for extra security
     const apiKeys = settings.apiKeys;
     const encryptedKeys = this.encrypt(apiKeys);
-    
+
     // Save settings with encrypted API keys
     const settingsToSave = {
       ...settings,
       apiKeys: undefined // Don't save plain API keys
     };
 
-    await chrome.storage.sync.set({ 
-      settings: settingsToSave,
-      encryptedApiKeys: encryptedKeys
-    });
+    // Non-secret settings may sync across the user's devices, but encrypted API
+    // keys are kept in LOCAL storage only — they must never transit Google's
+    // sync servers or land on other synced devices.
+    await chrome.storage.sync.set({ settings: settingsToSave });
+    await chrome.storage.local.set({ encryptedApiKeys: encryptedKeys });
+    // Clean up any keys left in sync by older builds.
+    await chrome.storage.sync.remove('encryptedApiKeys');
   }
 
   // Get settings
   async getSettings(): Promise<Settings | null> {
     try {
+      await this.ensureReady();
       const result = await chrome.storage.sync.get(['settings', 'encryptedApiKeys']);
-      
+
       if (result.settings) {
         const settings = result.settings as Settings;
-        
+
+        // API keys live in local storage. Fall back to (and migrate off) any
+        // legacy keys still sitting in sync storage from older builds.
+        const localResult = await chrome.storage.local.get('encryptedApiKeys');
+        let encryptedApiKeys: string | undefined = localResult.encryptedApiKeys;
+        if (!encryptedApiKeys && result.encryptedApiKeys) {
+          encryptedApiKeys = result.encryptedApiKeys as string;
+          await chrome.storage.local.set({ encryptedApiKeys });
+          await chrome.storage.sync.remove('encryptedApiKeys');
+          Logger.getInstance().info('Migrated API keys from sync to local storage', null, 'StorageService');
+        }
+
         // Decrypt API keys if they exist
-        if (result.encryptedApiKeys) {
-          const decryptedKeys = this.decrypt(result.encryptedApiKeys);
+        if (encryptedApiKeys) {
+          const decryptedKeys = this.decrypt(encryptedApiKeys);
           // If decryption failed, reset to empty object rather than failing
           settings.apiKeys = decryptedKeys || {};
-          
+
           // If decryption failed, clear the corrupted data
-          if (!decryptedKeys && result.encryptedApiKeys) {
+          if (!decryptedKeys) {
             Logger.getInstance().warn('Clearing corrupted API keys, user will need to re-enter them', null, 'StorageService');
-            await chrome.storage.sync.remove('encryptedApiKeys');
+            await chrome.storage.local.remove('encryptedApiKeys');
           }
         } else {
           settings.apiKeys = {};
         }
-        
+
         return settings;
       }
     } catch (error) {
@@ -229,7 +259,7 @@ export class StorageService {
   }
   
   // Get default settings
-  private getDefaultSettings(): Settings {
+  getDefaultSettings(): Settings {
     return {
       aiProvider: 'openai',
       aiModel: 'gpt-4.1-mini',
@@ -269,7 +299,9 @@ export class StorageService {
   async resetCorruptedData(): Promise<void> {
     Logger.getInstance().warn('Resetting corrupted encrypted data', null, 'StorageService');
     
-    // Remove encrypted API keys but keep other settings
+    // Remove encrypted API keys but keep other settings (clear both stores in
+    // case a legacy copy remains in sync).
+    await chrome.storage.local.remove('encryptedApiKeys');
     await chrome.storage.sync.remove('encryptedApiKeys');
     
     // Clear sessions if they're corrupted
@@ -311,6 +343,7 @@ export class StorageService {
   // Import data
   async importData(jsonData: string): Promise<void> {
     try {
+      await this.ensureReady();
       const data = JSON.parse(jsonData);
       
       if (data.sessions) {

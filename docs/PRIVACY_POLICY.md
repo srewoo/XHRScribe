@@ -1,6 +1,6 @@
 # Privacy Policy for XHRScribe
 
-**Last Updated: January 2025**
+**Last Updated: July 2026**
 
 ## Overview
 
@@ -32,21 +32,21 @@ XHRScribe ("we", "our", or "the extension") is committed to protecting your priv
 ### Data Processing Principles
 - **Minimal Collection**: We only collect data necessary for core functionality
 - **User Control**: You control what data is recorded and processed
-- **Encryption**: All sensitive data is encrypted with AES-256
+- **At-rest obfuscation**: Stored data (sessions and API keys) is encrypted with AES before being written to Chrome storage
 - **Local First**: Processing happens locally when possible
 
 ## Data Security
 
 ### Encryption & Storage
-- **Local Encryption**: All data stored locally is encrypted with AES-256
-- **API Key Security**: API keys are encrypted and stored securely in Chrome's storage
-- **Device-Specific Keys**: Encryption keys are unique to your device
-- **No Plain Text Storage**: Sensitive data is never stored in plain text
+- **At-rest encryption**: Recorded sessions and API keys are AES-encrypted (via CryptoJS) before being stored in `chrome.storage.local`.
+- **Honest limitation**: Because a browser extension has no user-supplied passphrase, the encryption key is generated per-installation and stored **locally alongside the data**. This protects against casual inspection and sync, but it is **not** protection against an attacker who already has access to your operating-system user profile or disk — such an attacker could read the key and decrypt the data. Treat the extension's storage as only as private as your OS user account.
+- **API keys stay local**: API keys are stored in `chrome.storage.local` only — they are **never** placed in `chrome.storage.sync`, so they do not transit Google's sync servers or propagate to your other devices.
 
 ### Data Transmission
-- **HTTPS Only**: All external communications use HTTPS/TLS encryption
-- **Data Masking**: PII and sensitive data is automatically masked before transmission
-- **Optional Transmission**: You can choose local-only processing to avoid any external data transmission
+- **HTTPS Only**: All external communications use HTTPS/TLS encryption.
+- **Data Masking (best-effort)**: Before any data is sent to a cloud AI provider, request/response URLs, headers, and bodies are run through a masking pass that redacts common secrets and PII (auth headers, cookies, API-key and token formats, emails, credit cards, etc.). Masking is **pattern-based and best-effort** — it cannot guarantee every custom or opaque secret is removed. As a safeguard, the extension scans the outgoing payload one more time and asks you to confirm before uploading if it still detects sensitive-looking values.
+- **Where data goes**: When a cloud provider is selected, the masked payload is sent only to that provider's API endpoint (OpenAI, Anthropic, or Google). The active security-scanner sends requests only to hosts you explicitly authorize (internal/loopback targets are blocked).
+- **Optional Transmission**: Choosing the local (Ollama) provider keeps all processing on your machine with no external data transmission.
 
 ## Third-Party Services
 
@@ -57,9 +57,8 @@ When you choose to use cloud AI services:
 - **Google**: Subject to Google's privacy policy and terms of service
 
 ### Data Sent to AI Providers
-- **Anonymized Request Data**: Method, URL structure, and request/response patterns
-- **No Personal Information**: PII, credentials, and sensitive data are masked
-- **User Control**: You can disable cloud AI and use local models instead
+- **Masked Request Data**: Method, URL, headers, and request/response bodies with detected secrets/PII redacted (best-effort — see the masking note above)
+- **User Control**: You can disable cloud AI and use local models instead, and you are prompted before upload if residual sensitive data is detected
 
 ## Data Retention
 

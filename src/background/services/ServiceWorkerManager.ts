@@ -229,8 +229,10 @@ export class ServiceWorkerManager {
     chrome.alarms.onAlarm.removeListener(this.handleHeartbeatAlarm);
     chrome.alarms.onAlarm.addListener(this.handleHeartbeatAlarm);
 
-    // Also use interval as backup (more reliable than alarms for short intervals)
-    this.startHeartbeatInterval();
+    // NOTE: a setInterval does NOT keep an MV3 service worker alive — only the
+    // chrome.alarms tick (+ the storage write it performs) resets the idle
+    // timer. A backup interval merely double-fired performHeartbeat each tick
+    // while the SW happened to be awake, so it was removed.
 
     // Store heartbeat state
     await this.saveHeartbeatState();
@@ -241,20 +243,6 @@ export class ServiceWorkerManager {
       await this.performHeartbeat();
     }
   };
-
-  private startHeartbeatInterval(): void {
-    // Clear existing interval
-    if (this.heartbeatInterval) {
-      clearInterval(this.heartbeatInterval);
-    }
-
-    // Set up 30-second interval as backup to alarms
-    this.heartbeatInterval = setInterval(async () => {
-      await this.performHeartbeat();
-    }, 30000) as unknown as number; // 30 seconds
-
-    console.log('🫀 Heartbeat interval started (30s)');
-  }
 
   private async performHeartbeat(): Promise<void> {
     const now = Date.now();
@@ -383,7 +371,7 @@ export class ServiceWorkerManager {
   }
 
   isHeartbeatActive(): boolean {
-    return this.mode === 'HEARTBEAT' || this.heartbeatInterval !== null;
+    return this.mode === 'HEARTBEAT';
   }
 
   // Keep alive during long-running operations (AI generation, parallel tasks)

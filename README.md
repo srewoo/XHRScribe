@@ -37,7 +37,7 @@ between advertised and actually-wired behaviour:
   `TestGenerationTemplates` deleted; the single live LLM path is `AIService` +
   the four concrete providers.
 - **Test infrastructure repaired** — the AIService suite (previously unable to
-  load) now runs; full suite at 227 passing across 16 suites.
+  load) now runs; full suite at 240 passing across 18 suites.
 
 ## ✨ Enhanced Features
 
@@ -49,9 +49,9 @@ between advertised and actually-wired behaviour:
 - Background processing with progress tracking
 
 ### 🤖 **Multi-Provider AI Integration**
-- **OpenAI**: GPT-5.5, GPT-5.4-mini, GPT-4.1 (1M context), GPT-4.1-mini
+- **OpenAI**: GPT-4o, GPT-4o-mini, GPT-4.1 (1M context), GPT-4.1-mini
 - **Anthropic Claude**: Claude Opus 4.8, Claude Sonnet 4.6, Claude Haiku 4.5
-- **Google Gemini**: Gemini 3.5 Flash, Gemini 2.5 Pro, Gemini 3.1 Flash-Lite
+- **Google Gemini**: Gemini 2.5 Flash, Gemini 2.5 Pro, Gemini 2.0 Flash
 - **Local Models**: Llama 3.2, DeepSeek Coder (via Ollama)
 - **Cost Estimation**: Real-time token usage and cost tracking
 - **Quality Scoring**: AI-powered test quality analysis with recommendations
@@ -64,7 +64,7 @@ between advertised and actually-wired behaviour:
 - GDPR compliance and data retention controls
 
 ### 🧪 **Comprehensive Test Generation**
-- **8 Test Frameworks**: Jest, Playwright, Mocha/Chai, Cypress, Puppeteer, Vitest, Supertest, Postman
+- **16 Test Frameworks**: Jest, Playwright, Mocha, Mocha/Chai, Cypress, Puppeteer, Vitest, Supertest, Postman, RestAssured, k6, Artillery, Pactum, Karate, pytest, httpx
 - **Authentication Tests**: Bearer tokens, API keys, OAuth, custom auth patterns
 - **Error Scenario Coverage**: 4xx/5xx responses, network failures, timeouts
 - **Data Validation Tests**: Schema validation, type checking, boundary testing
@@ -199,9 +199,9 @@ src/
 ## 🔧 Enhanced Configuration
 
 ### Environment Variables
-- `OPENAI_API_KEY`: OpenAI API key (gpt-4.1, GPT-4-turbo, GPT-3.5-turbo)
-- `ANTHROPIC_API_KEY`: Claude API key (Claude-3.5-sonnet, Claude-3-haiku, Claude-3-opus)
-- `GOOGLE_API_KEY`: Gemini API key (Gemini-1.5-pro, Gemini-1.5-flash, Gemini-pro)
+- `OPENAI_API_KEY`: OpenAI API key (GPT-4o, GPT-4o-mini, GPT-4.1, GPT-4.1-mini)
+- `ANTHROPIC_API_KEY`: Claude API key (Claude Opus 4.8, Claude Sonnet 4.6, Claude Haiku 4.5)
+- `GOOGLE_API_KEY`: Gemini API key (Gemini 2.5 Flash, Gemini 2.5 Pro, Gemini 2.0 Flash)
 
 ### Advanced Settings Options
 - **AI Provider & Model**: Choose from 10+ supported models across providers
@@ -235,19 +235,19 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - [x] Multi-provider AI integration
 - [x] Security and privacy features
 
-### Phase 2: Enhancement (Q2 2024)
+### Phase 2: Enhancement
 - [x] Advanced test generation
 - [x] Self-healing tests
 - [ ] Team collaboration features
 - [x] Performance optimization
 
-### Phase 3: Scale (Q3 2024)
+### Phase 3: Scale
 - [ ] Enterprise features
 - [ ] Mobile app testing
 - [ ] Advanced analytics
 - [ ] API documentation generation
 
-### Phase 4: Innovation (Q4 2024)
+### Phase 4: Innovation
 - [ ] Custom model fine-tuning
 - [ ] Visual test builder
 - [ ] Cross-platform support
@@ -255,9 +255,8 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ## 📊 Enhanced Metrics & Capabilities
 
-- **Time Savings**: 85%+ reduction in test creation time
-- **Security**: AES-256 encryption, GDPR compliant, permissions audit
-- **Test Framework Coverage**: 8 major frameworks (Jest, Playwright, Cypress, Mocha/Chai, Puppeteer, Vitest, Supertest, Postman)
+- **Security**: encrypted-at-rest storage (see PRIVACY_POLICY.md for the threat model), data masking before upload, permissions audit
+- **Test Framework Coverage**: 16 frameworks (Jest, Playwright, Mocha, Mocha/Chai, Cypress, Puppeteer, Vitest, Supertest, Postman, RestAssured, k6, Artillery, Pactum, Karate, pytest, httpx)
 - **AI Models**: 10+ supported models across 4 providers (OpenAI, Claude, Gemini, Local)
 - **Test Types**: Authentication, Error Scenarios, Performance, Security, Data Validation
 - **Quality Features**: Complexity analysis, quality scoring, improvement recommendations

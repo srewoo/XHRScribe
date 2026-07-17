@@ -23,7 +23,11 @@ import {
   AccordionDetails,
   Switch,
   Slider,
-  Collapse,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogContentText,
+  DialogActions,
 } from '@mui/material';
 import AutoAwesome from '@mui/icons-material/AutoAwesome';
 import Download from '@mui/icons-material/Download';
@@ -37,7 +41,7 @@ import DataObject from '@mui/icons-material/DataObject';
 import Delete from '@mui/icons-material/Delete';
 import SelectAll from '@mui/icons-material/SelectAll';
 import Stop from '@mui/icons-material/Stop';
-import { RecordingSession, TestFramework, AIProvider, AIModel } from '@/types';
+import { RecordingSession, TestFramework, AIProvider, AIModel, NetworkRequest } from '@/types';
 import { useStore } from '@/store/useStore';
 import EndpointPreview from './EndpointPreview';
 import RequestList from './RequestList';
@@ -45,8 +49,17 @@ import GenerationProgress from './GenerationProgress';
 import GeneratedResults from './GeneratedResults';
 import ReplayPanel from './ReplayPanel';
 import CostEstimator from './CostEstimator';
+import { MODEL_OPTIONS } from './modelOptions';
 import { Logger } from '@/services/logging/Logger';
 import { getEndpointSignature } from '@/services/EndpointGrouper';
+import { DataMaskingService } from '@/services/DataMaskingService';
+import { estimateCost } from './CostEstimator';
+import { SecurityFindings, SecurityFinding } from './SecurityFindings';
+
+// Default ceiling for a single generation run. If the estimate exceeds this the
+// user is asked to confirm before any spend. Overridable via
+// settings.advanced.maxGenerationCost. (plan.md 3.3)
+const DEFAULT_COST_CAP_USD = 0.5;
 import {
   ParallelGenerationOrchestrator,
   ParallelGenerationResult,
@@ -68,6 +81,39 @@ interface GenerationState {
   endpointName?: string;
 }
 
+// Scans the requests that WILL be sent to the LLM (respecting the user's
+// endpoint exclusions) for residual sensitive data that survived masking.
+// Returns the distinct types found and a total match count.
+function scanForSensitiveData(
+  requests: NetworkRequest[],
+  excluded: Set<string>
+): { types: string[]; count: number } | null {
+  const masking = DataMaskingService.getInstance();
+  const types = new Set<string>();
+  let count = 0;
+
+  for (const req of requests) {
+    if (excluded.has(getEndpointSignature(req))) continue;
+    const parts = [
+      req.url,
+      JSON.stringify(req.requestHeaders || {}),
+      JSON.stringify(req.responseHeaders || {}),
+      typeof req.requestBody === 'string' ? req.requestBody : JSON.stringify(req.requestBody || ''),
+      typeof req.responseBody === 'string' ? req.responseBody : JSON.stringify(req.responseBody || ''),
+    ];
+    for (const part of parts) {
+      if (!part) continue;
+      const report = masking.detectSensitiveData(part);
+      if (report.hasSensitiveData) {
+        report.types.forEach(t => types.add(t));
+        count += report.count;
+      }
+    }
+  }
+
+  return count > 0 ? { types: Array.from(types), count } : null;
+}
+
 export default function GeneratePanel({ sessions }: GeneratePanelProps) {
   const { selectedSession, generateTests, cancelGeneration, deleteRequests, settings, loadSettings, generatedTests } = useStore();
   const [framework, setFramework] = useState<TestFramework>('jest');
@@ -75,6 +121,24 @@ export default function GeneratePanel({ sessions }: GeneratePanelProps) {
   const [model, setModel] = useState<AIModel>('gpt-4.1-mini');
   const [hasUserChangedModel, setHasUserChangedModel] = useState(false);
   const isInitialLoadRef = useRef(true);
+  // Pre-send sensitive-data gate: residual secrets/PII detected in the
+  // (already-masked) payload just before it would be uploaded to the LLM.
+  const [sensitiveReport, setSensitiveReport] = useState<{ types: string[]; count: number } | null>(null);
+  const sensitiveAckRef = useRef(false);
+  // Cost gate: shown when the estimated spend exceeds the cap.
+  const [costGate, setCostGate] = useState<{ cost: number; cap: number } | null>(null);
+  const costAckRef = useRef(false);
+  // Generic promise-based confirm dialog (replaces alert()/window.confirm()).
+  const [confirmState, setConfirmState] = useState<{ title: string; message: string; confirmLabel: string } | null>(null);
+  const confirmResolveRef = useRef<((v: boolean) => void) | null>(null);
+  const askConfirm = (opts: { title: string; message: string; confirmLabel: string }) =>
+    new Promise<boolean>((resolve) => { confirmResolveRef.current = resolve; setConfirmState(opts); });
+  const resolveConfirm = (v: boolean) => {
+    setConfirmState(null);
+    const r = confirmResolveRef.current;
+    confirmResolveRef.current = null;
+    r?.(v);
+  };
   const [options, setOptions] = useState({
     // Default to comprehensive testing
     includeAuth: true,
@@ -124,21 +188,7 @@ export default function GeneratePanel({ sessions }: GeneratePanelProps) {
   const [parallelResult, setParallelResult] = useState<ParallelGenerationResult | null>(null);
   const [_resultTab, _setResultTab] = useState(0);
   const [securityScanning, setSecurityScanning] = useState(false);
-  const [securityResults, setSecurityResults] = useState<Array<{
-    testName: string;
-    status: string;
-    details: string;
-    responseStatus: number;
-    severity?: string;
-    description?: string;
-    owaspReference?: string;
-    method?: string;
-    url?: string;
-    payload?: string;
-    evidence?: string;
-    confidence?: string;
-    remediation?: string;
-  }>>([]);
+  const [securityResults, setSecurityResults] = useState<SecurityFinding[]>([]);
   const [expandedFinding, setExpandedFinding] = useState<number | null>(null);
   const [maintenanceHints, setMaintenanceHints] = useState<{ newEndpoints: string[]; changedSchemas: string[]; removedEndpoints: string[] } | null>(null);
 
@@ -255,31 +305,6 @@ export default function GeneratePanel({ sessions }: GeneratePanelProps) {
     }
   }, [generatedTests]);
 
-  // Get all available models in one list
-  const getAllAvailableModels = (): { value: AIModel; label: string }[] => {
-    return [
-      // OpenAI Models
-      { value: 'gpt-5.5', label: 'GPT-5.5 (Most Capable)' },
-      { value: 'gpt-5.4-mini', label: 'GPT-5.4 Mini (Fast)' },
-      { value: 'gpt-4.1', label: 'GPT-4.1 (1M context)' },
-      { value: 'gpt-4.1-mini', label: 'GPT-4.1 Mini (Cheapest)' },
-
-      // Anthropic Claude Models
-      { value: 'claude-opus-4-8', label: 'Claude Opus 4.8 (Most Capable)' },
-      { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6 (Balanced)' },
-      { value: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5 (Fast & Cheap)' },
-
-      // Google Gemini Models
-      { value: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash (Latest)' },
-      { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
-      { value: 'gemini-3.1-flash-lite', label: 'Gemini 3.1 Flash-Lite (Cheapest)' },
-
-      // Local Models
-      { value: 'llama-3.2', label: 'Llama 3.2' },
-      { value: 'deepseek-coder', label: 'DeepSeek Coder' },
-    ];
-  };
-
   // Update provider and model from settings only on initial mount
   useEffect(() => {
     if (settings && isInitialLoadRef.current) {
@@ -328,6 +353,10 @@ export default function GeneratePanel({ sessions }: GeneratePanelProps) {
   // Reset excluded endpoints when session changes
   React.useEffect(() => {
     setExcludedEndpoints(new Set());
+    sensitiveAckRef.current = false;
+    setSensitiveReport(null);
+    costAckRef.current = false;
+    setCostGate(null);
   }, [session?.id]);
 
   const handleGenerate = async () => {
@@ -343,10 +372,41 @@ export default function GeneratePanel({ sessions }: GeneratePanelProps) {
     };
 
     if (provider !== 'local' && !providerKeyMap[provider]) {
-      alert(`Please configure your ${provider.toUpperCase()} API key in the extension settings first.`);
-      chrome.runtime.openOptionsPage();
+      const openSettings = await askConfirm({
+        title: 'API key required',
+        message: `Configure your ${provider.toUpperCase()} API key in the extension settings before generating.`,
+        confirmLabel: 'Open settings',
+      });
+      if (openSettings) chrome.runtime.openOptionsPage();
       return;
     }
+
+    // Pre-send sensitive-data gate. The payload is already masked, but masking
+    // is best-effort — scan the outgoing bodies/headers/URLs one more time and,
+    // if anything secret-looking survived, block until the user confirms.
+    // Skipped for the local (Ollama) provider, which never leaves the machine.
+    if (provider !== 'local' && !sensitiveAckRef.current) {
+      const report = scanForSensitiveData(session.requests || [], excludedEndpoints);
+      if (report && report.count > 0) {
+        setSensitiveReport(report);
+        return;
+      }
+    }
+
+    // Cost gate (plan.md 3.3): if the estimated spend exceeds the cap, confirm
+    // before making any paid API calls. Free for the local provider.
+    if (provider !== 'local' && !costAckRef.current) {
+      const cap = settings?.advanced?.maxGenerationCost ?? DEFAULT_COST_CAP_USD;
+      const { cost } = estimateCost(session, provider, model, options, excludedEndpoints);
+      if (cost > cap) {
+        setCostGate({ cost, cap });
+        return;
+      }
+    }
+
+    // Both gates passed — consume the acknowledgements for this run.
+    sensitiveAckRef.current = false;
+    costAckRef.current = false;
 
     // Calculate real estimates based on endpoints and provider
     const requests = session.requests || [];
@@ -394,8 +454,6 @@ export default function GeneratePanel({ sessions }: GeneratePanelProps) {
     };
 
     const excludedArray = Array.from(excludedEndpoints);
-    console.log(`🔍 [GeneratePanel] Excluded endpoints (${excludedArray.length}):`, excludedArray);
-    console.log(`🔍 [GeneratePanel] Active endpoints: ${activeEndpointCount}`);
 
     const generationOptions = {
       framework,
@@ -407,57 +465,23 @@ export default function GeneratePanel({ sessions }: GeneratePanelProps) {
     };
 
     try {
-      // Phase 1: Analysis (0-15%)
-      updateProgress(5, `Analyzing ${uniqueEndpoints.length} API endpoints...`);
-      await new Promise(resolve => setTimeout(resolve, 800));
-      updateProgress(15, `Found ${requests.length} requests across ${uniqueEndpoints.length} endpoints`);
+      // Honest progress only: show that we've started, then let the real
+      // GENERATION_PROGRESS messages (emitted per-endpoint by the background
+      // service via the listener above) drive the bar between 25% and 95%.
+      // No fabricated sleeps or scripted stage strings.
+      updateProgress(5, `Preparing ${uniqueEndpoints.length} API endpoints for ${provider.toUpperCase()} (${model})...`);
 
-      // Phase 2: Provider Connection (15-25%)
-      updateProgress(18, `Connecting to ${provider.toUpperCase()} API...`);
-      await new Promise(resolve => setTimeout(resolve, 600));
-      updateProgress(25, `✅ Connected to ${provider.toUpperCase()} (${model})`);
-
-      // Phase 3: Main Generation (25-85%) - This is where the real work happens
-      updateProgress(30, `Generating comprehensive test suite...`);
-      
-      // Track generation progress through multiple steps
-      const generationSteps = [
-        { progress: 35, stage: `Processing ${options.testCoverage} test coverage...` },
-        { progress: 45, stage: 'Analyzing request/response patterns...' },
-        { progress: 55, stage: 'Generating core test logic...' },
-        { progress: 65, stage: 'Adding authentication tests...' },
-        { progress: 75, stage: 'Creating error scenario tests...' },
-      ];
-
-      // Update progress during generation
-      let stepIndex = 0;
-      const stepInterval = setInterval(() => {
-        if (stepIndex < generationSteps.length) {
-          const step = generationSteps[stepIndex];
-          updateProgress(step.progress, step.stage);
-          stepIndex++;
-        }
-      }, 1200);
-
-      // Call the actual generateTests through the store
+      // Call the actual generateTests through the store. While this awaits, the
+      // GENERATION_PROGRESS listener updates currentEndpoint/totalEndpoints/stage.
       const generatedTest = await generateTests(session.id, generationOptions);
-      
-      clearInterval(stepInterval);
-      
-      // Phase 4: Post-processing (85-95%)
-      updateProgress(85, 'Optimizing test structure...');
-      await new Promise(resolve => setTimeout(resolve, 400));
-      updateProgress(90, 'Validating test syntax...');
-      await new Promise(resolve => setTimeout(resolve, 300));
-      
+
       // Use the returned test directly
       if (generatedTest && generatedTest.code) {
         setGeneratedCode(generatedTest.code);
-        updateProgress(95, 'Finalizing test suite...');
-        await new Promise(resolve => setTimeout(resolve, 200));
+        updateProgress(97, 'Finalizing test suite...');
       }
-      
-      // Phase 5: Complete (100%)
+
+      // Complete (100%)
       setGenerationState(prev => ({
         ...prev,
         progress: 100,
@@ -519,130 +543,6 @@ export default function GeneratePanel({ sessions }: GeneratePanelProps) {
       totalEndpoints: undefined,
       endpointName: undefined,
     });
-  };
-
-  // Mock function removed - now using real AI generation
-  const _generateMockTestCode = (session: RecordingSession, framework: string): string => {
-    const firstRequest = session.requests[0];
-    if (!firstRequest) return '// No requests to generate tests for';
-
-    if (framework === 'restassured') {
-      return `// Generated by XHRScribe AI (Java REST Assured)
-import io.restassured.RestAssured;
-import static io.restassured.RestAssured.*;
-import static org.hamcrest.Matchers.*;
-import org.testng.annotations.BeforeClass;
-import org.testng.annotations.Test;
-
-public class ${session.name.replace(/[^a-zA-Z0-9]/g, '')}Tests {
-    private static final String BASE_URL = "${new URL(firstRequest.url).origin}";
-    
-    @BeforeClass
-    public void setup() {
-        RestAssured.baseURI = BASE_URL;
-    }
-    
-    @Test
-    public void test${firstRequest.method}Request() {
-        given()
-            ${options.includeAuth ? '.header("Authorization", "Bearer " + authToken)' : ''}
-        .when()
-            .${firstRequest.method.toLowerCase()}("${new URL(firstRequest.url).pathname}")
-        .then()
-            .statusCode(${firstRequest.status || 200})
-            .body(notNullValue());
-    }
-}`;
-    } else if (framework === 'postman') {
-      return `{
-  "info": {
-    "name": "${session.name} API Tests",
-    "description": "Generated by XHRScribe AI",
-    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
-  },
-  "item": [
-    {
-      "name": "${firstRequest.method} ${new URL(firstRequest.url).pathname}",
-      "request": {
-        "method": "${firstRequest.method}",
-        "header": [],
-        "url": {
-          "raw": "${firstRequest.url}",
-          "host": ["${new URL(firstRequest.url).hostname}"],
-          "path": ["${new URL(firstRequest.url).pathname}"]
-        }
-      },
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "exec": [
-              "pm.test('Status code is ${firstRequest.status || 200}', function () {",
-              "    pm.response.to.have.status(${firstRequest.status || 200});",
-              "});"
-            ]
-          }
-        }
-      ]
-    }
-  ]
-}`;
-    } else if (framework === 'jest') {
-      return `// Generated by XHRScribe AI
-const axios = require('axios');
-
-describe('${session.name} API Tests', () => {
-  const baseURL = process.env.API_BASE_URL || '${new URL(firstRequest.url).origin}';
-  let authToken;
-
-  beforeAll(async () => {
-    // Setup authentication if needed
-    ${options.includeAuth ? `
-    const authResponse = await axios.post(\`\${baseURL}/auth/login\`, {
-      username: process.env.TEST_USERNAME,
-      password: process.env.TEST_PASSWORD,
-    });
-    authToken = authResponse.data.token;` : ''}
-  });
-
-${session.requests.slice(0, 5).map(req => `
-  test('${req.method} ${new URL(req.url).pathname}', async () => {
-    const response = await axios({
-      method: '${req.method.toLowerCase()}',
-      url: \`\${baseURL}${new URL(req.url).pathname}\`,
-      ${options.includeAuth ? 'headers: { Authorization: `Bearer ${authToken}` },' : ''}
-      ${req.requestBody ? `data: ${JSON.stringify(req.requestBody)},` : ''}
-    });
-    
-    expect(response.status).toBe(${req.status || 200});
-    expect(response.data).toBeDefined();
-    ${options.includePerformanceTests ? `
-    expect(response.duration).toBeLessThan(1000); // Performance assertion` : ''}
-  });
-`).join('')}
-
-${options.includeErrorScenarios ? `
-  describe('Error Scenarios', () => {
-    test('should handle 404 not found', async () => {
-      try {
-        await axios.get(\`\${baseURL}/non-existent-endpoint\`);
-      } catch (error) {
-        expect(error.response.status).toBe(404);
-      }
-    });
-
-    test('should handle 401 unauthorized', async () => {
-      try {
-        await axios.get(\`\${baseURL}${new URL(firstRequest.url).pathname}\`);
-      } catch (error) {
-        expect(error.response.status).toBe(401);
-      }
-    });
-  });` : ''}
-});`;
-    }
-
-    return '// Test generation for ' + framework + ' coming soon';
   };
 
   // Parallel generation handlers
@@ -872,6 +772,19 @@ ${options.includeErrorScenarios ? `
               startIcon={<Security />}
               disabled={securityScanning}
               onClick={async () => {
+                const baseUrl = session.url || session.requests[0]?.url?.replace(/\/[^/]*$/, '') || '';
+                // Active scanning fires real requests from the user's authenticated
+                // context. Require explicit, target-specific authorization first.
+                const authorized = await askConfirm({
+                  title: 'Authorize active security scan',
+                  message:
+                    `Run an ACTIVE security scan against:\n\n${baseUrl}\n\n` +
+                    `This sends real attack-style requests from your logged-in browser session. ` +
+                    `Only proceed if you own or are explicitly authorized to test this target. ` +
+                    `Destructive payloads (DROP/DELETE/time-delay) are skipped by default.`,
+                  confirmLabel: 'Run scan',
+                });
+                if (!authorized) return;
                 setSecurityScanning(true);
                 setSecurityResults([]);
                 try {
@@ -879,11 +792,10 @@ ${options.includeErrorScenarios ? `
                   const { SecurityTestRunner } = await import('@/services/SecurityTestRunner');
                   const generator = SecurityTestGenerator.getInstance();
                   const runner = SecurityTestRunner.getInstance();
-                  const baseUrl = session.url || session.requests[0]?.url?.replace(/\/[^/]*$/, '') || '';
                   const suites = generator.generateSecurityTests(session);
                   const allResults: typeof securityResults = [];
                   for (const suite of suites) {
-                    const _scanResult = await runner.runSuite(suite, baseUrl, (_c, _t, result) => {
+                    const _scanResult = await runner.runSuite(suite, baseUrl, { authorized: true, allowDestructive: false }, (_c, _t, result) => {
                       allResults.push({
                         testName: result.testName,
                         status: result.status,
@@ -914,77 +826,7 @@ ${options.includeErrorScenarios ? `
               {securityScanning ? 'Scanning...' : 'Run Security Scan'}
             </Button>
             {securityScanning && <LinearProgress sx={{ mb: 1 }} />}
-            {securityResults.length > 0 && (
-              <Box sx={{ maxHeight: 320, overflow: 'auto' }}>
-                {securityResults.map((r, i) => {
-                  const sevColor = r.severity === 'critical' || r.severity === 'high'
-                    ? 'error'
-                    : r.severity === 'medium' ? 'warning' : 'default';
-                  const isOpen = expandedFinding === i;
-                  return (
-                    <Box key={i} sx={{ borderBottom: '1px solid', borderColor: 'divider' }}>
-                      <Box
-                        onClick={() => setExpandedFinding(isOpen ? null : i)}
-                        sx={{ display: 'flex', alignItems: 'center', gap: 0.5, py: 0.5, cursor: 'pointer', '&:hover': { bgcolor: 'action.hover' } }}
-                      >
-                        <Chip
-                          label={r.status}
-                          size="small"
-                          color={r.status === 'vulnerable' ? 'error' : r.status === 'safe' ? 'success' : 'default'}
-                          sx={{ height: 18, fontSize: '0.6rem', minWidth: 70 }}
-                        />
-                        {r.status === 'vulnerable' && r.severity && (
-                          <Chip label={r.severity} size="small" color={sevColor as any} variant="outlined" sx={{ height: 18, fontSize: '0.55rem' }} />
-                        )}
-                        <Typography variant="caption" sx={{ flex: 1 }} noWrap>{r.testName}</Typography>
-                        {r.confidence && r.status === 'vulnerable' && (
-                          <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.55rem' }}>
-                            {r.confidence} conf
-                          </Typography>
-                        )}
-                        <Typography variant="caption" color="text.secondary">{r.responseStatus || '-'}</Typography>
-                        <ExpandMore sx={{ fontSize: 16, transform: isOpen ? 'rotate(180deg)' : 'none', transition: '0.2s' }} />
-                      </Box>
-                      <Collapse in={isOpen}>
-                        <Box sx={{ pl: 1, pr: 1, pb: 1, fontSize: '0.7rem' }}>
-                          {r.description && (
-                            <Typography variant="caption" sx={{ display: 'block', mb: 0.5 }}>{r.description}</Typography>
-                          )}
-                          {(r.method || r.url) && (
-                            <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary' }}>
-                              <strong>Endpoint:</strong> {r.method} {r.url}
-                            </Typography>
-                          )}
-                          {r.payload && (
-                            <Box sx={{ my: 0.5 }}>
-                              <Typography variant="caption" sx={{ fontWeight: 600 }}>Payload sent:</Typography>
-                              <Box component="pre" sx={{ m: 0, p: 0.5, bgcolor: 'grey.100', borderRadius: 0.5, overflow: 'auto', fontSize: '0.65rem', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
-                                {r.payload}
-                              </Box>
-                            </Box>
-                          )}
-                          {r.evidence && (
-                            <Typography variant="caption" sx={{ display: 'block', mb: 0.5 }}>
-                              <strong>Why flagged:</strong> {r.evidence}
-                            </Typography>
-                          )}
-                          {r.owaspReference && (
-                            <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary' }}>
-                              <strong>OWASP:</strong> {r.owaspReference}
-                            </Typography>
-                          )}
-                          {r.remediation && (
-                            <Alert severity="info" sx={{ mt: 0.5, py: 0, fontSize: '0.65rem' }}>
-                              <strong>Fix:</strong> {r.remediation}
-                            </Alert>
-                          )}
-                        </Box>
-                      </Collapse>
-                    </Box>
-                  );
-                })}
-              </Box>
-            )}
+            <SecurityFindings results={securityResults} expanded={expandedFinding} onToggle={setExpandedFinding} />
           </AccordionDetails>
         </Accordion>
 
@@ -1121,7 +963,7 @@ ${options.includeErrorScenarios ? `
               label="Model"
               disabled={generationState.isGenerating}
             >
-              {getAllAvailableModels().map((modelOption) => (
+              {MODEL_OPTIONS.map((modelOption) => (
                 <MenuItem key={modelOption.value} value={modelOption.value}>
                   {modelOption.label}
                 </MenuItem>
@@ -1492,6 +1334,75 @@ ${options.includeErrorScenarios ? `
           </AccordionDetails>
         </Accordion>
       )}
+
+      {/* Pre-send sensitive-data confirmation gate (plan.md 1.6) */}
+      <Dialog open={sensitiveReport !== null} onClose={() => setSensitiveReport(null)} maxWidth="sm" fullWidth>
+        <DialogTitle>Possible sensitive data detected</DialogTitle>
+        <DialogContent>
+          <DialogContentText component="div">
+            After masking, the requests you're about to send to <strong>{provider.toUpperCase()}</strong> still
+            contain {sensitiveReport?.count} value(s) that look sensitive
+            {sensitiveReport?.types.length ? ` (${sensitiveReport.types.join(', ')})` : ''}.
+            <Box sx={{ mt: 1 }}>
+              This data will leave your browser and be sent to a third-party LLM provider. Review your masking
+              settings, or continue if this is safe test data.
+            </Box>
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setSensitiveReport(null)}>Cancel</Button>
+          <Button
+            color="warning"
+            variant="contained"
+            onClick={() => {
+              sensitiveAckRef.current = true;
+              setSensitiveReport(null);
+              void handleGenerate();
+            }}
+          >
+            Send anyway
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Cost-ceiling confirmation gate (plan.md 3.3) */}
+      <Dialog open={costGate !== null} onClose={() => setCostGate(null)} maxWidth="sm" fullWidth>
+        <DialogTitle>Confirm generation cost</DialogTitle>
+        <DialogContent>
+          <DialogContentText component="div">
+            The estimated cost for this run is <strong>${costGate?.cost.toFixed(4)}</strong>, which
+            exceeds your ${costGate?.cap.toFixed(2)} limit. This is an estimate — actual cost depends
+            on response size.
+            <Box sx={{ mt: 1 }}>Proceed with generation?</Box>
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setCostGate(null)}>Cancel</Button>
+          <Button
+            color="warning"
+            variant="contained"
+            onClick={() => {
+              costAckRef.current = true;
+              setCostGate(null);
+              void handleGenerate();
+            }}
+          >
+            Generate anyway
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Generic confirm dialog — replaces alert()/window.confirm() (plan.md 6.2) */}
+      <Dialog open={confirmState !== null} onClose={() => resolveConfirm(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>{confirmState?.title}</DialogTitle>
+        <DialogContent>
+          <DialogContentText sx={{ whiteSpace: 'pre-line' }}>{confirmState?.message}</DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => resolveConfirm(false)}>Cancel</Button>
+          <Button variant="contained" onClick={() => resolveConfirm(true)}>{confirmState?.confirmLabel}</Button>
+        </DialogActions>
+      </Dialog>
 
     </Box>
   );

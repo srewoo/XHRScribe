@@ -5,6 +5,8 @@ import { LLMProvider } from '../LLMProvider';
 import { AuthFlow, AuthFlowAnalyzer } from '../../AuthFlowAnalyzer';
 import { normalizePath } from '../../EndpointGrouper';
 import { PromptBuilder } from '../PromptBuilder';
+import { UNTRUSTED_DATA_INSTRUCTION, wrapUntrusted } from '../promptSafety';
+import { isGraphQLEndpoint, extractGraphQLOperation, getModelTokenLimit } from '../providerShared';
 
 interface OpenAIErrorResponse {
   error?: {
@@ -85,7 +87,10 @@ export class OpenAIProvider implements LLMProvider {
           }
         );
 
-        const rawCode = response.data.choices[0]?.message?.content || '';
+        const rawCode = response.data?.choices?.[0]?.message?.content || '';
+        if (!rawCode) {
+          throw new Error('OpenAI returned an unexpected or empty response (no message content).');
+        }
         const generatedCode = PromptBuilder.getInstance().sanitizeGeneratedCode(rawCode, options.framework);
         const totalTokens = response.data.usage?.total_tokens || totalInputTokens;
         const qualityScore = this.calculateQualityScore(generatedCode, harData);
@@ -155,9 +160,10 @@ export class OpenAIProvider implements LLMProvider {
   }
 
   estimateCost(tokenCount: number, model?: string): number {
+    // OpenAI list pricing, USD per 1K tokens (input / output).
     const modelPricing: Record<string, { input: number; output: number }> = {
-      'gpt-5.5': { input: 0.01, output: 0.03 },
-      'gpt-5.4-mini': { input: 0.0005, output: 0.002 },
+      'gpt-4o': { input: 0.0025, output: 0.01 },
+      'gpt-4o-mini': { input: 0.00015, output: 0.0006 },
       'gpt-4.1': { input: 0.002, output: 0.008 },
       'gpt-4.1-mini': { input: 0.0004, output: 0.0016 },
     };
@@ -191,7 +197,9 @@ REQUIREMENTS:
 9. Include performance assertions where relevant
 10. Add data-driven tests for multiple input combinations
 
-IMPORTANT: Generate actual runnable code, not pseudocode or examples.`;
+IMPORTANT: Generate actual runnable code, not pseudocode or examples.
+
+${UNTRUSTED_DATA_INSTRUCTION}`;
   }
 
   private buildExhaustivePrompt(harData: HARData, options: GenerationOptions, authFlow?: AuthFlow, customAuthGuide?: string): string {
@@ -224,33 +232,19 @@ IMPORTANT: Generate actual runnable code, not pseudocode or examples.`;
       }
     });
     
-    let prompt = `🔥🔥🔥 NUCLEAR ALERT - CRITICAL REQUIREMENT 🔥🔥🔥
+    const casesPerEndpoint = options.testCoverage === 'minimal' ? '1-2' : options.testCoverage === 'exhaustive' ? '8-12' : '3-5';
+    let prompt = `Generate complete, production-ready ${framework} test code for all ${uniqueEndpoints.size} endpoint(s).
 
-I AM PAYING FOR COMPLETE TEST GENERATION. INCOMPLETE RESPONSES WILL BE REJECTED.
-
-YOU MUST GENERATE COMPLETE, FULLY-IMPLEMENTED ${framework} TEST CODE FOR ALL ${uniqueEndpoints.size} ENDPOINTS.
-
-🚫 ABSOLUTELY FORBIDDEN - INSTANT REJECTION:
-❌ "Continue adding more endpoint tests..." 
-❌ "Follow the same pattern for remaining endpoints"
-❌ "Add more tests here" or "TODO: implement more tests"
-❌ "Similar tests can be added for other endpoints"
-❌ "You can add more tests..." or "Additional tests..."
-❌ "Repeat for other endpoints" or "...and so on"
-❌ Any variation of "continue", "add more", "follow pattern"
-❌ Stopping after generating only some endpoints
-❌ Template or example code instead of actual tests
-
-🔥 MANDATORY REQUIREMENTS:
-✅ GENERATE ACTUAL WORKING CODE FOR ALL ${uniqueEndpoints.size} ENDPOINTS
-✅ Each endpoint gets a complete test suite with ${options.testCoverage === 'minimal' ? '1-2' : options.testCoverage === 'exhaustive' ? '8-12' : '3-5'} real test cases
-✅ NO placeholder comments, NO template suggestions
-✅ Production-ready, runnable code that I can use immediately
+Requirements:
+- Write fully-implemented test cases for every endpoint — do not stop partway through.
+- Give each endpoint ${casesPerEndpoint} real, runnable test cases.
+- Do not emit placeholder comments, TODOs, template/example code, or "follow the same pattern for the rest" shortcuts — write the actual code for each endpoint.
+- The output must run as-is with no further editing.
 
 Framework: ${framework}
 ${this.getFrameworkInstructions(framework)}
 
-🔥 CRITICAL CODE QUALITY REQUIREMENTS - ZERO TOLERANCE FOR BUGS:
+Code quality requirements:
 
 ⚠️ IMPORTS & SETUP:
 ✅ ALWAYS include proper imports at the top (e.g., const { test, expect } = require('@playwright/test');)
@@ -442,7 +436,7 @@ ${entry.request.cookies && entry.request.cookies.length > 0
   : 'No cookies'}
 
 📦 REQUEST BODY:
-${requestBody ? requestBody.substring(0, 1500) : 'No request body'}
+${requestBody ? wrapUntrusted(requestBody.substring(0, 1500)) : 'No request body'}
 
 📥 RESPONSE DETAILS:
 Status: ${statusCode}
@@ -456,7 +450,7 @@ ${entry.response.cookies && entry.response.cookies.length > 0
   : 'No response cookies'}
 
 📦 RESPONSE BODY:
-${responseBody ? responseBody.substring(0, 1500) : 'No response body'}
+${responseBody ? wrapUntrusted(responseBody.substring(0, 1500)) : 'No response body'}
 
 🚨 TESTS FOR THIS ENDPOINT:
 
@@ -699,13 +693,7 @@ ${pb.getQualityGateSection()}
   }
 
   private getMaxTokens(model: string): number {
-    const limits: Record<string, number> = {
-      'gpt-5.5': 400000,
-      'gpt-5.4-mini': 400000,
-      'gpt-4.1': 1000000,        // 1M token context window
-      'gpt-4.1-mini': 1000000,
-    };
-    return limits[model] || 400000;
+    return getModelTokenLimit(model, 128000);
   }
 
   private calculateQualityScore(code: string, harData: HARData): number {
@@ -870,71 +858,12 @@ ${pb.getQualityGateSection()}
     return suggestions;
   }
 
+  // Shared verbatim across providers — see providerShared.ts.
   private isGraphQLEndpoint(pathname: string, request: any): boolean {
-    return pathname.includes('graphql') || pathname.includes('gql') || 
-           (request.postData?.text && this.looksLikeGraphQL(request.postData.text));
-  }
-
-  private looksLikeGraphQL(requestBody: any): boolean {
-    if (!requestBody) return false;
-    
-    try {
-      const bodyStr = typeof requestBody === 'string' ? requestBody : JSON.stringify(requestBody);
-      const body = typeof requestBody === 'object' ? requestBody : JSON.parse(bodyStr);
-      
-      // Check for GraphQL query patterns
-      return !!(body.query || body.operationName || body.variables || 
-                bodyStr.includes('query ') || bodyStr.includes('mutation ') || 
-                bodyStr.includes('subscription '));
-    } catch {
-      return false;
-    }
+    return isGraphQLEndpoint(pathname, request);
   }
 
   private extractGraphQLOperation(request: any): string | null {
-    const requestBody = request.postData?.text;
-    if (!requestBody) return null;
-    
-    try {
-      const bodyStr = typeof requestBody === 'string' ? requestBody : JSON.stringify(requestBody);
-      const body = typeof requestBody === 'object' ? requestBody : JSON.parse(bodyStr);
-      
-      // Priority 1: Use operationName if available
-      if (body.operationName && typeof body.operationName === 'string') {
-        return body.operationName;
-      }
-      
-      // Priority 2: Extract operation name from query string
-      if (body.query && typeof body.query === 'string') {
-        const queryMatch = body.query.match(/(?:query|mutation|subscription)\s+([a-zA-Z][a-zA-Z0-9_]*)/);
-        if (queryMatch && queryMatch[1]) {
-          return queryMatch[1];
-        }
-        
-        // Priority 3: Use operation type + hash for unnamed operations
-        const operationType = body.query.trim().match(/^(query|mutation|subscription)/);
-        if (operationType) {
-          const queryHash = this.simpleHash(body.query);
-          return `${operationType[1]}_${queryHash}`;
-        }
-      }
-      
-      // Priority 4: Fallback to request body hash
-      const bodyHash = this.simpleHash(bodyStr);
-      return `operation_${bodyHash}`;
-      
-    } catch {
-      return null;
-    }
-  }
-
-  private simpleHash(str: string): string {
-    let hash = 0;
-    for (let i = 0; i < str.length; i++) {
-      const char = str.charCodeAt(i);
-      hash = ((hash << 5) - hash) + char;
-      hash = hash & hash; // Convert to 32-bit integer
-    }
-    return Math.abs(hash).toString(16).substring(0, 8);
+    return extractGraphQLOperation(request);
   }
 }

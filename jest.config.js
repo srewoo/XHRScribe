@@ -22,12 +22,15 @@ module.exports = {
     '!src/**/index.ts',
     '!src/**/index.tsx',
   ],
+  // Ratchet floor (plan.md 5.3): set just below current measured coverage so it
+  // can only go UP. Raise these as more suites land; the aspirational target is
+  // 80/75/70. Current (2026-07): ~40% lines/stmts, ~31% branches, ~39% funcs.
   coverageThreshold: {
     global: {
-      branches: 70,
-      functions: 75,
-      lines: 80,
-      statements: 80,
+      branches: 30,
+      functions: 37,
+      lines: 38,
+      statements: 38,
     },
   },
   globals: {

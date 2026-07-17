@@ -6,6 +6,8 @@ import { AuthFlow, AuthFlowAnalyzer } from '../../AuthFlowAnalyzer';
 import { normalizePath } from '../../EndpointGrouper';
 import { PromptBuilder } from '../PromptBuilder';
 import { Logger } from '../../logging/Logger';
+import { UNTRUSTED_DATA_INSTRUCTION, wrapUntrusted } from '../promptSafety';
+import { isGraphQLEndpoint, extractGraphQLOperation, getModelTokenLimit } from '../providerShared';
 
 interface GeminiErrorResponse {
   error?: {
@@ -52,13 +54,13 @@ export class GeminiProvider implements LLMProvider {
       try {
         const modelName = this.getModelName(options.model);
         const response = await axios.post(
-          `${this.baseUrl}/models/${modelName}:generateContent?key=${this.apiKey}`,
+          `${this.baseUrl}/models/${modelName}:generateContent`,
           {
             contents: [
               {
                 parts: [
                   {
-                    text: `You are an expert API test engineer. Generate clean, production-ready test code.\n\n${prompt}`,
+                    text: `You are an expert API test engineer. Generate clean, production-ready test code. ${UNTRUSTED_DATA_INSTRUCTION}\n\n${prompt}`,
                   },
                 ],
               },
@@ -91,6 +93,9 @@ export class GeminiProvider implements LLMProvider {
           {
             headers: {
               'Content-Type': 'application/json',
+              // Key in a header, not the query string, so it never lands in
+              // request logs / browser history / referrer chains.
+              'x-goog-api-key': this.apiKey,
             },
             timeout: 120000,
             signal
@@ -207,9 +212,9 @@ export class GeminiProvider implements LLMProvider {
       'gemini-2-5-pro': 'gemini-2.5-pro',
       'gemini-2-5-flash': 'gemini-2.5-flash',
     };
-    const known = ['gemini-3.5-flash', 'gemini-2.5-pro', 'gemini-3.1-flash-lite', 'gemini-2.5-flash'];
+    const known = ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash'];
     if (known.includes(model)) return model;
-    return legacy[model] || 'gemini-3.5-flash';
+    return legacy[model] || 'gemini-2.5-flash';
   }
 
   private delay(ms: number): Promise<void> {
@@ -217,14 +222,14 @@ export class GeminiProvider implements LLMProvider {
   }
 
   estimateCost(tokenCount: number, model: string): number {
-    // Gemini pricing as of 2024 (approximate)
+    // Google Gemini list pricing, USD per 1K tokens (input / output).
     const pricing: Record<string, { input: number; output: number }> = {
-      'gemini-3.5-flash': { input: 0.0003, output: 0.0025 },
+      'gemini-2.5-flash': { input: 0.0003, output: 0.0025 },
       'gemini-2.5-pro': { input: 0.00125, output: 0.01 },
-      'gemini-3.1-flash-lite': { input: 0.0001, output: 0.0004 },
+      'gemini-2.0-flash': { input: 0.0001, output: 0.0004 },
     };
 
-    const modelPricing = pricing[model] || pricing['gemini-3.5-flash'];
+    const modelPricing = pricing[model] || pricing['gemini-2.5-flash'];
     // Rough estimate: 60% input, 40% output
     const inputTokens = tokenCount * 0.6;
     const outputTokens = tokenCount * 0.4;
@@ -237,12 +242,7 @@ export class GeminiProvider implements LLMProvider {
   }
 
   private getMaxTokens(model: string): number {
-    const limits: Record<string, number> = {
-      'gemini-3.5-flash': 1048576,
-      'gemini-2.5-pro': 2097152,
-      'gemini-3.1-flash-lite': 1048576,
-    };
-    return limits[model] || 1048576;
+    return getModelTokenLimit(model, 1048576);
   }
 
   private buildExhaustivePrompt(harData: HARData, options: GenerationOptions, authFlow?: AuthFlow, customAuthGuide?: string): string {
@@ -272,30 +272,19 @@ export class GeminiProvider implements LLMProvider {
       }
     });
 
-    let prompt = `🔥🔥🔥 NUCLEAR ALERT - CRITICAL REQUIREMENT 🔥🔥🔥
+    const casesPerEndpoint = options.testCoverage === 'minimal' ? '1-2' : options.testCoverage === 'exhaustive' ? '8-12' : '3-5';
+    let prompt = `Generate complete, production-ready ${framework} test code for all ${uniqueEndpoints.size} endpoint(s).
 
-I AM PAYING FOR COMPLETE TEST GENERATION. INCOMPLETE RESPONSES WILL BE REJECTED.
-
-YOU MUST GENERATE COMPLETE, FULLY-IMPLEMENTED ${framework} TEST CODE FOR ALL ${uniqueEndpoints.size} ENDPOINTS.
-
-🚫 ABSOLUTELY FORBIDDEN - INSTANT REJECTION:
-❌ "Continue adding more endpoint tests..."
-❌ "Follow the same pattern for remaining endpoints"
-❌ "Add more tests here" or "TODO: implement more tests"
-❌ "Similar tests can be added for other endpoints"
-❌ Any variation of "continue", "add more", "follow pattern"
-❌ Stopping after generating only some endpoints
-
-🔥 MANDATORY REQUIREMENTS:
-✅ GENERATE ACTUAL WORKING CODE FOR ALL ${uniqueEndpoints.size} ENDPOINTS
-✅ Each endpoint gets a complete test suite with ${options.testCoverage === 'minimal' ? '1-2' : options.testCoverage === 'exhaustive' ? '8-12' : '3-5'} real test cases
-✅ NO placeholder comments, NO template suggestions
-✅ Production-ready, runnable code that I can use immediately
+Requirements:
+- Write fully-implemented test cases for every endpoint — do not stop partway through.
+- Give each endpoint ${casesPerEndpoint} real, runnable test cases.
+- Do not emit placeholder comments, TODOs, or "follow the same pattern for the rest" shortcuts — write the actual code for each endpoint.
+- The output must run as-is with no further editing.
 
 Framework: ${framework}
 ${this.getFrameworkInstructions(framework)}
 
-🔥 CODE QUALITY REQUIREMENTS:
+Code quality requirements:
 
 ⚠️ IMPORTS & SETUP:
 ✅ Include proper imports at the top
@@ -446,7 +435,7 @@ ${entry.request.cookies && entry.request.cookies.length > 0
   : 'No cookies'}
 
 📦 REQUEST BODY:
-${requestBody ? requestBody.substring(0, 1500) : 'No request body'}
+${requestBody ? wrapUntrusted(requestBody.substring(0, 1500)) : 'No request body'}
 
 📥 RESPONSE DETAILS:
 Status: ${statusCode}
@@ -460,7 +449,7 @@ ${entry.response.cookies && entry.response.cookies.length > 0
   : 'No response cookies'}
 
 📦 RESPONSE BODY:
-${responseBody ? responseBody.substring(0, 1500) : 'No response body'}
+${responseBody ? wrapUntrusted(responseBody.substring(0, 1500)) : 'No response body'}
 
 🚨 TESTS FOR THIS ENDPOINT:
 1. ✅ HAPPY PATH TEST: Valid request → ${statusCode}
@@ -578,7 +567,7 @@ ${pb.getQualityGateSection()}
     
     // Add test requirements
     prompt += '## Test Requirements\n';
-    const requirements = [];
+    const requirements: string[] = [];
     
     if (options.includeAuth) {
       requirements.push('Authentication tests with proper token/session handling');
@@ -962,71 +951,12 @@ ${pb.getQualityGateSection()}
     return suggestions;
   }
 
+  // Shared verbatim across providers — see providerShared.ts.
   private isGraphQLEndpoint(pathname: string, request: any): boolean {
-    return pathname.includes('graphql') || pathname.includes('gql') || 
-           (request.postData?.text && this.looksLikeGraphQL(request.postData.text));
-  }
-
-  private looksLikeGraphQL(requestBody: any): boolean {
-    if (!requestBody) return false;
-    
-    try {
-      const bodyStr = typeof requestBody === 'string' ? requestBody : JSON.stringify(requestBody);
-      const body = typeof requestBody === 'object' ? requestBody : JSON.parse(bodyStr);
-      
-      // Check for GraphQL query patterns
-      return !!(body.query || body.operationName || body.variables || 
-                bodyStr.includes('query ') || bodyStr.includes('mutation ') || 
-                bodyStr.includes('subscription '));
-    } catch {
-      return false;
-    }
+    return isGraphQLEndpoint(pathname, request);
   }
 
   private extractGraphQLOperation(request: any): string | null {
-    const requestBody = request.postData?.text;
-    if (!requestBody) return null;
-    
-    try {
-      const bodyStr = typeof requestBody === 'string' ? requestBody : JSON.stringify(requestBody);
-      const body = typeof requestBody === 'object' ? requestBody : JSON.parse(bodyStr);
-      
-      // Priority 1: Use operationName if available
-      if (body.operationName && typeof body.operationName === 'string') {
-        return body.operationName;
-      }
-      
-      // Priority 2: Extract operation name from query string
-      if (body.query && typeof body.query === 'string') {
-        const queryMatch = body.query.match(/(?:query|mutation|subscription)\s+([a-zA-Z][a-zA-Z0-9_]*)/);
-        if (queryMatch && queryMatch[1]) {
-          return queryMatch[1];
-        }
-        
-        // Priority 3: Use operation type + hash for unnamed operations
-        const operationType = body.query.trim().match(/^(query|mutation|subscription)/);
-        if (operationType) {
-          const queryHash = this.simpleHash(body.query);
-          return `${operationType[1]}_${queryHash}`;
-        }
-      }
-      
-      // Priority 4: Fallback to request body hash
-      const bodyHash = this.simpleHash(bodyStr);
-      return `operation_${bodyHash}`;
-      
-    } catch {
-      return null;
-    }
-  }
-
-  private simpleHash(str: string): string {
-    let hash = 0;
-    for (let i = 0; i < str.length; i++) {
-      const char = str.charCodeAt(i);
-      hash = ((hash << 5) - hash) + char;
-      hash = hash & hash; // Convert to 32-bit integer
-    }
-    return Math.abs(hash).toString(16).substring(0, 8);
+    return extractGraphQLOperation(request);
   }
 }

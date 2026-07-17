@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npm run type-check
+
+      - name: Lint
+        run: npm run lint
+
+      # Enforces the coverage ratchet floor in jest.config.js (plan.md 5.3).
+      # The floor is set just below current coverage so it can only rise.
+      - name: Unit tests (with coverage floor)
+        run: npm run test:coverage
+
+      - name: Build + validate extension
+        run: npm run build
